@@ -9,7 +9,7 @@ import { SessionsScreen } from './screens/SessionsScreen';
 import { KanbanScreen } from './screens/KanbanScreen';
 import { FilesScreen } from './screens/FilesScreen';
 import { HubScreen } from './screens/HubScreen';
-import { TabBar } from './components/shared/TabBar';
+import { NavDrawer } from './components/shared/NavDrawer';
 import { Toasts } from './components/shared/misc';
 import { useUi } from './store/ui';
 import { hermes, defaultWsUrl } from './ws/client';
@@ -74,7 +74,7 @@ export function App() {
         </Routes>
       </div>
 
-      <TabBar />
+      <NavDrawer />
       <Toasts />
     </div>
   );

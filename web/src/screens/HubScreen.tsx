@@ -10,6 +10,7 @@ import { CronTab } from '../components/hub/CronTab';
 import { ModelsTab } from '../components/hub/ModelsTab';
 import { SettingsTab } from '../components/hub/SettingsTab';
 import { ProfilesTab } from '../components/hub/ProfilesTab';
+import { MenuButton } from '../components/shared/MenuButton';
 import { buzz } from '../lib/haptics';
 
 const TABS = [
@@ -41,6 +42,7 @@ export function HubScreen() {
   return (
     <div className="screen">
       <div className="header">
+        <MenuButton />
         <div className="header__title">Hub</div>
       </div>
 

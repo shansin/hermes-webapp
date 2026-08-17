@@ -20,6 +20,7 @@ import {
   type ArchivedFilter,
   type SessionRow,
 } from '../api/sessions';
+import { MenuButton } from '../components/shared/MenuButton';
 import { useUi } from '../store/ui';
 import { useSession } from '../store/session';
 import { collectTags, hasTag, tagHue } from '../lib/sessionTags';
@@ -166,6 +167,7 @@ export function SessionsScreen() {
           </>
         ) : (
           <>
+            <MenuButton />
             <div className="header__title">
               {showArchived ? 'Archived' : 'Sessions'}
               {data && <span className="header__sub"> · {data.total}</span>}

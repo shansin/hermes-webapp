@@ -25,6 +25,7 @@ import {
   useMakeDirectory,
   type FsEntry,
 } from '../api/files';
+import { MenuButton } from '../components/shared/MenuButton';
 import { useUi } from '../store/ui';
 import { buzz } from '../lib/haptics';
 
@@ -103,6 +104,7 @@ export function FilesScreen() {
   return (
     <div className="screen">
       <div className="header">
+        <MenuButton />
         <button
           className="icon-btn"
           disabled={!parent}

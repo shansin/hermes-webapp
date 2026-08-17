@@ -587,6 +587,15 @@
   /* 16px avoids iOS focus zoom. */
   font-size: 16px;
   transition: border-color 0.15s;
+  /* A long draft hits max-height and starts scrolling. The native scrollbar is
+     square and sits flush to the edge, so inside a 21px-radius pill it clips
+     across the rounded corner as a stray notch. Hide it and let the caret carry
+     the position, matching the other scrollers in this app. */
+  scrollbar-width: none;
+}
+
+.composer__input::-webkit-scrollbar {
+  display: none;
 }
 
 .composer__input:focus { border-color: var(--accent); }
@@ -737,7 +746,9 @@
 .mermaid__zoom {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  /* Above the sheet layer (100/101): a diagram can be zoomed from inside the
+     file viewer's sheet, and at a lower index it would open behind it. */
+  z-index: 150;
   background: var(--bg);
   overflow: auto;
   -webkit-overflow-scrolling: touch;

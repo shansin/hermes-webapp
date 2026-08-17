@@ -25,6 +25,7 @@ import {
 } from '../api/kanban';
 import { useUi } from '../store/ui';
 import { buzz } from '../lib/haptics';
+import { MenuButton } from '../components/shared/MenuButton';
 
 /** Where "advance this card" sends it, per column. */
 const NEXT_STAGE: Partial<Record<Column, Column>> = {
@@ -93,6 +94,7 @@ export function KanbanScreen() {
   return (
     <div className="screen">
       <div className="header">
+        <MenuButton />
         <div className="header__title">Kanban</div>
       </div>
 

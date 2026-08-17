@@ -18,6 +18,7 @@ import { ContextSheet } from '../components/chat/ContextSheet';
 import { IconPlus, IconChevron } from '../components/shared/Icons';
 import { Loader } from '../components/shared/misc';
 import { useSession } from '../store/session';
+import { MenuButton } from '../components/shared/MenuButton';
 import { useUi } from '../store/ui';
 import { hermes } from '../ws/client';
 import { createSession, fetchHistory, resumeSession } from '../api/gateway';
@@ -165,6 +166,7 @@ export function ChatScreen() {
   return (
     <div className="screen">
       <div className="header">
+        <MenuButton />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="header__title">{title || 'New chat'}</div>
           <button

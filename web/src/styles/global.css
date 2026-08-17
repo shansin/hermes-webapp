@@ -72,7 +72,6 @@
   /* Material's minimum touch target. Larger than the 44px iOS figure. */
   --tap-min: 48px;
 
-  --tabbar-h: 80px;
   /* Material's small top app bar. 56 could not fit a title plus a
      secondary target without them overlapping. */
   --header-h: 64px;
@@ -279,84 +278,123 @@ button.header__sub::after {
   color: var(--error);
 }
 
-/* --- tab bar -------------------------------------------------------------- */
+/* --- navigation drawer ---------------------------------------------------- */
 
-/* Material's navigation bar: 80dp tall, and the selected destination carries
-   a filled indicator pill behind its icon. The pill — not the colour change —
-   is what makes the bar read as Material. */
-.tabbar {
-  height: calc(var(--tabbar-h) + var(--safe-bottom));
-  padding-bottom: var(--safe-bottom);
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  background: color-mix(in srgb, var(--surface-container) 94%, transparent);
-  backdrop-filter: blur(14px);
-  border-top: 1px solid var(--border-soft);
-  flex-shrink: 0;
-  z-index: 10;
+/* Replaced the bottom tab bar: that cost ~64px of height on every screen and
+   was already cramped at five destinations (its grid was fixed at four). */
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgb(0 0 0 / 0.5);
+  backdrop-filter: blur(2px);
+  animation: drawer-fade 0.18s ease;
 }
 
-.tabbar__item {
+.drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 61;
+  width: min(82vw, 320px);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  text-decoration: none;
-  color: var(--text-dim);
-  font-size: var(--type-label-md);
-  font-weight: 550;
-  letter-spacing: 0.01em;
-  transition: color var(--motion-effects);
-  /* The whole column is the target, comfortably past 48dp. */
-  min-height: var(--tap-min);
-  -webkit-tap-highlight-color: transparent;
+  background: var(--surface-container);
+  border-right: 1px solid var(--border-soft);
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
+  animation: drawer-in var(--motion-spatial);
+  will-change: transform;
 }
 
-/* 64×32dp pill. Width animates on the spatial spring so selection grows into
-   place rather than cutting. */
-.tabbar__indicator {
-  width: 64px;
-  height: 32px;
-  border-radius: var(--shape-full);
-  display: grid;
-  place-items: center;
-  background: transparent;
-  transition:
-    background-color var(--motion-effects),
-    transform var(--motion-spatial);
-  transform: scaleX(0.55);
+@keyframes drawer-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-.tabbar__item--active .tabbar__indicator {
-  background: var(--accent-soft);
-  transform: scaleX(1);
-}
-
-/* The icon must not inherit the pill's horizontal squash. */
-.tabbar__indicator > * {
-  transition: transform var(--motion-spatial);
-  transform: scaleX(1.818);
-}
-
-.tabbar__item--active .tabbar__indicator > * {
-  transform: scaleX(1);
-}
-
-.tabbar__item--active {
-  color: var(--accent);
-}
-
-.tabbar__item:active .tabbar__indicator {
-  background: var(--surface-container-highest);
+@keyframes drawer-in {
+  from { transform: translateX(-100%); }
+  to { transform: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tabbar__indicator,
-  .tabbar__indicator > * {
-    transform: none;
-  }
+  .drawer, .drawer-backdrop { animation: none; }
 }
+
+.drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 14px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.drawer__title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.drawer__conn {
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+
+.drawer__conn--on { color: var(--ok); }
+.drawer__conn--off { color: var(--text-faint); }
+
+.drawer__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.drawer__item {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 11px 12px;
+  border-radius: var(--shape-full);
+  text-decoration: none;
+  color: var(--text-dim);
+  min-height: var(--tap-min);
+  transition: background-color var(--motion-effects), color var(--motion-effects);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.drawer__item:active { background: var(--surface-container-highest); }
+
+.drawer__item--active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.drawer__icon { display: grid; place-items: center; flex-shrink: 0; }
+
+.drawer__main { display: flex; flex-direction: column; min-width: 0; }
+
+.drawer__label {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.drawer__hint {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer__item--active .drawer__hint { color: color-mix(in srgb, var(--accent) 65%, var(--text-faint)); }
 
 /* --- generic surfaces ----------------------------------------------------- */
 
@@ -373,6 +411,7 @@ button.header__sub::after {
   overflow-y: auto;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
+  padding-bottom: var(--safe-bottom);
 }
 
 .empty {
@@ -593,7 +632,7 @@ button.header__sub::after {
 .fab {
   position: absolute;
   right: 16px;
-  bottom: 16px;
+  bottom: calc(16px + var(--safe-bottom));
   min-width: 56px;
   height: 56px;
   padding: 0 20px;
@@ -626,7 +665,7 @@ button.header__sub::after {
 /* A floating button covers whatever it floats over, so any list that carries
    one reserves the space at the end rather than hiding its last row. */
 .has-fab {
-  padding-bottom: 88px !important;
+  padding-bottom: calc(88px + var(--safe-bottom)) !important;
 }
 
 /* --- switch --------------------------------------------------------------
@@ -790,7 +829,7 @@ button.header__sub::after {
   position: fixed;
   left: 12px;
   right: 12px;
-  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 12px);
+  bottom: calc(var(--safe-bottom) + 16px);
   z-index: 200;
   display: flex;
   flex-direction: column;

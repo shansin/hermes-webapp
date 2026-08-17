@@ -48,11 +48,18 @@ interface UiState {
   devPanel: boolean;
   connection: ConnState;
   toasts: Toast[];
+  /**
+   * The navigation drawer. Lives here rather than in `App` because the
+   * hamburger sits inside each screen's own header — the two ends of the
+   * interaction are in different subtrees.
+   */
+  navOpen: boolean;
 
   setTheme: (t: Theme) => void;
   setHaptics: (on: boolean) => void;
   setToken: (t: string) => void;
   setDevPanel: (on: boolean) => void;
+  setNavOpen: (open: boolean) => void;
   setConnection: (c: ConnState) => void;
   toast: (text: string, tone?: Toast['tone']) => void;
   dismissToast: (id: number) => void;
@@ -71,6 +78,9 @@ export const useUi = create<UiState>((set, get) => ({
   devPanel: read(KEYS.devPanel, 'off') === 'on',
   connection: 'closed',
   toasts: [],
+  navOpen: false,
+
+  setNavOpen: (navOpen) => set({ navOpen }),
 
   setTheme: (theme) => {
     write(KEYS.theme, theme);
