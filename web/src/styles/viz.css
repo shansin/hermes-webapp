@@ -1,0 +1,117 @@
+/* --------------------------------------------------------------------------
+   Chart color roles.
+
+   Slots come from the validated categorical palette; each mode is stepped for
+   its own surface rather than flipped. Verified with the palette validator:
+   dark  — worst adjacent CVD ΔE 9.4, normal-vision 26.5, all ≥3:1 on surface
+   light — worst adjacent CVD ΔE 9.2, normal-vision 27.6; aqua sits at 2.82:1,
+           which is why every chart here ships a legend and a value table
+           (the "relief" requirement for a sub-3:1 slot).
+   -------------------------------------------------------------------------- */
+
+.viz {
+  --series-1: #2a78d6; /* blue   */
+  --series-2: #eb6834; /* orange */
+  --series-3: #1baf7a; /* aqua   */
+
+  --viz-grid: #e2e2ea;
+  --viz-axis: #8b8b9c;
+  --viz-tooltip-bg: #ffffff;
+  --viz-tooltip-border: #dcdce5;
+}
+
+/* Dark is the app default, so both the explicit stamp and the OS preference
+   must land on the dark steps. */
+:root[data-theme='dark'] .viz,
+:root[data-theme='amoled'] .viz {
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+
+  --viz-grid: #23232e;
+  --viz-axis: #6c6c7e;
+  --viz-tooltip-bg: #1c1c26;
+  --viz-tooltip-border: #2a2a36;
+}
+
+.viz-tooltip {
+  background: var(--viz-tooltip-bg);
+  border: 1px solid var(--viz-tooltip-border);
+  border-radius: 9px;
+  padding: 8px 11px;
+  font-size: 12.5px;
+  box-shadow: var(--shadow);
+}
+
+.viz-tooltip__day {
+  color: var(--text-faint);
+  margin-bottom: 5px;
+  font-weight: 600;
+}
+
+.viz-tooltip__row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 1px 0;
+}
+
+.viz-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2.5px;
+  flex-shrink: 0;
+}
+
+.viz-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 2px 0 10px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.viz-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Value table — doubles as the accessibility fallback for chart content. */
+.viz-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.viz-table th {
+  text-align: left;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  font-weight: 650;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.viz-table td {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.viz-table td:not(:first-child),
+.viz-table th:not(:first-child) {
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+/* Proportion bar behind a model row, so magnitude reads without a second chart. */
+.viz-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--series-1);
+  min-width: 2px;
+}

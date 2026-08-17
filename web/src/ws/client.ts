@@ -1,0 +1,252 @@
+/**
+ * JSON-RPC 2.0 client for the Hermes gateway WebSocket.
+ *
+ * Responsibilities, and nothing beyond them:
+ *  - request/response correlation via an incrementing id → promise map
+ *  - newline-delimited frame splitting (the gateway coalesces streamed tokens
+ *    into batches, so one WS message can carry many JSON lines)
+ *  - exponential-backoff reconnect with jitter
+ *  - fan-out of events to subscribers
+ *
+ * Streaming state lives in the session store, not here.
+ */
+import { RpcEventSchema, RpcResponseSchema, type ConnState, type RpcEvent } from './types';
+
+export type EventHandler = (event: RpcEvent['params']) => void;
+export type StateHandler = (state: ConnState) => void;
+/** Raw frames, for the hidden dev panel. */
+export type FrameHandler = (dir: 'in' | 'out', raw: string) => void;
+
+interface Pending {
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+  method: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const RECONNECT_BASE_MS = 500;
+const RECONNECT_MAX_MS = 15_000;
+/** Generous: a cold agent build behind `session.create` can take a while. */
+const REQUEST_TIMEOUT_MS = 180_000;
+
+export class HermesClient {
+  private ws: WebSocket | null = null;
+  private nextId = 1;
+  private pending = new Map<number, Pending>();
+  private eventHandlers = new Set<EventHandler>();
+  private stateHandlers = new Set<StateHandler>();
+  private frameHandlers = new Set<FrameHandler>();
+  private attempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private closedByUser = false;
+  private _state: ConnState = 'closed';
+
+  get state(): ConnState {
+    return this._state;
+  }
+
+  constructor(private url: string = defaultWsUrl()) {}
+
+  connect(): void {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    this.closedByUser = false;
+    this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
+
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(this.url);
+    } catch {
+      this.scheduleReconnect();
+      return;
+    }
+    this.ws = socket;
+
+    socket.onopen = () => {
+      this.attempt = 0;
+      this.setState('open');
+    };
+
+    socket.onmessage = (ev) => {
+      const raw = typeof ev.data === 'string' ? ev.data : '';
+      if (!raw) return;
+      // One WS message may batch several newline-delimited JSON-RPC frames.
+      for (const line of raw.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed) this.handleFrame(trimmed);
+      }
+    };
+
+    socket.onclose = () => {
+      this.ws = null;
+      // Fail in-flight calls rather than letting their promises hang forever.
+      this.rejectAllPending(new Error('connection closed'));
+      if (this.closedByUser) {
+        this.setState('closed');
+      } else {
+        this.scheduleReconnect();
+      }
+    };
+
+    socket.onerror = () => {
+      // `onclose` always follows; the reconnect is handled there.
+    };
+  }
+
+  disconnect(): void {
+    this.closedByUser = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.ws?.close(1000, 'client shutdown');
+    this.ws = null;
+    this.setState('closed');
+  }
+
+  /** Point the client at a new URL (token change) and reconnect. */
+  setUrl(url: string): void {
+    if (url === this.url) return;
+    this.url = url;
+    this.attempt = 0;
+    this.ws?.close(1000, 'url changed');
+    this.ws = null;
+    this.connect();
+  }
+
+  private handleFrame(line: string): void {
+    for (const h of this.frameHandlers) h('in', line);
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return; // Not our problem; the dev panel already saw the raw text.
+    }
+
+    const asResponse = RpcResponseSchema.safeParse(parsed);
+    if (asResponse.success && (asResponse.data.result !== undefined || asResponse.data.error)) {
+      const id = Number(asResponse.data.id);
+      const entry = this.pending.get(id);
+      if (!entry) return;
+      this.pending.delete(id);
+      clearTimeout(entry.timer);
+      if (asResponse.data.error) {
+        const e = asResponse.data.error;
+        entry.reject(new RpcError(e.message, e.code, entry.method));
+      } else {
+        entry.resolve(asResponse.data.result);
+      }
+      return;
+    }
+
+    const asEvent = RpcEventSchema.safeParse(parsed);
+    if (asEvent.success) {
+      for (const h of this.eventHandlers) h(asEvent.data.params);
+    }
+  }
+
+  /** Issue a JSON-RPC call. Rejects with `RpcError` on a gateway error. */
+  call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const socket = this.ws;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        reject(new Error('not connected'));
+        return;
+      }
+      const id = this.nextId++;
+      const frame = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method} timed out`));
+      }, REQUEST_TIMEOUT_MS);
+
+      this.pending.set(id, {
+        resolve: resolve as (v: unknown) => void,
+        reject,
+        method,
+        timer,
+      });
+
+      for (const h of this.frameHandlers) h('out', frame);
+      socket.send(frame);
+    });
+  }
+
+  /** Fire-and-forget notification (no id, no response expected). */
+  notify(method: string, params: Record<string, unknown> = {}): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    const frame = JSON.stringify({ jsonrpc: '2.0', method, params });
+    for (const h of this.frameHandlers) h('out', frame);
+    this.ws.send(frame);
+  }
+
+  onEvent(h: EventHandler): () => void {
+    this.eventHandlers.add(h);
+    return () => this.eventHandlers.delete(h);
+  }
+
+  onState(h: StateHandler): () => void {
+    this.stateHandlers.add(h);
+    h(this._state);
+    return () => this.stateHandlers.delete(h);
+  }
+
+  onFrame(h: FrameHandler): () => void {
+    this.frameHandlers.add(h);
+    return () => this.frameHandlers.delete(h);
+  }
+
+  private setState(s: ConnState): void {
+    if (this._state === s) return;
+    this._state = s;
+    for (const h of this.stateHandlers) h(s);
+  }
+
+  private rejectAllPending(err: Error): void {
+    for (const [, entry] of this.pending) {
+      clearTimeout(entry.timer);
+      entry.reject(err);
+    }
+    this.pending.clear();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return;
+    this.setState('reconnecting');
+    // Jitter avoids a thundering herd when the backend restarts and several
+    // tabs/phones reconnect at once.
+    const backoff = Math.min(RECONNECT_BASE_MS * 2 ** this.attempt, RECONNECT_MAX_MS);
+    const delay = backoff * (0.75 + Math.random() * 0.5);
+    this.attempt++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+}
+
+export class RpcError extends Error {
+  constructor(
+    message: string,
+    public code: number,
+    public method: string,
+  ) {
+    super(message);
+    this.name = 'RpcError';
+  }
+}
+
+/**
+ * Same-origin WS URL. The proxy injects the real Bearer token upstream, so the
+ * browser needs no credential of its own; a stored token is still forwarded to
+ * support pointing the app at a Hermes instance directly.
+ */
+export function defaultWsUrl(token?: string): string {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${proto}//${location.host}/api/ws${qs}`;
+}
+
+/** The app-wide singleton. */
+export const hermes = new HermesClient();

@@ -1,0 +1,281 @@
+/**
+ * Message composer: growing textarea, hold-to-talk voice, attachments,
+ * quick-action chips, and the send/stop button.
+ *
+ * The mic is hidden entirely when neither server STT nor the Web Speech API is
+ * usable — a dead button is worse than no button. On plain HTTP (our default)
+ * `MediaRecorder` is unavailable, so the Web Speech fallback is what runs.
+ */
+import { useEffect, useRef, useState } from 'react';
+import { IconMic, IconPaperclip, IconSend, IconStop } from '../shared/Icons';
+import { CostRing } from './CostRing';
+import { useSession } from '../../store/session';
+import { useUi } from '../../store/ui';
+import { buzz } from '../../lib/haptics';
+import {
+  canRecord,
+  probeAudio,
+  startRecording,
+  webSpeechAvailable,
+  webSpeechDictate,
+  type Recorder,
+} from '../../lib/audio';
+import { hermes } from '../../ws/client';
+
+const QUICK_ACTIONS = [
+  { label: '📋 Summarize', text: 'Summarize what we just did in a few bullets.' },
+  { label: '🔍 Explain', text: 'Explain that in more detail.' },
+  { label: '✅ Next steps', text: 'What are the next steps?' },
+  { label: '🐛 Fix it', text: 'Fix the issue you just found.' },
+];
+
+interface Attachment {
+  name: string;
+  /** Set once the gateway has accepted the file. */
+  attached: boolean;
+}
+
+interface ComposerProps {
+  onOpenContext?: () => void;
+  /**
+   * Text to seed the box with — used by the Android share target, which hands
+   * us the shared page/selection to send as the first message.
+   */
+  seedText?: string;
+  onSeedConsumed?: () => void;
+}
+
+export function Composer({ onOpenContext, seedText, onSeedConsumed }: ComposerProps) {
+  const [text, setText] = useState('');
+  const [recording, setRecording] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [voiceOk, setVoiceOk] = useState(false);
+
+  const running = useSession((s) => s.running);
+  const sessionId = useSession((s) => s.sessionId);
+  const submit = useSession((s) => s.submitPrompt);
+  const interrupt = useSession((s) => s.interrupt);
+  const toast = useUi((s) => s.toast);
+
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const recRef = useRef<Recorder | { stop: () => Promise<string>; cancel: () => void } | null>(null);
+
+  // Decide once whether a mic button can do anything useful here.
+  useEffect(() => {
+    let alive = true;
+    probeAudio()
+      .then((caps) => {
+        if (alive) setVoiceOk((caps.stt && caps.canRecord) || caps.webSpeech);
+      })
+      .catch(() => {
+        if (alive) setVoiceOk(webSpeechAvailable());
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Adopt shared text once, appending rather than clobbering a draft.
+  useEffect(() => {
+    if (!seedText) return;
+    setText((t) => (t ? `${t}\n${seedText}` : seedText));
+    taRef.current?.focus();
+    onSeedConsumed?.();
+  }, [seedText, onSeedConsumed]);
+
+  // Grow the textarea with its content, up to the CSS max-height.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 168)}px`;
+  }, [text]);
+
+  const send = () => {
+    const value = text.trim();
+    if (!value || !sessionId) return;
+    buzz('tap');
+    void submit(value);
+    setText('');
+    setAttachments([]);
+  };
+
+  const startVoice = async () => {
+    if (recording) return;
+    buzz('tap');
+    try {
+      const caps = await probeAudio();
+      // Server STT is more accurate, but needs a secure context to record.
+      recRef.current =
+        caps.stt && canRecord() ? await startRecording() : webSpeechDictate();
+      setRecording(true);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not start recording', 'error');
+    }
+  };
+
+  const finishVoice = async () => {
+    const rec = recRef.current;
+    if (!rec) return;
+    recRef.current = null;
+    setRecording(false);
+    buzz('tap');
+    try {
+      const transcript = await rec.stop();
+      if (transcript) {
+        setText((t) => (t ? `${t} ${transcript}` : transcript));
+        taRef.current?.focus();
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Transcription failed', 'error');
+    }
+  };
+
+  const onPickFiles = async (files: FileList | null) => {
+    if (!files?.length || !sessionId) return;
+    for (const file of Array.from(files)) {
+      setAttachments((a) => [...a, { name: file.name, attached: false }]);
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(String(fr.result));
+          fr.onerror = () => reject(new Error('read failed'));
+          fr.readAsDataURL(file);
+        });
+        // Images and other files take different gateway methods.
+        const method = file.type.startsWith('image/') ? 'image.attach_bytes' : 'file.attach';
+        await hermes.call(method, {
+          session_id: sessionId,
+          filename: file.name,
+          data_url: dataUrl,
+          mime_type: file.type,
+        });
+        setAttachments((a) =>
+          a.map((x) => (x.name === file.name ? { ...x, attached: true } : x)),
+        );
+        buzz('tap');
+      } catch (err) {
+        setAttachments((a) => a.filter((x) => x.name !== file.name));
+        toast(
+          `Couldn't attach ${file.name}: ${err instanceof Error ? err.message : 'failed'}`,
+          'error',
+        );
+      }
+    }
+  };
+
+  return (
+    <div className="composer">
+      {attachments.length > 0 && (
+        <div className="composer__attachments">
+          {attachments.map((a) => (
+            <span className="attach-pill" key={a.name}>
+              <span className="attach-pill__name">{a.name}</span>
+              {!a.attached && <span className="spin" style={{ fontSize: 10 }}>◌</span>}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {!text && !running && (
+        <div className="composer__quick">
+          {QUICK_ACTIONS.map((q) => (
+            <button
+              key={q.label}
+              className="chip"
+              onClick={() => {
+                buzz('tap');
+                setText(q.text);
+                taRef.current?.focus();
+              }}
+            >
+              {q.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="composer__row">
+        <CostRing onClick={onOpenContext} />
+
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          hidden
+          accept="image/*,text/*,application/pdf,.md,.json,.csv,.log"
+          onChange={(e) => {
+            void onPickFiles(e.target.files);
+            e.target.value = '';
+          }}
+        />
+        <button
+          className="composer__btn"
+          onClick={() => {
+            buzz('tap');
+            fileRef.current?.click();
+          }}
+          aria-label="Attach a file"
+          disabled={!sessionId}
+        >
+          <IconPaperclip size={19} />
+        </button>
+
+        <textarea
+          ref={taRef}
+          className="composer__input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={recording ? 'Listening…' : 'Message Hermes…'}
+          rows={1}
+          enterKeyHint="send"
+          onKeyDown={(e) => {
+            // Enter sends on a hardware keyboard; Shift+Enter makes a newline.
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              send();
+            }
+          }}
+        />
+
+        {voiceOk && !text && (
+          <button
+            className={`composer__btn${recording ? ' composer__btn--rec' : ''}`}
+            aria-label="Hold to talk"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              void startVoice();
+            }}
+            onPointerUp={() => void finishVoice()}
+            onPointerLeave={() => {
+              if (recording) void finishVoice();
+            }}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <IconMic size={19} />
+          </button>
+        )}
+
+        {running ? (
+          <button
+            className="composer__btn composer__btn--stop"
+            onClick={() => void interrupt()}
+            aria-label="Stop generating"
+          >
+            <IconStop size={17} />
+          </button>
+        ) : (
+          <button
+            className="composer__btn composer__btn--send"
+            onClick={send}
+            disabled={!text.trim() || !sessionId}
+            aria-label="Send"
+          >
+            <IconSend size={18} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}

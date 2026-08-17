@@ -1,0 +1,17 @@
+{
+  "name": "hermes-webapp",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Hermes Control — phone-first web app / PWA for the Hermes Agent",
+  "scripts": {
+    "dev:server": "pnpm --filter @hermes-webapp/server dev",
+    "dev:web": "pnpm --filter @hermes-webapp/web dev",
+    "build": "pnpm --filter @hermes-webapp/web build",
+    "start": "pnpm --filter @hermes-webapp/server start",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
