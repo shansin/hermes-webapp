@@ -19,6 +19,7 @@ import { useSession } from '../store/session';
 import { useUi } from '../store/ui';
 import { hermes } from '../ws/client';
 import { createSession, fetchHistory, resumeSession } from '../api/gateway';
+import { fetchSessionTitle } from '../api/sessions';
 
 export function ChatScreen() {
   const [params, setParams] = useSearchParams();
@@ -33,6 +34,7 @@ export function ChatScreen() {
   const reset = useSession((s) => s.reset);
   const adopt = useSession((s) => s.adoptSession);
   const loadHistory = useSession((s) => s.loadHistory);
+  const setTitle = useSession((s) => s.setTitle);
   const refreshUsage = useSession((s) => s.refreshUsage);
 
   const connection = useUi((s) => s.connection);
@@ -85,6 +87,18 @@ export function ChatScreen() {
       const history = await fetchHistory(res.session_id);
       loadHistory(history);
       void refreshUsage();
+
+      // Restore the stored title: `session.title` only fires when the agent
+      // names a conversation, so a resumed one would keep the placeholder.
+      // Prefer a title the resume result already carried (schema passes
+      // unknown fields through) over a second round trip.
+      const carried = (res as { title?: unknown }).title;
+      if (typeof carried === 'string' && carried) {
+        setTitle(carried);
+      } else {
+        const stored = await fetchSessionTitle(res.stored_session_id ?? storedId);
+        if (stored) setTitle(stored);
+      }
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not resume', 'error');
       // Fall back to a fresh session rather than leaving a dead screen.

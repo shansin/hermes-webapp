@@ -16,8 +16,6 @@ import { api } from '../api/client';
 export interface AudioCaps {
   /** Server-side speech-to-text is configured. */
   stt: boolean;
-  /** Server-side text-to-speech is configured. */
-  tts: boolean;
   /** The browser can record audio at all (needs a secure context). */
   canRecord: boolean;
   /** Web Speech API fallback, used when server STT is unavailable. */
@@ -48,26 +46,49 @@ export function canRecord(): boolean {
 }
 
 /**
- * Probe both audio features with a tiny request each. Cached: the answer only
- * changes when Hermes is reconfigured and restarted.
+ * Statuses that mean "this endpoint isn't here": not mounted, wrong verb, or
+ * mounted but unimplemented. Anything else — including the rejection of the
+ * deliberately-empty probe payload — means a handler ran, so the feature is
+ * configured.
+ *
+ * Matching on the *absent* statuses rather than one specific rejection code is
+ * deliberate: Hermes has returned both 400 ("Invalid audio payload") and 422
+ * for the empty probe across versions, and pinning to either one silently
+ * disables working voice support on the other.
+ */
+const ABSENT = new Set([404, 405, 501]);
+
+function mounted(e: unknown): boolean {
+  const status = (e as { status?: number }).status;
+  // A network error or a thrown non-ApiError has no status; treat the feature
+  // as unavailable rather than advertising a button that cannot work.
+  return typeof status === 'number' && !ABSENT.has(status);
+}
+
+/**
+ * Report what voice input can do here. Cached: the answer only changes when
+ * Hermes is reconfigured and restarted.
+ *
+ * Server STT is only reachable once the browser can hand us a recording, so on
+ * the default plain-HTTP LAN deployment — where `canRecord()` is false — the
+ * probe is skipped entirely rather than spending a request (and a console
+ * error) on an answer that cannot change the outcome.
+ *
+ * There is deliberately no TTS probe: `speak()` negotiates per call, using
+ * Hermes when it answers and the browser voice when it does not.
  */
 export async function probeAudio(): Promise<AudioCaps> {
   if (cached) return cached;
 
-  const [stt, tts] = await Promise.all([
-    // An empty data URL is rejected as 422 by a *working* STT backend and 404
-    // / 501 when the feature isn't mounted at all — that's the distinction.
-    api
-      .post('/api/audio/transcribe', { data_url: '', mime_type: 'audio/webm' })
-      .then(() => true)
-      .catch((e) => (e as { status?: number }).status === 422),
-    api
-      .post<{ ok?: boolean }>('/api/audio/speak', { text: '' })
-      .then(() => true)
-      .catch((e) => (e as { status?: number }).status === 422),
-  ]);
+  const record = canRecord();
+  const stt = record
+    ? await api
+        .post('/api/audio/transcribe', { data_url: '', mime_type: 'audio/webm' })
+        .then(() => true)
+        .catch(mounted)
+    : false;
 
-  cached = { stt, tts, canRecord: canRecord(), webSpeech: webSpeechAvailable() };
+  cached = { stt, canRecord: record, webSpeech: webSpeechAvailable() };
   return cached;
 }
 

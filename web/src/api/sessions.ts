@@ -65,6 +65,23 @@ export function useSessions(limit = MAX_SESSION_LIMIT) {
   });
 }
 
+/**
+ * The stored title for one session.
+ *
+ * Resuming only yields a live title once the agent emits `session.title`, which
+ * it does not do for a conversation that was already named — so the header
+ * would otherwise sit on its "New chat" placeholder. Returns null when the
+ * session has no title yet or the lookup fails; the caller keeps its fallback.
+ */
+export async function fetchSessionTitle(id: string): Promise<string | null> {
+  try {
+    const row = await api.get<Partial<SessionRow>>(`/api/sessions/${encodeURIComponent(id)}`);
+    return row.title ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function useSessionMessages(id: string | null) {
   return useQuery({
     queryKey: sessionKeys.messages(id ?? ''),
