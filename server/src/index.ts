@@ -58,6 +58,7 @@ app.get('/healthz', async (c) => {
     upstream: upstreamHost,
     hasToken: Boolean(token),
     webBuilt: hasBuiltWeb(),
+    lanUrl: lanUrl(),
   });
 });
 
@@ -80,6 +81,21 @@ app.notFound((c) => {
   }
   return c.json({ error: 'not_found' }, 404);
 });
+
+/**
+ * The URL another device on the LAN should open.
+ *
+ * The app can't derive this itself: a browser only knows the host it was
+ * loaded from, so opening the app on localhost produced a QR code pointing at
+ * 127.0.0.1 — useless on the phone it was meant to be scanned by. The server
+ * is the only side that knows its own LAN address.
+ */
+function lanUrl(): string | null {
+  const host = lanAddress();
+  if (!host) return null;
+  const scheme = config.HTTPS_CERT && config.HTTPS_KEY ? 'https' : 'http';
+  return `${scheme}://${host}:${config.PROXY_PORT}`;
+}
 
 /** Best-effort LAN address, printed so the phone knows where to point. */
 function lanAddress(): string | null {

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useHealth } from '../../api/hub';
 import { useUi, type Theme } from '../../store/ui';
+import { Switch } from '../shared/misc';
 import { hermes } from '../../ws/client';
 import { buzz } from '../../lib/haptics';
 
@@ -95,7 +96,12 @@ export function SettingsTab() {
     }
   };
 
-  const url = typeof location !== 'undefined' ? location.origin : '';
+  // Prefer the LAN address the server reports: `location.origin` is whatever
+  // *this* device used to connect, so on localhost the QR encoded 127.0.0.1 —
+  // which resolves to the scanning phone itself.
+  const origin = typeof location !== 'undefined' ? location.origin : '';
+  const url = health.data?.lanUrl ?? origin;
+  const qrIsLoopback = /^https?:\/\/(localhost|127\.|\[::1\])/.test(url);
 
   return (
     <div style={{ padding: 12 }}>
@@ -141,18 +147,18 @@ export function SettingsTab() {
         ))}
       </div>
 
-      <label
+      <div
         className="card"
-        style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, cursor: 'pointer' }}
+        style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}
       >
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 550, fontSize: 14.5 }}>Haptics</div>
-          <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>
+          <div style={{ fontWeight: 550, fontSize: 'var(--type-title-sm)' }}>Haptics</div>
+          <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>
             Vibrate on tool events, approvals and completion
           </div>
         </div>
-        <input type="checkbox" checked={haptics} onChange={(e) => setHaptics(e.target.checked)} />
-      </label>
+        <Switch checked={haptics} onChange={setHaptics} label="Haptics" />
+      </div>
 
       <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
         BACKEND
@@ -203,6 +209,12 @@ export function SettingsTab() {
         >
           {url}
         </div>
+        {qrIsLoopback && (
+          <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--warn)', marginTop: 8 }}>
+            This is a loopback address — it will point the other phone at itself.
+            The proxy could not detect a LAN address on this machine.
+          </div>
+        )}
       </div>
 
       {devPanel && <DevPanel />}

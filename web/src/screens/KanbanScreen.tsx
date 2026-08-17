@@ -38,7 +38,10 @@ const NEXT_STAGE: Partial<Record<Column, Column>> = {
 };
 
 export function KanbanScreen() {
-  const [active, setActive] = useState<Column>('todo');
+  // Null until the board arrives, so the first render can land on a column
+  // that actually has cards rather than showing an empty "To do" over a
+  // populated board.
+  const [active, setActive] = useState<Column | null>(null);
   const [openTask, setOpenTask] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -54,10 +57,15 @@ export function KanbanScreen() {
     return m;
   }, [data]);
 
-  const tasks = data?.columns.find((c) => c.name === active)?.tasks ?? [];
+  // Resolve the shown column: an explicit pick wins, otherwise the first
+  // column carrying cards, otherwise the board's default landing column.
+  const shown: Column =
+    active ?? (COLUMNS.find((c) => (counts.get(c) ?? 0) > 0) ?? 'todo');
+
+  const tasks = data?.columns.find((c) => c.name === shown)?.tasks ?? [];
 
   const advance = async (id: string) => {
-    const to = NEXT_STAGE[active];
+    const to = NEXT_STAGE[shown];
     if (!to) return;
     buzz('done');
     try {
@@ -86,26 +94,20 @@ export function KanbanScreen() {
     <div className="screen">
       <div className="header">
         <div className="header__title">Kanban</div>
-        <button className="icon-btn" onClick={() => setCreating(true)} aria-label="New task">
-          <IconPlus size={21} />
-        </button>
       </div>
 
       <div
-        style={{
-          display: 'flex',
-          gap: 7,
-          overflowX: 'auto',
-          padding: '10px 12px',
-          borderBottom: '1px solid var(--border-soft)',
-          flexShrink: 0,
-          scrollbarWidth: 'none',
-        }}
+        className="btn-group"
+        role="tablist"
+        aria-label="Board columns"
+        style={{ borderBottom: '1px solid var(--border-soft)', flexShrink: 0 }}
       >
         {COLUMNS.map((c) => (
           <button
             key={c}
-            className={`chip${active === c ? ' chip--active' : ''}`}
+            role="tab"
+            aria-selected={shown === c}
+            className={`btn-group__item${shown === c ? ' btn-group__item--active' : ''}`}
             onClick={() => {
               buzz('tap');
               setActive(c);
@@ -113,7 +115,7 @@ export function KanbanScreen() {
           >
             {COLUMN_LABEL[c]}
             {(counts.get(c) ?? 0) > 0 && (
-              <span style={{ opacity: 0.75, fontWeight: 700 }}>{counts.get(c)}</span>
+              <span className="btn-group__count">{counts.get(c)}</span>
             )}
           </button>
         ))}
@@ -131,11 +133,11 @@ export function KanbanScreen() {
         <ErrorNote error={error} />
       ) : (
         <PullToRefresh onRefresh={() => refetch()}>
-          <div style={{ padding: '10px 12px 16px' }}>
+          <div className="has-fab" style={{ padding: '10px 12px 16px' }}>
             {tasks.length === 0 ? (
               <Empty
                 icon="—"
-                title={`Nothing in ${COLUMN_LABEL[active]}`}
+                title={`Nothing in ${COLUMN_LABEL[shown]}`}
                 hint="Cards the agent creates appear here automatically."
               />
             ) : (
@@ -144,8 +146,8 @@ export function KanbanScreen() {
                   <TaskCard
                     key={t.id}
                     task={t}
-                    canAdvance={Boolean(NEXT_STAGE[active])}
-                    nextLabel={NEXT_STAGE[active] ? COLUMN_LABEL[NEXT_STAGE[active]!] : ''}
+                    canAdvance={Boolean(NEXT_STAGE[shown])}
+                    nextLabel={NEXT_STAGE[shown] ? COLUMN_LABEL[NEXT_STAGE[shown]!] : ''}
                     onOpen={() => setOpenTask(t.id)}
                     onAdvance={() => void advance(t.id)}
                     onDelete={() => void remove(t.id)}
@@ -155,6 +157,12 @@ export function KanbanScreen() {
             )}
           </div>
         </PullToRefresh>
+      )}
+
+      {!unavailable && (
+        <button className="fab" onClick={() => setCreating(true)} aria-label="New task">
+          <IconPlus size={22} />
+        </button>
       )}
 
       <TaskSheet taskId={openTask} onClose={() => setOpenTask(null)} />

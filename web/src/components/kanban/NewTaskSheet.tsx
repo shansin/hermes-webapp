@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Sheet } from '../shared/Sheet';
+import { Switch } from '../shared/misc';
 import { useCreateTask } from '../../api/kanban';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
@@ -75,19 +76,19 @@ export function NewTaskSheet({ open, onClose, onCreated }: Props) {
         ))}
       </div>
 
-      <label
+      <div
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 9,
+          gap: 12,
           marginBottom: 16,
-          fontSize: 14,
+          fontSize: 'var(--type-body-md)',
           color: 'var(--text-dim)',
         }}
       >
-        <input type="checkbox" checked={triage} onChange={(e) => setTriage(e.target.checked)} />
-        Send to triage instead of the ready queue
-      </label>
+        <span style={{ flex: 1 }}>Send to triage instead of the ready queue</span>
+        <Switch checked={triage} onChange={setTriage} label="Send to triage" />
+      </div>
 
       <button
         className="btn btn--primary"

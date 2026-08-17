@@ -22,8 +22,11 @@ export function TabBar() {
             to={to}
             className={`tabbar__item${active ? ' tabbar__item--active' : ''}`}
             onClick={() => buzz('tap')}
+            aria-current={active ? 'page' : undefined}
           >
-            <Icon size={21} />
+            <span className="tabbar__indicator">
+              <Icon size={22} />
+            </span>
             <span>{label}</span>
           </NavLink>
         );

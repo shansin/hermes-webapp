@@ -30,20 +30,17 @@ export function HubScreen() {
       </div>
 
       <div
-        style={{
-          display: 'flex',
-          gap: 7,
-          overflowX: 'auto',
-          padding: '10px 12px',
-          borderBottom: '1px solid var(--border-soft)',
-          flexShrink: 0,
-          scrollbarWidth: 'none',
-        }}
+        className="btn-group"
+        role="tablist"
+        aria-label="Hub sections"
+        style={{ borderBottom: '1px solid var(--border-soft)', flexShrink: 0 }}
       >
         {TABS.map((t) => (
           <button
             key={t.id}
-            className={`chip${tab === t.id ? ' chip--active' : ''}`}
+            role="tab"
+            aria-selected={tab === t.id}
+            className={`btn-group__item${tab === t.id ? ' btn-group__item--active' : ''}`}
             onClick={() => {
               buzz('tap');
               setTab(t.id);

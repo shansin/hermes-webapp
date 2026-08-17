@@ -1,20 +1,14 @@
 /* ---------------------------------------------------------------------------
    Hermes Control — design tokens and app shell.
 
-   Phone-first: every interactive target is >=44px, the layout is driven by
-   dynamic viewport units (dvh) so the Android URL bar collapsing doesn't
-   shift the composer, and safe-area insets keep content clear of the gesture
-   bar.
+   Phone-first, following Material 3 Expressive: every interactive target
+   reaches Material's 48dp minimum (some are painted smaller and expand their
+   hit area with an ::after), the layout is driven by dynamic viewport units
+   (dvh) so the Android URL bar collapsing doesn't shift the composer, and
+   safe-area insets keep content clear of the gesture bar.
    --------------------------------------------------------------------------- */
 
 :root {
-  --bg: #0b0b0f;
-  --bg-elev: #14141b;
-  --bg-elev-2: #1c1c26;
-  --bg-input: #1a1a23;
-  --border: #2a2a36;
-  --border-soft: #21212b;
-
   --text: #e9e9f0;
   --text-dim: #a0a0b0;
   --text-faint: #6c6c7e;
@@ -29,12 +23,59 @@
   --error: #ef5350;
   --info: #4dabf7;
 
-  --radius: 14px;
-  --radius-sm: 9px;
-  --radius-lg: 20px;
+  /* --- Material 3 surface containers -------------------------------------
+     Material reads elevation from a ladder of container tones rather than
+     from shadows. These are the role names; --bg-* below alias onto them so
+     existing rules keep working, and adopting the roles is what a future
+     dynamic-colour pass would map the wallpaper palette onto. */
+  --surface: #0b0b0f;
+  --surface-container-lowest: #08080b;
+  --surface-container-low: #14141b;
+  --surface-container: #1c1c26;
+  --surface-container-high: #23232e;
+  --surface-container-highest: #2b2b38;
+  --outline: #2a2a36;
+  --outline-variant: #21212b;
 
-  --tabbar-h: 58px;
-  --header-h: 52px;
+  --bg: var(--surface);
+  --bg-elev: var(--surface-container-low);
+  --bg-elev-2: var(--surface-container);
+  --bg-input: #1a1a23;
+  --border: var(--outline);
+  --border-soft: var(--outline-variant);
+
+  /* --- Material 3 shape scale --------------------------------------------
+     Seven steps rather than three. `--radius*` alias onto the scale so the
+     existing components keep their current shape until each is moved over. */
+  --shape-xs: 4px;
+  --shape-sm: 8px;
+  --shape-md: 12px;
+  --shape-lg: 16px;
+  --shape-xl: 28px;
+  --shape-full: 999px;
+
+  --radius: var(--shape-md);
+  --radius-sm: var(--shape-sm);
+  --radius-lg: var(--shape-xl);
+
+  /* --- Material 3 Expressive motion --------------------------------------
+     Expressive replaced fixed duration+easing with spring physics. `linear()`
+     samples a real spring curve, so spatial changes settle with a slight
+     overshoot the way a physical object does. Effects — colour, opacity —
+     must never overshoot, so they keep a standard decelerate curve. */
+  --motion-spatial: 500ms
+    linear(0, 0.006, 0.247, 0.615, 0.874, 1.011, 1.049, 1.039, 1.015, 1.001, 0.997, 0.999, 1);
+  --motion-spatial-fast: 350ms
+    linear(0, 0.014, 0.32, 0.702, 0.923, 1.019, 1.041, 1.028, 1.008, 0.999, 1);
+  --motion-effects: 200ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* Material's minimum touch target. Larger than the 44px iOS figure. */
+  --tap-min: 48px;
+
+  --tabbar-h: 80px;
+  /* Material's small top app bar. 56 could not fit a title plus a
+     secondary target without them overlapping. */
+  --header-h: 64px;
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -42,25 +83,46 @@
   --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
 
+  /* --- Material 3 type scale ---------------------------------------------
+     The slots this app actually uses, at their specified sizes. */
+  --type-headline-sm: 24px;
+  --type-title-lg: 22px;
+  --type-title-md: 16px;
+  --type-title-sm: 14px;
+  --type-body-lg: 16px;
+  --type-body-md: 14px;
+  --type-body-sm: 12px;
+  --type-label-lg: 14px;
+  --type-label-md: 12px;
+  --type-label-sm: 11px;
+
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 }
 
 [data-theme='amoled'] {
-  --bg: #000000;
-  --bg-elev: #0a0a0d;
-  --bg-elev-2: #131318;
+  --surface: #000000;
+  --surface-container-lowest: #000000;
+  --surface-container-low: #0a0a0d;
+  --surface-container: #131318;
+  --surface-container-high: #1a1a20;
+  --surface-container-highest: #222229;
+  --outline: #232329;
+  --outline-variant: #171719;
+
   --bg-input: #101014;
-  --border: #232329;
-  --border-soft: #171719;
 }
 
 [data-theme='light'] {
-  --bg: #f7f7fa;
-  --bg-elev: #ffffff;
-  --bg-elev-2: #f0f0f5;
+  --surface: #f7f7fa;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #ffffff;
+  --surface-container: #f0f0f5;
+  --surface-container-high: #e8e8ef;
+  --surface-container-highest: #e0e0ea;
+  --outline: #dcdce5;
+  --outline-variant: #e8e8ef;
+
   --bg-input: #ffffff;
-  --border: #dcdce5;
-  --border-soft: #e8e8ef;
 
   --text: #17171f;
   --text-dim: #5a5a6b;
@@ -165,20 +227,47 @@ a {
 }
 
 .header__sub {
-  font-size: 11.5px;
+  font-size: var(--type-label-md);
   color: var(--text-faint);
   font-weight: 400;
+  position: relative;
 }
 
+/* The model picker is a thin strip of text; give it a real target. */
+button.header__sub::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: -8px;
+  top: 50%;
+  height: var(--tap-min);
+  transform: translateY(-50%);
+}
+
+/* Painted at 40px but with a 48dp hit area — Material's minimum target
+   without having to inflate the visual weight of every header button. */
 .icon-btn {
   width: 40px;
   height: 40px;
   display: grid;
   place-items: center;
-  border-radius: 11px;
+  border-radius: var(--shape-md);
   color: var(--text-dim);
   flex-shrink: 0;
-  transition: background 0.15s, color 0.15s;
+  position: relative;
+  transition:
+    background-color var(--motion-effects),
+    color var(--motion-effects);
+}
+
+.icon-btn::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--tap-min);
+  height: var(--tap-min);
+  transform: translate(-50%, -50%);
 }
 
 .icon-btn:active {
@@ -192,12 +281,15 @@ a {
 
 /* --- tab bar -------------------------------------------------------------- */
 
+/* Material's navigation bar: 80dp tall, and the selected destination carries
+   a filled indicator pill behind its icon. The pill — not the colour change —
+   is what makes the bar read as Material. */
 .tabbar {
   height: calc(var(--tabbar-h) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  background: color-mix(in srgb, var(--bg-elev) 94%, transparent);
+  background: color-mix(in srgb, var(--surface-container) 94%, transparent);
   backdrop-filter: blur(14px);
   border-top: 1px solid var(--border-soft);
   flex-shrink: 0;
@@ -209,21 +301,61 @@ a {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 4px;
   text-decoration: none;
-  color: var(--text-faint);
-  font-size: 10.5px;
+  color: var(--text-dim);
+  font-size: var(--type-label-md);
   font-weight: 550;
   letter-spacing: 0.01em;
-  transition: color 0.15s;
+  transition: color var(--motion-effects);
+  /* The whole column is the target, comfortably past 48dp. */
+  min-height: var(--tap-min);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 64×32dp pill. Width animates on the spatial spring so selection grows into
+   place rather than cutting. */
+.tabbar__indicator {
+  width: 64px;
+  height: 32px;
+  border-radius: var(--shape-full);
+  display: grid;
+  place-items: center;
+  background: transparent;
+  transition:
+    background-color var(--motion-effects),
+    transform var(--motion-spatial);
+  transform: scaleX(0.55);
+}
+
+.tabbar__item--active .tabbar__indicator {
+  background: var(--accent-soft);
+  transform: scaleX(1);
+}
+
+/* The icon must not inherit the pill's horizontal squash. */
+.tabbar__indicator > * {
+  transition: transform var(--motion-spatial);
+  transform: scaleX(1.818);
+}
+
+.tabbar__item--active .tabbar__indicator > * {
+  transform: scaleX(1);
 }
 
 .tabbar__item--active {
   color: var(--accent);
 }
 
-.tabbar__item:active {
-  opacity: 0.6;
+.tabbar__item:active .tabbar__indicator {
+  background: var(--surface-container-highest);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tabbar__indicator,
+  .tabbar__indicator > * {
+    transform: none;
+  }
 }
 
 /* --- generic surfaces ----------------------------------------------------- */
@@ -264,25 +396,30 @@ a {
   color: var(--text-dim);
 }
 
+/* Material buttons are fully rounded and morph toward a squarer shape while
+   pressed — the shape change is the press feedback, not a scale-down. */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  min-height: 44px;
-  padding: 0 18px;
-  border-radius: var(--radius-sm);
+  min-height: var(--tap-min);
+  padding: 0 24px;
+  border-radius: var(--shape-full);
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   color: var(--text);
   font-weight: 550;
-  font-size: 15px;
-  transition: transform 0.1s, opacity 0.15s;
+  font-size: var(--type-label-lg);
+  transition:
+    border-radius var(--motion-spatial-fast),
+    background-color var(--motion-effects),
+    opacity var(--motion-effects);
 }
 
 .btn:active {
-  transform: scale(0.97);
-  opacity: 0.85;
+  border-radius: var(--shape-md);
+  opacity: 0.9;
 }
 
 .btn--primary {
@@ -301,10 +438,18 @@ a {
   background: transparent;
 }
 
+/* Visually small, still a 48dp target via the expanded hit area. */
 .btn--sm {
   min-height: 36px;
-  padding: 0 12px;
-  font-size: 13.5px;
+  padding: 0 16px;
+  font-size: var(--type-label-md);
+  position: relative;
+}
+
+.btn--sm::after {
+  content: '';
+  position: absolute;
+  inset: calc((36px - var(--tap-min)) / 2) 0;
 }
 
 .btn:disabled {
@@ -321,7 +466,7 @@ a {
   border-radius: var(--radius-sm);
   color: var(--text);
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--motion-effects);
 }
 
 .field:focus {
@@ -336,20 +481,208 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 5px 11px;
-  border-radius: 999px;
+  padding: 7px 14px;
+  border-radius: var(--shape-full);
   background: var(--bg-elev-2);
   border: 1px solid var(--border-soft);
   color: var(--text-dim);
-  font-size: 12.5px;
+  font-size: var(--type-label-md);
   font-weight: 500;
   white-space: nowrap;
+  position: relative;
+}
+
+/* Chips stay visually compact but reach the 48dp target vertically. */
+.chip::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: var(--tap-min);
+  transform: translateY(-50%);
 }
 
 .chip--active {
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* --- button group --------------------------------------------------------
+   Material 3 Expressive's connected button group: a run of segments where
+   the selected one morphs wider and rounder while its neighbours stay
+   compact. Used for the Kanban columns and the Hub tabs. */
+
+.btn-group {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 8px 14px;
+  /* Fade both ends: the row can be scrolled past content in either
+     direction, and a hard cut reads as a clipped item rather than as
+     "there is more this way". */
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 20px,
+    #000 calc(100% - 20px),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 20px,
+    #000 calc(100% - 20px),
+    transparent 100%
+  );
+}
+
+.btn-group::-webkit-scrollbar {
+  display: none;
+}
+
+.btn-group__item {
+  flex-shrink: 0;
+  min-height: var(--tap-min);
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: var(--shape-sm);
+  background: var(--surface-container);
+  color: var(--text-dim);
+  font-size: var(--type-label-lg);
+  font-weight: 550;
+  white-space: nowrap;
+  border: none;
+  transition:
+    border-radius var(--motion-spatial),
+    background-color var(--motion-effects),
+    color var(--motion-effects);
+}
+
+.btn-group__item:first-child { border-start-start-radius: var(--shape-xl); border-end-start-radius: var(--shape-xl); }
+.btn-group__item:last-child { border-start-end-radius: var(--shape-xl); border-end-end-radius: var(--shape-xl); }
+
+.btn-group__item--active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: var(--shape-xl);
+}
+
+.btn-group__item:active {
+  background: var(--surface-container-highest);
+}
+
+/* Count badge, so the board's state is legible without opening each column. */
+.btn-group__count {
+  font-size: var(--type-label-sm);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: var(--shape-full);
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+/* --- FAB -----------------------------------------------------------------
+   The primary create action, moved out of the top-right corner into the
+   thumb arc. Sits above the navigation bar and clear of the gesture inset. */
+
+.fab {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  min-width: 56px;
+  height: 56px;
+  padding: 0 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: var(--shape-lg);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: var(--type-label-lg);
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  z-index: 20;
+  transition:
+    border-radius var(--motion-spatial-fast),
+    transform var(--motion-spatial);
+}
+
+/* Shape morph on press — Expressive's signature button feedback. */
+.fab:active {
+  border-radius: var(--shape-xl);
+}
+
+.fab:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* A floating button covers whatever it floats over, so any list that carries
+   one reserves the space at the end rather than hiding its last row. */
+.has-fab {
+  padding-bottom: 88px !important;
+}
+
+/* --- switch --------------------------------------------------------------
+   Replaces the raw checkbox, which rendered as the stock system tick and was
+   the one control visibly outside the theme. */
+
+.switch {
+  position: relative;
+  width: 52px;
+  height: 32px;
+  border-radius: var(--shape-full);
+  background: var(--surface-container-highest);
+  border: 2px solid var(--outline);
+  flex-shrink: 0;
+  transition:
+    background-color var(--motion-effects),
+    border-color var(--motion-effects);
+}
+
+.switch[aria-checked='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch__handle {
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--shape-full);
+  background: var(--text-dim);
+  display: grid;
+  place-items: center;
+  transform: translateY(-50%);
+  transition:
+    left var(--motion-spatial),
+    width var(--motion-spatial),
+    height var(--motion-spatial),
+    background-color var(--motion-effects);
+}
+
+.switch[aria-checked='true'] .switch__handle {
+  left: 22px;
+  width: 24px;
+  height: 24px;
+  background: var(--accent-text);
+}
+
+.switch__handle svg {
+  opacity: 0;
+  transition: opacity var(--motion-effects);
+}
+
+.switch[aria-checked='true'] .switch__handle svg {
+  opacity: 1;
 }
 
 /* --- skeletons ------------------------------------------------------------ */
@@ -417,7 +750,7 @@ a {
   max-height: 88dvh;
   display: flex;
   flex-direction: column;
-  animation: sheet-in 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: sheet-in var(--motion-spatial-fast);
 }
 
 .sheet__grip {
@@ -518,4 +851,39 @@ a {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* --- loading indicator ---------------------------------------------------
+   Material 3 Expressive's replacement for indeterminate circular progress on
+   waits under five seconds: a shape that morphs as it rotates rather than a
+   plain spinning arc. Approximated here by animating border-radius through
+   the shape scale, which is as close as CSS gets without a path morph. */
+
+@keyframes m3-loader-shape {
+  0%   { border-radius: 42% 58% 63% 37% / 45% 40% 60% 55%; }
+  25%  { border-radius: 58% 42% 37% 63% / 60% 55% 45% 40%; }
+  50%  { border-radius: 63% 37% 42% 58% / 40% 60% 55% 45%; }
+  75%  { border-radius: 37% 63% 58% 42% / 55% 45% 40% 60%; }
+  100% { border-radius: 42% 58% 63% 37% / 45% 40% 60% 55%; }
+}
+
+.loader {
+  width: 28px;
+  height: 28px;
+  background: var(--accent);
+  animation:
+    m3-loader-shape 1.6s ease-in-out infinite,
+    spin 2.4s linear infinite;
+  flex-shrink: 0;
+}
+
+.loader--sm { width: 18px; height: 18px; }
+.loader--muted { background: var(--text-faint); }
+
+@media (prefers-reduced-motion: reduce) {
+  .loader {
+    animation: none;
+    border-radius: var(--shape-full);
+    opacity: 0.7;
+  }
 }

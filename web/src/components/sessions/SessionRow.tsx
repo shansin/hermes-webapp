@@ -27,6 +27,11 @@ interface Props {
   session: Row;
   selected: boolean;
   selecting: boolean;
+  /**
+   * The model every visible row shares, if there is one. Repeating it down the
+   * whole list is noise, so a row hides its model when it matches.
+   */
+  commonModel?: string | null;
   onResume: () => void;
   onDelete: () => void;
   onToggleSelect: () => void;
@@ -37,11 +42,13 @@ export function SessionRowItem({
   session,
   selected,
   selecting,
+  commonModel,
   onResume,
   onDelete,
   onToggleSelect,
   onLongPress,
 }: Props) {
+  const modelIsRedundant = Boolean(commonModel) && session.model === commonModel;
   const [dx, setDx] = useState(0);
   const startX = useRef(0);
   const startY = useRef(0);
@@ -138,7 +145,7 @@ export function SessionRowItem({
         style={{
           position: 'relative',
           transform: `translateX(${dx}px)`,
-          transition: dx === 0 ? 'transform 0.2s cubic-bezier(0.2,0.8,0.2,1)' : 'none',
+          transition: dx === 0 ? 'transform var(--motion-spatial)' : 'none',
           background: selected ? 'var(--accent-soft)' : 'var(--bg-elev)',
           border: `1px solid ${selected ? 'var(--accent)' : 'var(--border-soft)'}`,
           borderRadius: 'var(--radius-sm)',
@@ -167,20 +174,24 @@ export function SessionRowItem({
         </span>
 
         <div style={{ flex: 1, minWidth: 0 }}>
+          {/* Two lines rather than one: most titles are sentences, and a
+              single-line ellipsis was cutting them mid-word. */}
           <div
             style={{
               fontWeight: 550,
-              fontSize: 14.5,
+              fontSize: 'var(--type-title-sm)',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
               overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
+              lineHeight: 1.35,
             }}
           >
             {title}
           </div>
           <div
             style={{
-              fontSize: 11.5,
+              fontSize: 'var(--type-label-sm)',
               color: 'var(--text-faint)',
               display: 'flex',
               gap: 8,
@@ -188,7 +199,7 @@ export function SessionRowItem({
             }}
           >
             <span>{session.message_count} msg</span>
-            {session.model && (
+            {session.model && !modelIsRedundant && (
               <span
                 style={{
                   overflow: 'hidden',

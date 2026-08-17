@@ -18,6 +18,7 @@ import {
   type SessionRow,
 } from '../api/sessions';
 import { useUi } from '../store/ui';
+import { useSession } from '../store/session';
 import { buzz } from '../lib/haptics';
 
 export function SessionsScreen() {
@@ -48,6 +49,14 @@ export function SessionsScreen() {
     }
     return out;
   }, [data]);
+
+  /**
+   * The model to treat as unremarkable: whatever is configured right now.
+   * Nearly every row ran on it, so printing it on each one repeated a single
+   * identical string down the whole list. A row shows its model only when it
+   * differs — which is the case actually worth noticing.
+   */
+  const commonModel = useSession((s) => s.info?.model) ?? null;
 
   const resume = (id: string) => {
     buzz('tap');
@@ -129,9 +138,6 @@ export function SessionsScreen() {
             <button className="icon-btn" onClick={() => setSearching(true)} aria-label="Search">
               <IconSearch size={20} />
             </button>
-            <button className="icon-btn" onClick={() => navigate('/chat?new=1')} aria-label="New chat">
-              <IconPlus size={21} />
-            </button>
           </>
         )}
       </div>
@@ -147,7 +153,7 @@ export function SessionsScreen() {
             await refetch();
           }}
         >
-          <div style={{ padding: '8px 12px 16px' }}>
+          <div className="has-fab" style={{ padding: '8px 12px 16px' }}>
             {showingSearch ? (
               <>
                 {search.isLoading && <div style={{ color: 'var(--text-faint)', padding: 12 }}>Searching…</div>}
@@ -215,6 +221,7 @@ export function SessionsScreen() {
                         session={s}
                         selected={selected.has(s.id)}
                         selecting={selecting}
+                        commonModel={commonModel}
                         onResume={() => resume(s.id)}
                         onDelete={() => void removeOne(s.id)}
                         onToggleSelect={() => toggle(s.id)}
@@ -227,6 +234,12 @@ export function SessionsScreen() {
             )}
           </div>
         </PullToRefresh>
+      )}
+
+      {!searching && selected.size === 0 && (
+        <button className="fab" onClick={() => navigate('/chat?new=1')} aria-label="New chat">
+          <IconPlus size={22} />
+        </button>
       )}
     </div>
   );

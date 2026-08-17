@@ -21,9 +21,15 @@ import { ErrorNote, SkeletonList, formatTokens, relTime } from '../shared/misc';
 import { useModelAnalytics, useUsageAnalytics } from '../../api/hub';
 import { useSession } from '../../store/session';
 
+/**
+ * Output runs about two orders of magnitude below input — a reply is small
+ * next to the context that produced it. On one shared linear axis the output
+ * line pins flat to zero and reads as "no output", so each series gets its own
+ * axis and the legend says which side it belongs to.
+ */
 const SERIES = [
-  { key: 'input', label: 'Input', color: 'var(--series-1)' },
-  { key: 'output', label: 'Output', color: 'var(--series-2)' },
+  { key: 'input', label: 'Input', color: 'var(--series-1)', axis: 'left' },
+  { key: 'output', label: 'Output', color: 'var(--series-2)', axis: 'right' },
 ] as const;
 
 function UsageTooltip({ active, payload, label }: TooltipProps<number, string>) {
@@ -48,14 +54,34 @@ export function ModelsTab() {
   const info = useSession((s) => s.info);
 
   // Last 14 days is what fits legibly on a phone.
+  //
+  // The API only returns days that saw traffic, but the axis renders each row
+  // as one evenly-spaced category — so a gap of several idle days was drawn as
+  // a single step, making the line lie about when usage actually happened.
+  // Fill the gaps with explicit zeroes so the spacing is a true timeline.
   const daily = useMemo(() => {
     const rows = usage.data?.daily ?? [];
-    return rows.slice(-14).map((d) => ({
-      day: d.day.slice(5), // MM-DD
-      input: d.input_tokens,
-      output: d.output_tokens,
-      sessions: d.sessions,
-    }));
+    if (rows.length === 0) return [];
+
+    const byDay = new Map(rows.map((d) => [d.day, d]));
+    const out: { day: string; input: number; output: number; sessions: number }[] = [];
+
+    const cursor = new Date(`${rows[0]!.day}T00:00:00Z`);
+    const last = new Date(`${rows[rows.length - 1]!.day}T00:00:00Z`);
+
+    while (cursor <= last) {
+      const iso = cursor.toISOString().slice(0, 10);
+      const hit = byDay.get(iso);
+      out.push({
+        day: iso.slice(5), // MM-DD
+        input: hit?.input_tokens ?? 0,
+        output: hit?.output_tokens ?? 0,
+        sessions: hit?.sessions ?? 0,
+      });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+
+    return out.slice(-14);
   }, [usage.data]);
 
   const ranked = useMemo(() => {
@@ -100,6 +126,9 @@ export function ModelsTab() {
                 <span className="viz-legend__item" key={s.key}>
                   <span className="viz-swatch" style={{ background: s.color }} />
                   {s.label}
+                  <span style={{ color: 'var(--text-faint)', fontSize: 10.5 }}>
+                    {s.axis === 'left' ? '(left)' : '(right)'}
+                  </span>
                 </span>
               ))}
             </div>
@@ -116,7 +145,8 @@ export function ModelsTab() {
                   minTickGap={18}
                 />
                 <YAxis
-                  tick={{ fontSize: 10.5, fill: 'var(--viz-axis)' }}
+                  yAxisId="left"
+                  tick={{ fontSize: 10.5, fill: 'var(--series-1)' }}
                   tickLine={false}
                   axisLine={false}
                   tickFormatter={(v: number) => formatTokens(v)}
@@ -124,10 +154,20 @@ export function ModelsTab() {
                   // narrower axis silently clips the leading digit.
                   width={56}
                 />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fontSize: 10.5, fill: 'var(--series-2)' }}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v: number) => formatTokens(v)}
+                  width={48}
+                />
                 <Tooltip content={<UsageTooltip />} cursor={{ stroke: 'var(--viz-axis)', strokeWidth: 1 }} />
                 {SERIES.map((s) => (
                   <Line
                     key={s.key}
+                    yAxisId={s.axis}
                     type="monotone"
                     dataKey={s.key}
                     name={s.label}

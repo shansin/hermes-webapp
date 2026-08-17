@@ -216,6 +216,8 @@ export function useHealth() {
         version: string | null;
         upstream: string;
         hasToken: boolean;
+        /** Where another device on the LAN should point. Null if undetectable. */
+        lanUrl?: string | null;
       }>('/healthz'),
     refetchInterval: 30_000,
     retry: false,

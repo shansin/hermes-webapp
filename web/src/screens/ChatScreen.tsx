@@ -15,6 +15,7 @@ import { ApprovalSheet } from '../components/chat/ApprovalSheet';
 import { ModelSheet } from '../components/chat/ModelSheet';
 import { ContextSheet } from '../components/chat/ContextSheet';
 import { IconPlus, IconChevron } from '../components/shared/Icons';
+import { Loader } from '../components/shared/misc';
 import { useSession } from '../store/session';
 import { useUi } from '../store/ui';
 import { hermes } from '../ws/client';
@@ -175,9 +176,7 @@ export function ChatScreen() {
 
       {booting && !sessionId ? (
         <div className="empty">
-          <div className="spin" style={{ fontSize: 26 }}>
-            ◌
-          </div>
+          <Loader />
           <div className="empty__title">Starting a session…</div>
         </div>
       ) : (

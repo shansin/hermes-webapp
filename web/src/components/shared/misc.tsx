@@ -1,8 +1,53 @@
 import type { ReactNode } from 'react';
 import { useUi } from '../../store/ui';
+import { IconCheck } from './Icons';
 
 export function Skeleton({ h = 60, mb = 10 }: { h?: number; mb?: number }) {
   return <div className="skeleton" style={{ height: h, marginBottom: mb }} />;
+}
+
+/**
+ * Material switch — the correct control for a setting that applies at once,
+ * and a replacement for the raw checkbox, which rendered as the stock system
+ * tick regardless of theme. The handle grows and carries a check when on.
+ */
+export function Switch({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      className="switch"
+      onClick={() => onChange(!checked)}
+    >
+      <span className="switch__handle">
+        <IconCheck size={14} />
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Material 3 Expressive's loading indicator, which replaces indeterminate
+ * circular progress for waits under about five seconds.
+ */
+export function Loader({ size = 'md', muted = false }: { size?: 'sm' | 'md'; muted?: boolean }) {
+  return (
+    <div
+      className={`loader${size === 'sm' ? ' loader--sm' : ''}${muted ? ' loader--muted' : ''}`}
+      role="status"
+      aria-label="Loading"
+    />
+  );
 }
 
 export function SkeletonList({ n = 5, h = 60 }: { n?: number; h?: number }) {
