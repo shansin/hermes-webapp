@@ -9,7 +9,8 @@ import { useRef, useState } from 'react';
 import { IconTrash, IconChat } from '../shared/Icons';
 import { relTime } from '../shared/misc';
 import { buzz } from '../../lib/haptics';
-import type { SessionRow as Row } from '../../api/sessions';
+import { isOn, type SessionRow as Row } from '../../api/sessions';
+import { parseTags, tagHue } from '../../lib/sessionTags';
 
 const COMMIT_PX = 96;
 const MAX_PX = 130;
@@ -36,6 +37,10 @@ interface Props {
   onDelete: () => void;
   onToggleSelect: () => void;
   onLongPress: () => void;
+  /** Opens the pin / archive / export sheet for this session. */
+  onActions: () => void;
+  /** Tapping a tag chip filters the list to it. */
+  onPickTag: (tag: string) => void;
 }
 
 export function SessionRowItem({
@@ -47,8 +52,12 @@ export function SessionRowItem({
   onDelete,
   onToggleSelect,
   onLongPress,
+  onActions,
+  onPickTag,
 }: Props) {
   const modelIsRedundant = Boolean(commonModel) && session.model === commonModel;
+  const pinned = isOn(session.pinned);
+  const archived = isOn(session.archived);
   const [dx, setDx] = useState(0);
   const startX = useRef(0);
   const startY = useRef(0);
@@ -115,7 +124,10 @@ export function SessionRowItem({
     axis.current = 'none';
   };
 
-  const title = session.title || 'Untitled session';
+  // `#tag` in a title is how tags are stored — show them as chips and keep the
+  // title itself clean.
+  const parsed = parseTags(session.title);
+  const title = parsed.text || 'Untitled session';
 
   return (
     <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 'var(--radius-sm)' }}>
@@ -173,6 +185,16 @@ export function SessionRowItem({
           {SOURCE_ICON[session.source ?? ''] ?? '·'}
         </span>
 
+        {pinned && (
+          <span
+            aria-label="Pinned"
+            title="Pinned"
+            style={{ color: 'var(--accent)', fontSize: 13, flexShrink: 0 }}
+          >
+            ★
+          </span>
+        )}
+
         <div style={{ flex: 1, minWidth: 0 }}>
           {/* Two lines rather than one: most titles are sentences, and a
               single-line ellipsis was cutting them mid-word. */}
@@ -198,7 +220,23 @@ export function SessionRowItem({
               marginTop: 2,
             }}
           >
+            {parsed.tags.map((t) => (
+              <button
+                key={t}
+                className="tag-chip"
+                style={{ '--tag-hue': tagHue(t) } as React.CSSProperties}
+                onTouchStart={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  buzz('tap');
+                  onPickTag(t);
+                }}
+              >
+                #{t}
+              </button>
+            ))}
             <span>{session.message_count} msg</span>
+            {archived && <span>Archived</span>}
             {session.model && !modelIsRedundant && (
               <span
                 style={{
@@ -217,6 +255,25 @@ export function SessionRowItem({
         <span style={{ fontSize: 11.5, color: 'var(--text-faint)', flexShrink: 0 }}>
           {relTime(session.started_at)}
         </span>
+
+        {!selecting && (
+          // Swiping covers resume and delete; everything else needs somewhere
+          // to live. Stop the touch here so opening the menu can't also arm
+          // the row's long-press or swipe.
+          <button
+            className="icon-btn"
+            aria-label="Session actions"
+            onTouchStart={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              buzz('tap');
+              onActions();
+            }}
+            style={{ flexShrink: 0, minWidth: 32, minHeight: 32, marginRight: -4 }}
+          >
+            ⋯
+          </button>
+        )}
       </div>
     </div>
   );

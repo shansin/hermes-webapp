@@ -1,11 +1,12 @@
 import { NavLink, useLocation } from 'react-router-dom';
-import { IconChat, IconHub, IconKanban, IconSessions } from './Icons';
+import { IconChat, IconFolder, IconHub, IconKanban, IconSessions } from './Icons';
 import { buzz } from '../../lib/haptics';
 
 const TABS = [
   { to: '/chat', label: 'Chat', Icon: IconChat },
   { to: '/sessions', label: 'Sessions', Icon: IconSessions },
   { to: '/kanban', label: 'Kanban', Icon: IconKanban },
+  { to: '/files', label: 'Files', Icon: IconFolder },
   { to: '/hub', label: 'Hub', Icon: IconHub },
 ];
 

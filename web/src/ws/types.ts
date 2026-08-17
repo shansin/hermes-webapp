@@ -76,6 +76,41 @@ export const ToolCompleteSchema = z
   })
   .passthrough();
 
+/**
+ * `subagent.*` — a delegated child agent's activity, relayed onto the *parent*
+ * session. Four types reach us: `start`, `tool`, `thinking` and `complete`.
+ *
+ * `subagent.text` deliberately never arrives here — the gateway skips the
+ * parent emit for the child's reply tokens, since the parent shows a child as a
+ * spawn card rather than inlining its whole reply. Don't add a handler for it.
+ *
+ * Every identity field is optional: older emitters omit them, and the gateway's
+ * own comment says clients should fall back to flat rendering when they do.
+ */
+export const SubagentEventSchema = z
+  .object({
+    goal: z.string().optional(),
+    task_count: z.number().optional(),
+    task_index: z.number().optional(),
+    subagent_id: z.string().optional(),
+    parent_id: z.string().optional(),
+    child_session_id: z.string().optional(),
+    depth: z.number().optional(),
+    model: z.string().optional(),
+    tool_name: z.string().optional(),
+    /** Human-readable preview of what the child is doing right now. */
+    text: z.string().optional(),
+    status: z.string().optional(),
+    summary: z.string().optional(),
+    duration_seconds: z.number().optional(),
+    input_tokens: z.number().optional(),
+    output_tokens: z.number().optional(),
+    files_read: z.array(z.string()).optional(),
+    files_written: z.array(z.string()).optional(),
+  })
+  .passthrough();
+export type SubagentEvent = z.infer<typeof SubagentEventSchema>;
+
 export const MessageCompleteSchema = z
   .object({
     text: z.string().optional(),

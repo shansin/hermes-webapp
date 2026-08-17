@@ -9,6 +9,7 @@ import { SkillsTab } from '../components/hub/SkillsTab';
 import { CronTab } from '../components/hub/CronTab';
 import { ModelsTab } from '../components/hub/ModelsTab';
 import { SettingsTab } from '../components/hub/SettingsTab';
+import { ProfilesTab } from '../components/hub/ProfilesTab';
 import { buzz } from '../lib/haptics';
 
 const TABS = [
@@ -16,6 +17,7 @@ const TABS = [
   { id: 'skills', label: 'Skills' },
   { id: 'cron', label: 'Cron' },
   { id: 'models', label: 'Models' },
+  { id: 'profiles', label: 'Profiles' },
   { id: 'settings', label: 'Settings' },
 ] as const;
 
@@ -69,6 +71,7 @@ export function HubScreen() {
         {tab === 'skills' && <SkillsTab />}
         {tab === 'cron' && <CronTab />}
         {tab === 'models' && <ModelsTab />}
+        {tab === 'profiles' && <ProfilesTab />}
         {tab === 'settings' && <SettingsTab />}
       </div>
     </div>

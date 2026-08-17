@@ -22,6 +22,7 @@ import {
   SessionInfoSchema,
   SessionTitleSchema,
   StatusUpdateSchema,
+  SubagentEventSchema,
   TextDeltaSchema,
   ToolCompleteSchema,
   ToolStartSchema,
@@ -33,7 +34,17 @@ import {
   type Usage,
 } from '../ws/types';
 import { hermes } from '../ws/client';
+import { undoTurns } from '../api/gateway';
 import { buzz } from '../lib/haptics';
+
+/**
+ * When a message happened, or null when that isn't known.
+ *
+ * Replayed history carries no timestamps — `session.history` projects role and
+ * text only — so restored messages get null rather than the moment the app
+ * loaded them, which would be a plausible-looking lie on every line.
+ */
+export type MessageTime = number | null;
 
 export type ChatMessage =
   /**
@@ -41,17 +52,39 @@ export type ChatMessage =
    * back an expanded, model-facing prompt, but the transcript must keep
    * showing the short invocation the user actually typed.
    */
-  | { kind: 'user'; id: string; text: string; displayText?: string; at: number }
+  | { kind: 'user'; id: string; text: string; displayText?: string; at: MessageTime }
   /** Local output — slash-command results, and why one wouldn't run. */
-  | { kind: 'notice'; id: string; text: string; tone: 'info' | 'error'; label?: string; at: number }
+  | { kind: 'notice'; id: string; text: string; tone: 'info' | 'error'; label?: string; at: MessageTime }
   | {
       kind: 'assistant';
       id: string;
       text: string;
       reasoning?: string;
-      at: number;
+      at: MessageTime;
       usage?: Usage;
       interrupted?: boolean;
+    }
+  /**
+   * A delegated child agent. One card per spawn, updated in place as its
+   * `subagent.*` events arrive — the child's own reply body never reaches the
+   * parent, so the card shows progress and a final summary, not a transcript.
+   */
+  | {
+      kind: 'subagent';
+      id: string;
+      /** Stable key across the spawn's events. */
+      agentId: string;
+      goal: string;
+      model?: string;
+      depth?: number;
+      /** What it's doing right now, from the latest tool/thinking event. */
+      activity?: string;
+      summary?: string;
+      status: 'running' | 'done';
+      durationS?: number;
+      tokens?: number;
+      filesWritten?: string[];
+      at: MessageTime;
     }
   | {
       kind: 'tool';
@@ -63,7 +96,7 @@ export type ChatMessage =
       result?: unknown;
       durationS?: number;
       status: 'running' | 'done';
-      at: number;
+      at: MessageTime;
     };
 
 interface SessionState {
@@ -87,6 +120,15 @@ interface SessionState {
   approval: (ApprovalRequest & { id: number }) | null;
   error: string | null;
 
+  /**
+   * A message typed while a turn was still running, held until it finishes.
+   * Only one is kept: a second send replaces it, which matches what the box
+   * shows and avoids silently building a queue nobody can see or edit.
+   */
+  queued: { text: string; display?: string } | null;
+  /** True while a rewind (retry / edit) is in flight. */
+  rewinding: boolean;
+
   // --- actions
   reset: () => void;
   adoptSession: (r: { sessionId: string; storedSessionId?: string; info?: SessionInfo }) => void;
@@ -94,6 +136,9 @@ interface SessionState {
   applyEvent: (params: { type: string; session_id?: string; payload?: unknown }) => void;
   submitPrompt: (text: string, opts?: { display?: string }) => Promise<void>;
   addNotice: (text: string, tone?: 'info' | 'error', label?: string) => void;
+  clearQueued: () => void;
+  retryLast: () => Promise<void>;
+  editTurn: (messageId: string, newText: string) => Promise<void>;
   interrupt: () => Promise<void>;
   respondApproval: (choice: string, all?: boolean) => Promise<void>;
   refreshUsage: () => Promise<void>;
@@ -105,6 +150,50 @@ const nextId = () => `m${++seq}`;
 
 /** Approval sheets are keyed so a stale sheet can't answer a newer request. */
 let approvalSeq = 0;
+
+function lastIndexOf<T>(items: T[], pred: (item: T) => boolean): number {
+  for (let i = items.length - 1; i >= 0; i--) if (pred(items[i]!)) return i;
+  return -1;
+}
+
+type Get = () => SessionState;
+type Set = (partial: Partial<SessionState>) => void;
+
+/**
+ * Rewind the conversation to the user message at `idx` and run it again.
+ *
+ * Retry and edit-and-regenerate are the same operation: both drop everything
+ * from a user turn onward and resubmit — retry resends what was there, edit
+ * substitutes new text. `undoTurns` counts in *user turns*, so the count is how
+ * many user messages sit at or after `idx`, not how many entries do.
+ *
+ * The backend is the source of truth for what got dropped, so the local
+ * transcript is only truncated once the rewind has actually succeeded.
+ */
+async function rewind(get: Get, set: Set, idx: number, replacement?: string): Promise<void> {
+  const { sessionId, messages, running, rewinding } = get();
+  const target = messages[idx];
+  if (!sessionId || rewinding || target?.kind !== 'user') return;
+  if (running) {
+    set({ error: 'Stop the current turn before editing or retrying.' });
+    return;
+  }
+
+  const turns = messages.slice(idx).filter((m) => m.kind === 'user').length;
+  set({ rewinding: true, error: null });
+  try {
+    const prefill = await undoTurns(sessionId, turns);
+    set({ messages: messages.slice(0, idx) });
+    const text = replacement ?? (prefill || target.text);
+    // A skill command keeps showing its short invocation, not the expansion —
+    // but only when resending it unchanged. Edited text is its own message.
+    await get().submitPrompt(text, replacement ? undefined : { display: target.displayText });
+  } catch (err) {
+    set({ error: err instanceof Error ? err.message : 'Could not rewind the conversation' });
+  } finally {
+    set({ rewinding: false });
+  }
+}
 
 export const useSession = create<SessionState>((set, get) => ({
   sessionId: null,
@@ -121,6 +210,8 @@ export const useSession = create<SessionState>((set, get) => ({
   contextBreakdown: null,
   approval: null,
   error: null,
+  queued: null,
+  rewinding: false,
 
   reset: () =>
     set({
@@ -138,6 +229,8 @@ export const useSession = create<SessionState>((set, get) => ({
       contextBreakdown: null,
       approval: null,
       error: null,
+      queued: null,
+      rewinding: false,
     }),
 
   adoptSession: ({ sessionId, storedSessionId, info }) =>
@@ -151,7 +244,8 @@ export const useSession = create<SessionState>((set, get) => ({
   loadHistory: (messages) => {
     const out: ChatMessage[] = [];
     for (const m of messages) {
-      const at = Date.now();
+      // Replayed history carries no time of its own — see `MessageTime`.
+      const at = null;
       if (m.role === 'user') {
         out.push({ kind: 'user', id: nextId(), text: m.text ?? '', at });
       } else if (m.role === 'assistant') {
@@ -175,7 +269,7 @@ export const useSession = create<SessionState>((set, get) => ({
         });
       }
     }
-    set({ messages: out });
+    set({ messages: out, queued: null });
   },
 
   applyEvent: ({ type, payload }) => {
@@ -286,6 +380,88 @@ export const useSession = create<SessionState>((set, get) => ({
             },
           ],
         });
+
+        // Release a message typed during the turn. An interrupted turn is the
+        // one case we hold it back: the user stopped the agent, so firing the
+        // next prompt at them immediately is the opposite of what they asked
+        // for — it stays in the composer for them to send or discard.
+        const { queued } = get();
+        if (queued && !interrupted) {
+          set({ queued: null });
+          void get().submitPrompt(queued.text, { display: queued.display });
+        }
+        return;
+      }
+
+      case 'subagent.start':
+      case 'subagent.tool':
+      case 'subagent.thinking':
+      case 'subagent.complete': {
+        const p = SubagentEventSchema.safeParse(payload);
+        if (!p.success) return;
+        const d = p.data;
+        // Identity fields are all optional. Fall back through the ids the
+        // gateway might send, then to a single flat card, so an older emitter
+        // degrades to one card rather than a new card per event.
+        const agentId = d.subagent_id || d.child_session_id || 'subagent';
+        const existing = s.messages.find(
+          (m) => m.kind === 'subagent' && m.agentId === agentId,
+        );
+
+        if (!existing) {
+          // A `tool`/`complete` with no preceding `start` still deserves a card.
+          buzz('tool');
+          set({
+            messages: [
+              ...s.messages,
+              {
+                kind: 'subagent',
+                id: nextId(),
+                agentId,
+                goal: d.goal || d.text || 'Delegated task',
+                model: d.model,
+                depth: d.depth,
+                activity: type === 'subagent.complete' ? undefined : (d.tool_name ?? d.text),
+                summary: d.summary,
+                status: type === 'subagent.complete' ? 'done' : 'running',
+                durationS: d.duration_seconds,
+                tokens:
+                  d.input_tokens != null || d.output_tokens != null
+                    ? (d.input_tokens ?? 0) + (d.output_tokens ?? 0)
+                    : undefined,
+                filesWritten: d.files_written,
+                at: Date.now(),
+              },
+            ],
+          });
+          return;
+        }
+
+        set({
+          messages: s.messages.map((m) => {
+            if (m.kind !== 'subagent' || m.agentId !== agentId) return m;
+            if (type === 'subagent.complete') {
+              return {
+                ...m,
+                status: 'done' as const,
+                activity: undefined,
+                summary: d.summary || d.text || m.summary,
+                durationS: d.duration_seconds ?? m.durationS,
+                tokens:
+                  d.input_tokens != null || d.output_tokens != null
+                    ? (d.input_tokens ?? 0) + (d.output_tokens ?? 0)
+                    : m.tokens,
+                filesWritten: d.files_written ?? m.filesWritten,
+              };
+            }
+            return {
+              ...m,
+              goal: d.goal || m.goal,
+              model: d.model ?? m.model,
+              activity: d.tool_name ?? d.text ?? m.activity,
+            };
+          }),
+        });
         return;
       }
 
@@ -338,8 +514,16 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   submitPrompt: async (text, opts) => {
-    const { sessionId } = get();
+    const { sessionId, running } = get();
     if (!sessionId || !text.trim()) return;
+
+    // The gateway runs one turn per session, so a message sent mid-turn would
+    // be rejected. Hold it instead and send it when the turn completes.
+    if (running) {
+      buzz('tap');
+      set({ queued: { text, display: opts?.display } });
+      return;
+    }
 
     set((st) => ({
       messages: [
@@ -363,6 +547,22 @@ export const useSession = create<SessionState>((set, get) => ({
     set((st) => ({
       messages: [...st.messages, { kind: 'notice', id: nextId(), text, tone, label, at: Date.now() }],
     })),
+
+  clearQueued: () => set({ queued: null }),
+
+  retryLast: async () => {
+    const { messages } = get();
+    const idx = lastIndexOf(messages, (m) => m.kind === 'user');
+    if (idx < 0) return;
+    await rewind(get, set, idx, undefined);
+  },
+
+  editTurn: async (messageId, newText) => {
+    const { messages } = get();
+    const idx = messages.findIndex((m) => m.id === messageId && m.kind === 'user');
+    if (idx < 0 || !newText.trim()) return;
+    await rewind(get, set, idx, newText);
+  },
 
   interrupt: async () => {
     const { sessionId } = get();

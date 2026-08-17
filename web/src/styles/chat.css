@@ -44,6 +44,22 @@
   overflow-wrap: anywhere;
 }
 
+/* The bubble is a button so its actions are reachable, but it must still read
+   as a bubble — no button chrome, and the text stays selectable. */
+.msg__bubble--tappable {
+  border: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.msg--user .msg__meta {
+  justify-content: flex-end;
+}
+
 .msg__meta {
   font-size: 11px;
   color: var(--text-faint);
@@ -520,6 +536,36 @@
   color: var(--text-faint);
 }
 
+.composer__queued {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  font-size: 12.5px;
+}
+
+.composer__queued-label {
+  flex-shrink: 0;
+  font-weight: 650;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.composer__queued-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
 .composer__row {
   display: flex;
   align-items: flex-end;
@@ -663,4 +709,121 @@
   display: flex;
   flex-direction: column;
   gap: 9px;
+}
+
+/* --- mermaid -------------------------------------------------------------- */
+
+/* Diagrams are laid out for desktop widths. Rather than scale one down to
+   illegibility, let it scroll sideways and offer a full-screen tap. */
+.mermaid {
+  margin: 0 0 0.9em;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  cursor: zoom-in;
+}
+
+.mermaid svg { max-width: none; height: auto; }
+
+.mermaid--pending {
+  color: var(--text-faint);
+  font-size: 12.5px;
+  cursor: default;
+}
+
+.mermaid__zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: var(--bg);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px;
+  cursor: zoom-out;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mermaid__zoom-inner svg { max-width: none; height: auto; }
+
+/* --- subagent card -------------------------------------------------------- */
+
+/* Indented with a left rule: a delegated agent's work happened one level down
+   from this conversation, and the card should read that way at a glance. */
+.subagent {
+  margin-left: 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
+  padding: 10px 12px;
+}
+
+.subagent--running {
+  border-left-color: color-mix(in srgb, var(--accent) 70%, var(--warn));
+}
+
+.subagent__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.subagent__icon {
+  flex-shrink: 0;
+  font-size: 15px;
+  color: var(--accent);
+  line-height: 1.4;
+}
+
+.subagent__main { flex: 1; min-width: 0; }
+
+.subagent__goal {
+  font-weight: 600;
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+
+.subagent__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.subagent__activity {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent__summary {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.subagent__files {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.subagent__filelist {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  margin-top: 2px;
 }

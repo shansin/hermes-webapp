@@ -25,6 +25,12 @@ function Svg({ size = 22, children, ...rest }: P) {
   );
 }
 
+export const IconFolder = (p: P) => (
+  <Svg {...p}>
+    <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h9A1.5 1.5 0 0 1 21 10v7.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5Z" />
+  </Svg>
+);
+
 export const IconChat = (p: P) => (
   <Svg {...p}>
     <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 21l1.9-5A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4Z" />

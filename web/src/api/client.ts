@@ -101,6 +101,18 @@ export const api = {
 
   del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 
+  /**
+   * DELETE carrying a JSON body. `/api/files` requires one — it takes the
+   * target path in the body rather than the query string, and rejects a
+   * bodyless request with a 422.
+   */
+  delBody: <T>(path: string, body: unknown) =>
+    request<T>(path, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
   /** Multipart upload (audio transcription, attachments). */
   upload: <T>(path: string, form: FormData) =>
     request<T>(path, { method: 'POST', body: form }),

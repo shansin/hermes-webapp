@@ -31,6 +31,22 @@ export default defineConfig({
           charts: ['recharts'],
           markdown: ['react-markdown', 'remark-gfm', 'rehype-highlight'],
         },
+        /**
+         * Mermaid splits itself into ~40 chunks — one per diagram type, plus
+         * cytoscape, katex, dagre and friends — under opaque hashed names like
+         * `chunk-2GRJ4B5K`. Emitting them into their own directory gives the
+         * service worker a stable way to exclude them from precache (see
+         * `globIgnores`), instead of maintaining a list of names that changes
+         * with every mermaid release.
+         */
+        chunkFileNames(chunk) {
+          const fromDiagrams = chunk.moduleIds.some((id) =>
+            // Deliberately not `d3`: recharts depends on it too, and pulling it
+            // in here would move the Hub's charts out of precache as well.
+            /node_modules\/(\.pnpm\/)?(mermaid|cytoscape|katex|dagre|@mermaid-js)/.test(id),
+          );
+          return fromDiagrams ? 'assets/diagrams/[name]-[hash].js' : 'assets/[name]-[hash].js';
+        },
       },
     },
   },
@@ -71,6 +87,15 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        /**
+         * Mermaid ships one lazy chunk per diagram type — architecture,
+         * swimlanes, cynefin, plus cytoscape and katex — and together they are
+         * larger than the rest of the app. Precaching them would quadruple what
+         * an install downloads to make diagrams nobody has asked for available
+         * offline. They stay network-loaded, and `runtimeCaching` below keeps
+         * whichever ones actually get used.
+         */
+        globIgnores: ['**/assets/diagrams/**'],
         navigateFallback: '/index.html',
         // Never let the SW answer an API call from cache by accident.
         navigateFallbackDenylist: [/^\/api/, /^\/healthz/],
@@ -82,6 +107,16 @@ export default defineConfig({
             options: {
               cacheName: 'hermes-session-history',
               expiration: { maxEntries: 60, maxAgeSeconds: 60 * 60 * 24 * 7 },
+            },
+          },
+          {
+            // The diagram chunks excluded from precache above: cache each one
+            // the first time a diagram actually needs it.
+            urlPattern: /\/assets\/diagrams\/.*\.js$/,
+            handler: 'StaleWhileRevalidate',
+            options: {
+              cacheName: 'hermes-lazy-chunks',
+              expiration: { maxEntries: 60, maxAgeSeconds: 60 * 60 * 24 * 30 },
             },
           },
           {

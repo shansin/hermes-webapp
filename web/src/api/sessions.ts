@@ -15,7 +15,20 @@ export interface SessionRow {
   estimated_cost_usd: number | null;
   cwd: string | null;
   parent_session_id: string | null;
+  /**
+   * The list endpoint returns real booleans; the single-session endpoint
+   * returns SQLite's 0/1. Read them through `isOn` rather than directly.
+   */
+  pinned: boolean | number | null;
+  archived: boolean | number | null;
 }
+
+/** Normalize the two shapes the backend uses for these flags. */
+export const isOn = (v: boolean | number | null | undefined): boolean =>
+  v === true || v === 1;
+
+/** What `GET /api/sessions?archived=` accepts. */
+export type ArchivedFilter = 'exclude' | 'only' | 'include';
 
 interface SessionList {
   sessions: SessionRow[];
@@ -46,7 +59,8 @@ export interface SearchHit {
 
 export const sessionKeys = {
   all: ['sessions'] as const,
-  list: (limit: number) => ['sessions', 'list', limit] as const,
+  list: (limit: number, archived: ArchivedFilter = 'exclude') =>
+    ['sessions', 'list', limit, archived] as const,
   detail: (id: string) => ['sessions', 'detail', id] as const,
   messages: (id: string) => ['sessions', 'messages', id] as const,
   search: (q: string) => ['sessions', 'search', q] as const,
@@ -56,11 +70,11 @@ export const sessionKeys = {
 /** The API rejects a limit above 100, so clamp rather than 422. */
 export const MAX_SESSION_LIMIT = 100;
 
-export function useSessions(limit = MAX_SESSION_LIMIT) {
+export function useSessions(limit = MAX_SESSION_LIMIT, archived: ArchivedFilter = 'exclude') {
   const capped = Math.min(limit, MAX_SESSION_LIMIT);
   return useQuery({
-    queryKey: sessionKeys.list(capped),
-    queryFn: () => api.get<SessionList>(`/api/sessions?limit=${capped}`),
+    queryKey: sessionKeys.list(capped, archived),
+    queryFn: () => api.get<SessionList>(`/api/sessions?limit=${capped}&archived=${archived}`),
     staleTime: 15_000,
   });
 }
@@ -139,4 +153,32 @@ export function useRenameSession() {
       api.patch(`/api/sessions/${encodeURIComponent(id)}`, { title }),
     onSuccess: () => qc.invalidateQueries({ queryKey: sessionKeys.all }),
   });
+}
+
+/**
+ * Pin or archive a session.
+ *
+ * `PATCH /api/sessions/{id}` takes the same `SessionRename` body as a rename,
+ * where a null field means "leave alone" — so one endpoint covers both flags
+ * and either can be sent on its own.
+ */
+export function useSetSessionFlags() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...flags }: { id: string; pinned?: boolean; archived?: boolean }) =>
+      api.patch(`/api/sessions/${encodeURIComponent(id)}`, flags),
+    onSuccess: () => qc.invalidateQueries({ queryKey: sessionKeys.all }),
+  });
+}
+
+/** The full stored record, including the transcript — the JSON export. */
+export async function exportSessionJson(id: string): Promise<unknown> {
+  return api.get(`/api/sessions/${encodeURIComponent(id)}/export`);
+}
+
+export async function fetchStoredMessages(id: string): Promise<StoredMessage[]> {
+  const res = await api.get<{ messages: StoredMessage[] }>(
+    `/api/sessions/${encodeURIComponent(id)}/messages`,
+  );
+  return res.messages;
 }

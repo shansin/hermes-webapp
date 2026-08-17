@@ -10,17 +10,36 @@
  * than it saves at realistic transcript lengths. The tool/reasoning bodies are
  * individually capped and scrollable, which is what actually bounds the DOM.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from './Markdown';
 import { ToolCallCard } from './ToolCallCard';
 import { ThinkingBlock } from './ThinkingBlock';
-import { IconDown, IconSpeaker } from '../shared/Icons';
+import { SubagentCard } from './SubagentCard';
+import { EditTurnSheet } from './EditTurnSheet';
+import { IconDown, IconRefresh, IconSpeaker } from '../shared/Icons';
 import { Empty, formatTokens } from '../shared/misc';
-import { useSession } from '../../store/session';
+import { useSession, type MessageTime } from '../../store/session';
 import { speak } from '../../lib/audio';
 import { useUi } from '../../store/ui';
+import { buzz } from '../../lib/haptics';
 
 const NEAR_BOTTOM_PX = 120;
+
+/**
+ * Clock time for a message, or null when it isn't known.
+ *
+ * Restored history has no timestamps, so those messages simply don't get one —
+ * see `MessageTime`. The full date lives in the title attribute.
+ */
+function Stamp({ at }: { at: MessageTime }) {
+  if (at == null) return null;
+  const d = new Date(at);
+  return (
+    <span title={d.toLocaleString()}>
+      {d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+    </span>
+  );
+}
 
 export function MessageList() {
   const messages = useSession((s) => s.messages);
@@ -29,10 +48,28 @@ export function MessageList() {
   const thinkingHint = useSession((s) => s.thinkingHint);
   const statusLine = useSession((s) => s.statusLine);
   const running = useSession((s) => s.running);
+  const rewinding = useSession((s) => s.rewinding);
+  const retryLast = useSession((s) => s.retryLast);
   const toast = useUi((s) => s.toast);
 
   const ref = useRef<HTMLDivElement>(null);
   const [stuck, setStuck] = useState(true);
+  /** The user message whose bubble is showing its actions, if any. */
+  const [openActions, setOpenActions] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+
+  /**
+   * Retry only makes sense on the newest reply — rerunning an older one would
+   * silently discard everything after it, which is what edit is for.
+   */
+  const lastAssistantId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m?.kind === 'assistant') return m.id;
+      if (m?.kind === 'user') return null;
+    }
+    return null;
+  }, [messages]);
 
   const isNearBottom = () => {
     const el = ref.current;
@@ -78,11 +115,40 @@ export function MessageList() {
 
         {messages.map((m) => {
           if (m.kind === 'user') {
+            const open = openActions === m.id;
             return (
               <div className="msg msg--user" key={m.id}>
                 {/* A skill command shows its invocation, not the expanded
                     prompt the model was actually handed. */}
-                <div className="msg__bubble">{m.displayText ?? m.text}</div>
+                <button
+                  className="msg__bubble msg__bubble--tappable"
+                  onClick={() => {
+                    buzz('tap');
+                    setOpenActions(open ? null : m.id);
+                  }}
+                  // No aria-label: the message text itself must stay the
+                  // button's accessible name, or the transcript goes silent to
+                  // a screen reader. `aria-expanded` carries the affordance.
+                  aria-expanded={open}
+                >
+                  {m.displayText ?? m.text}
+                </button>
+                {open && (
+                  <div className="msg__meta">
+                    <Stamp at={m.at} />
+                    <button
+                      className="code__copy"
+                      disabled={running || rewinding}
+                      onClick={() => {
+                        setOpenActions(null);
+                        // Edit the real prompt, not the short display form.
+                        setEditing({ id: m.id, text: m.text });
+                      }}
+                    >
+                      Edit &amp; resend
+                    </button>
+                  </div>
+                )}
               </div>
             );
           }
@@ -106,6 +172,14 @@ export function MessageList() {
             );
           }
 
+          if (m.kind === 'subagent') {
+            return (
+              <div className="msg" key={m.id}>
+                <SubagentCard msg={m} />
+              </div>
+            );
+          }
+
           return (
             <div className="msg msg--assistant" key={m.id}>
               {m.reasoning && <ThinkingBlock text={m.reasoning} />}
@@ -113,6 +187,7 @@ export function MessageList() {
                 <Markdown>{m.text}</Markdown>
               </div>
               <div className="msg__meta">
+                <Stamp at={m.at} />
                 {m.interrupted && <span className="msg__interrupted">Interrupted</span>}
                 {m.usage?.total != null && <span>{formatTokens(m.usage.total)} tok</span>}
                 {m.text && (
@@ -127,6 +202,20 @@ export function MessageList() {
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
                   >
                     <IconSpeaker size={13} /> Play
+                  </button>
+                )}
+                {m.id === lastAssistantId && (
+                  <button
+                    className="code__copy"
+                    disabled={running || rewinding}
+                    onClick={() => {
+                      buzz('tap');
+                      void retryLast();
+                    }}
+                    aria-label="Retry this reply"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                  >
+                    <IconRefresh size={13} /> {rewinding ? 'Retrying…' : 'Retry'}
                   </button>
                 )}
               </div>
@@ -160,6 +249,16 @@ export function MessageList() {
           <IconDown size={19} />
         </button>
       )}
+
+      <EditTurnSheet
+        turn={editing}
+        onClose={() => setEditing(null)}
+        onSubmit={(text) => {
+          const id = editing?.id;
+          setEditing(null);
+          if (id) void useSession.getState().editTurn(id, text);
+        }}
+      />
     </>
   );
 }

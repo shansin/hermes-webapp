@@ -7,6 +7,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { ChatScreen } from './screens/ChatScreen';
 import { SessionsScreen } from './screens/SessionsScreen';
 import { KanbanScreen } from './screens/KanbanScreen';
+import { FilesScreen } from './screens/FilesScreen';
 import { HubScreen } from './screens/HubScreen';
 import { TabBar } from './components/shared/TabBar';
 import { Toasts } from './components/shared/misc';
@@ -67,6 +68,7 @@ export function App() {
           <Route path="/chat" element={<ChatScreen />} />
           <Route path="/sessions" element={<SessionsScreen />} />
           <Route path="/kanban" element={<KanbanScreen />} />
+          <Route path="/files" element={<FilesScreen />} />
           <Route path="/hub" element={<HubScreen />} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Routes>

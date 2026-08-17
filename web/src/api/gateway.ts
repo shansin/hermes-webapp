@@ -5,6 +5,7 @@
  * pulling in streaming state, and so every method name lives in one place.
  */
 import { hermes } from '../ws/client';
+import { dispatchCommand } from './commands';
 import {
   ModelOptionsSchema,
   SessionCreateResultSchema,
@@ -80,6 +81,25 @@ export async function setApprovalMode(sessionId: string, mode: string): Promise<
 
 export async function compressSession(sessionId: string): Promise<void> {
   await hermes.call('session.compress', { session_id: sessionId });
+}
+
+/**
+ * Rewind `turns` user turns and get that turn's text back.
+ *
+ * This is the primitive behind both retry and edit-and-regenerate. Note it
+ * dispatches `undo` rather than calling the `session.undo` RPC: the two differ
+ * in ways that matter here. `session.undo` only truncates the in-memory
+ * history and reports a count, whereas the dispatch path also soft-deletes the
+ * rows on disk, reloads the active transcript, notifies memory providers that
+ * the session was rewound, and — the part we need — returns the user text it
+ * backed up to, so the caller can resubmit or edit it.
+ *
+ * The backend refuses while a turn is in flight (code 4009); callers must
+ * interrupt first.
+ */
+export async function undoTurns(sessionId: string, turns = 1): Promise<string> {
+  const res = await dispatchCommand(sessionId, 'undo', turns > 1 ? String(turns) : '');
+  return res.message ?? '';
 }
 
 export const REASONING_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;

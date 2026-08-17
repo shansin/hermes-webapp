@@ -7,7 +7,7 @@
  * `MediaRecorder` is unavailable, so the Web Speech fallback is what runs.
  */
 import { useEffect, useRef, useState } from 'react';
-import { IconMic, IconPaperclip, IconSend, IconStop } from '../shared/Icons';
+import { IconClose, IconMic, IconPaperclip, IconSend, IconStop } from '../shared/Icons';
 import { CostRing } from './CostRing';
 import { SlashPopover } from './SlashPopover';
 import { useSession } from '../../store/session';
@@ -83,6 +83,8 @@ export function Composer({
   const sessionId = useSession((s) => s.sessionId);
   const submit = useSession((s) => s.submitPrompt);
   const interrupt = useSession((s) => s.interrupt);
+  const queued = useSession((s) => s.queued);
+  const clearQueued = useSession((s) => s.clearQueued);
   const toast = useUi((s) => s.toast);
 
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -284,6 +286,30 @@ export function Composer({
         </div>
       )}
 
+      {queued && (
+        <div className="composer__queued">
+          <span className="composer__queued-label">Queued</span>
+          <span className="composer__queued-text">{queued.display ?? queued.text}</span>
+          {/* An interrupted turn leaves the message held rather than firing it
+              at an agent the user just stopped — so offer to send it by hand. */}
+          {!running && (
+            <button
+              className="chip"
+              onClick={() => {
+                const { text: t, display } = queued;
+                clearQueued();
+                void submit(t, display ? { display } : undefined);
+              }}
+            >
+              Send now
+            </button>
+          )}
+          <button className="icon-btn" onClick={clearQueued} aria-label="Discard queued message">
+            <IconClose size={16} />
+          </button>
+        </div>
+      )}
+
       {!text && !running && (
         <div className="composer__quick">
           <button
@@ -400,7 +426,11 @@ export function Composer({
           </button>
         )}
 
-        {running ? (
+        {/* While a turn runs, stop stays available *and* send still works —
+            sending mid-turn queues the message rather than dropping it, so
+            hiding the button would hide the feature. The mic yields the space,
+            since it's already hidden whenever there's text to send. */}
+        {running && (
           <button
             className="composer__btn composer__btn--stop"
             onClick={() => void interrupt()}
@@ -408,12 +438,13 @@ export function Composer({
           >
             <IconStop size={17} />
           </button>
-        ) : (
+        )}
+        {(!running || text.trim()) && (
           <button
             className="composer__btn composer__btn--send"
             onClick={send}
             disabled={!text.trim() || !sessionId}
-            aria-label="Send"
+            aria-label={running ? 'Queue this message' : 'Send'}
           >
             <IconSend size={18} />
           </button>

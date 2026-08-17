@@ -8,7 +8,10 @@ import { memo, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import { Link } from 'react-router-dom';
 import { IconCheck, IconCopy } from '../shared/Icons';
+import { MermaidBlock } from './MermaidBlock';
+import { useSession } from '../../store/session';
 import { buzz } from '../../lib/haptics';
 
 function CopyButton({ getText }: { getText: () => string }) {
@@ -52,7 +55,23 @@ function nodeText(node: ReactNode): string {
   return '';
 }
 
+/**
+ * Resolve a `workspace://relative/path` link against the session's working
+ * directory, since the file API only speaks absolute paths. Returns null for
+ * ordinary links, and for a workspace link we have no root to resolve against.
+ */
+function workspacePath(href: string | undefined, cwd: string | undefined): string | null {
+  if (!href?.startsWith('workspace://')) return null;
+  const rel = href.slice('workspace://'.length).replace(/^\/+/, '');
+  if (!rel) return null;
+  if (!cwd) return null;
+  return `${cwd.replace(/\/+$/, '')}/${rel}`;
+}
+
 export const Markdown = memo(function Markdown({ children }: { children: string }) {
+  // The workspace root for resolving `workspace://` links.
+  const cwd = useSession((s) => s.info?.cwd) ?? undefined;
+
   return (
     <div className="md">
       <ReactMarkdown
@@ -71,6 +90,13 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
             const m = /language-(\w+)/.exec(cls);
             if (m?.[1]) lang = m[1];
 
+            // A mermaid fence becomes a diagram instead of a code block. Only
+            // an explicit fence qualifies — hljs' `detect` guesses languages,
+            // and rendering a guess through mermaid would mangle real code.
+            if (lang === 'mermaid' && text.trim()) {
+              return <MermaidBlock source={text.trim()} />;
+            }
+
             return (
               <div className="code">
                 <div className="code__head">
@@ -82,6 +108,14 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
             );
           },
           a({ children, href }) {
+            // `workspace://path` is how the agent points at a file it touched.
+            // Opening it in the file browser is the whole reason those links
+            // exist; left alone the browser treats the scheme as unknown and
+            // the link does nothing at all.
+            const ws = workspacePath(href, cwd);
+            if (ws) {
+              return <Link to={`/files?path=${encodeURIComponent(ws)}`}>{children}</Link>;
+            }
             return (
               <a href={href} target="_blank" rel="noreferrer noopener">
                 {children}

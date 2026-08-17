@@ -6,19 +6,23 @@ import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { SessionRowItem } from '../components/sessions/SessionRow';
+import { SessionActionsSheet } from '../components/sessions/SessionActionsSheet';
 import { PullToRefresh } from '../components/shared/PullToRefresh';
 import { Empty, ErrorNote, SkeletonList, dayGroup } from '../components/shared/misc';
 import { IconSearch, IconClose, IconTrash, IconPlus } from '../components/shared/Icons';
 import {
+  isOn,
   sessionKeys,
   useBulkDeleteSessions,
   useDeleteSession,
   useSessionSearch,
   useSessions,
+  type ArchivedFilter,
   type SessionRow,
 } from '../api/sessions';
 import { useUi } from '../store/ui';
 import { useSession } from '../store/session';
+import { collectTags, hasTag, tagHue } from '../lib/sessionTags';
 import { buzz } from '../lib/haptics';
 
 export function SessionsScreen() {
@@ -33,26 +37,53 @@ export function SessionsScreen() {
   const [query, setQuery] = useState(seededQuery);
   const [searching, setSearching] = useState(Boolean(seededQuery));
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [showArchived, setShowArchived] = useState(false);
+  const [actionsFor, setActionsFor] = useState<string | null>(null);
+  const [tag, setTag] = useState<string | null>(null);
 
-  const { data, isLoading, error, refetch } = useSessions();
+  const archivedFilter: ArchivedFilter = showArchived ? 'only' : 'exclude';
+  const { data, isLoading, error, refetch } = useSessions(undefined, archivedFilter);
   const search = useSessionSearch(query);
   const del = useDeleteSession();
   const bulkDel = useBulkDeleteSessions();
 
   const selecting = selected.size > 0;
 
-  // Group by day, preserving the server's newest-first ordering.
+  /** Every tag in view, so the filter rail only offers tags that exist. */
+  const tags = useMemo(
+    () => collectTags((data?.sessions ?? []).map((s) => s.title)),
+    [data],
+  );
+
+  /**
+   * Pinned sessions lead, then the rest grouped by day.
+   *
+   * The sort happens here rather than in the query because the backend orders
+   * by creation or recency only (`order` takes `created` | `recent`) and has no
+   * pinned-first mode — and pinning is only meaningful if it floats the row out
+   * of its date group. Tag filtering is client-side for the same reason: tags
+   * live inside the title string, so the API can't filter on them.
+   */
   const groups = useMemo(() => {
-    const rows = data?.sessions ?? [];
+    const all = data?.sessions ?? [];
+    const rows = tag ? all.filter((s) => hasTag(s.title, tag)) : all;
     const out: { label: string; items: SessionRow[] }[] = [];
+    const pinned = rows.filter((s) => isOn(s.pinned));
+    if (pinned.length) out.push({ label: 'Pinned', items: pinned });
     for (const s of rows) {
+      if (isOn(s.pinned)) continue;
       const label = dayGroup(s.started_at);
       const last = out[out.length - 1];
       if (last?.label === label) last.items.push(s);
       else out.push({ label, items: [s] });
     }
     return out;
-  }, [data]);
+  }, [data, tag]);
+
+  const actionsSession = useMemo(
+    () => data?.sessions.find((s) => s.id === actionsFor) ?? null,
+    [data, actionsFor],
+  );
 
   /**
    * The model to treat as unremarkable: whatever is configured right now.
@@ -136,15 +167,49 @@ export function SessionsScreen() {
         ) : (
           <>
             <div className="header__title">
-              Sessions
+              {showArchived ? 'Archived' : 'Sessions'}
               {data && <span className="header__sub"> · {data.total}</span>}
             </div>
+            <button
+              className={`chip${showArchived ? ' chip--active' : ''}`}
+              onClick={() => {
+                buzz('tap');
+                setShowArchived((v) => !v);
+              }}
+              aria-pressed={showArchived}
+            >
+              {showArchived ? 'Active' : 'Archived'}
+            </button>
             <button className="icon-btn" onClick={() => setSearching(true)} aria-label="Search">
               <IconSearch size={20} />
             </button>
           </>
         )}
       </div>
+
+      {/* Only worth showing once tags actually exist; an empty rail on a phone
+          is pure lost height. */}
+      {!searching && !selecting && tags.length > 0 && (
+        <div className="tag-rail">
+          {tags.map((t) => {
+            const on = tag?.toLowerCase() === t.toLowerCase();
+            return (
+              <button
+                key={t}
+                className={`tag-chip${on ? ' tag-chip--active' : ''}`}
+                style={{ '--tag-hue': tagHue(t) } as React.CSSProperties}
+                onClick={() => {
+                  buzz('tap');
+                  setTag(on ? null : t);
+                }}
+                aria-pressed={on}
+              >
+                #{t}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {isLoading && !data ? (
         <SkeletonList n={7} h={54} />
@@ -193,16 +258,24 @@ export function SessionsScreen() {
                 ))}
               </>
             ) : groups.length === 0 ? (
-              <Empty
-                icon="✦"
-                title="No sessions yet"
-                hint="Start a conversation and it will show up here."
-                action={
-                  <button className="btn btn--primary" onClick={() => navigate('/chat?new=1')}>
-                    New chat
-                  </button>
-                }
-              />
+              showArchived ? (
+                <Empty
+                  icon="🗄"
+                  title="Nothing archived"
+                  hint="Archive a session from its ⋯ menu to tuck it away without deleting it."
+                />
+              ) : (
+                <Empty
+                  icon="✦"
+                  title="No sessions yet"
+                  hint="Start a conversation and it will show up here."
+                  action={
+                    <button className="btn btn--primary" onClick={() => navigate('/chat?new=1')}>
+                      New chat
+                    </button>
+                  }
+                />
+              )
             ) : (
               groups.map((g) => (
                 <div key={g.label} style={{ marginBottom: 14 }}>
@@ -230,6 +303,8 @@ export function SessionsScreen() {
                         onDelete={() => void removeOne(s.id)}
                         onToggleSelect={() => toggle(s.id)}
                         onLongPress={() => toggle(s.id)}
+                        onActions={() => setActionsFor(s.id)}
+                        onPickTag={(t) => setTag((cur) => (cur === t ? null : t))}
                       />
                     ))}
                   </div>
@@ -245,6 +320,8 @@ export function SessionsScreen() {
           <IconPlus size={22} />
         </button>
       )}
+
+      <SessionActionsSheet session={actionsSession} onClose={() => setActionsFor(null)} />
     </div>
   );
 }
