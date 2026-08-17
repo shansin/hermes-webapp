@@ -177,9 +177,11 @@ export function SettingsTab() {
           className="card"
           style={{ marginBottom: 16, borderColor: 'var(--warn)', fontSize: 13, color: 'var(--text-dim)' }}
         >
-          Running over plain HTTP, so install-to-home-screen, offline caching and
-          push notifications stay dormant. Add TLS to switch them on — see the
-          README for the one-line <code>tailscale serve</code> or mkcert setup.
+          Running over plain HTTP, so install-to-home-screen, offline caching,
+          push notifications and <strong>voice input</strong> stay dormant — the
+          browser withholds the microphone and its dictation service outside a
+          secure context. Add TLS to switch them on — see the README for the
+          one-line <code>tailscale serve</code> or mkcert setup.
         </div>
       )}
 

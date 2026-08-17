@@ -24,9 +24,19 @@ export interface AudioCaps {
 
 let cached: AudioCaps | null = null;
 
+/**
+ * Web Speech dictation is usable here.
+ *
+ * The constructor is present on insecure origins but `start()` immediately
+ * fails with `not-allowed` — so presence alone is not availability, and
+ * checking only for it renders a mic button that cannot ever work. Both Chrome
+ * and Safari gate SpeechRecognition on a secure context, which over plain HTTP
+ * on a LAN IP we are not.
+ */
 export function webSpeechAvailable(): boolean {
   return (
     typeof window !== 'undefined' &&
+    window.isSecureContext &&
     ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
   );
 }
@@ -213,9 +223,19 @@ export async function startRecording(): Promise<Recorder> {
   };
 }
 
+/** Readable causes for the `SpeechRecognitionErrorEvent.error` codes we can hit. */
+const DICTATION_ERRORS: Record<string, string> = {
+  'not-allowed': 'Dictation was blocked. Over plain HTTP the browser refuses it — serve the app over HTTPS (see the README).',
+  'service-not-allowed': 'The browser blocked its dictation service. Allow microphone access and try again.',
+  'audio-capture': 'No microphone was available.',
+  network: 'Dictation needs a network connection to the browser’s speech service.',
+  'no-speech': 'Nothing was heard — try again.',
+  aborted: 'Dictation was cancelled.',
+};
+
 /**
- * Browser-native dictation, used when the server has no STT or the page isn't
- * a secure context. Resolves with the final transcript.
+ * Browser-native dictation, used when the server has no STT. Resolves with the
+ * final transcript, or rejects with why the engine refused.
  */
 export function webSpeechDictate(): { stop: () => Promise<string>; cancel: () => void } {
   const Ctor =
@@ -238,6 +258,15 @@ export function webSpeechDictate(): { stop: () => Promise<string>; cancel: () =>
     }
     text = out;
   };
+
+  // Without this the engine fails silently: the button sits in its recording
+  // state, the user talks, and release yields an empty transcript with no
+  // explanation. Hold the error so `stop()` can report it instead.
+  let failure: string | null = null;
+  rec.onerror = (e: SpeechRecognitionErrorEvent) => {
+    failure = DICTATION_ERRORS[e.error] ?? `Dictation failed (${e.error})`;
+  };
+
   rec.start();
 
   return {
@@ -249,12 +278,13 @@ export function webSpeechDictate(): { stop: () => Promise<string>; cancel: () =>
       }
     },
     stop() {
-      return new Promise<string>((resolve) => {
-        rec.onend = () => resolve(text.trim());
+      return new Promise<string>((resolve, reject) => {
+        const done = () => (failure ? reject(new Error(failure)) : resolve(text.trim()));
+        rec.onend = done;
         try {
           rec.stop();
         } catch {
-          resolve(text.trim());
+          done();
         }
       });
     },

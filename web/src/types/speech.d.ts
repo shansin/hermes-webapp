@@ -25,6 +25,12 @@ interface SpeechRecognitionEvent extends Event {
   readonly results: SpeechRecognitionResultList;
 }
 
+/** `error` carries the failure code, e.g. "not-allowed" on an insecure origin. */
+interface SpeechRecognitionErrorEvent extends Event {
+  readonly error: string;
+  readonly message: string;
+}
+
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;
   interimResults: boolean;
@@ -33,7 +39,7 @@ interface SpeechRecognition extends EventTarget {
   stop(): void;
   abort(): void;
   onresult: ((event: SpeechRecognitionEvent) => void) | null;
-  onerror: ((event: Event) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
   onend: ((event: Event) => void) | null;
 }
 
