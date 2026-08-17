@@ -85,6 +85,14 @@ a blocking approval sheet for risky tools; interrupt button; model / reasoning /
 approval-mode pickers; a context-fill ring that opens a token breakdown and can
 compact the conversation; voice input and per-reply playback; file attachments.
 
+**Slash commands** — typing `/` completes against the live registry (the gateway
+ranks names *and* descriptions, and orders skills by how much you use them), and
+the `/ Commands` chip opens the whole catalog grouped by category. Each command
+runs on the surface that fits a phone: `/model` opens the model sheet, `/skills`
+jumps to the Hub, `/compress` uses the dedicated RPC, skill commands expand into
+a normal turn (the transcript keeps showing what you typed, not the expanded
+prompt), and terminal-only commands like `/mouse` say so instead of failing.
+
 **Sessions** — date-grouped history, full-text search, swipe right to resume and
 left to delete, long-press to bulk-select, pull-to-refresh.
 
@@ -139,6 +147,7 @@ server/src/
   static.ts            web/dist with SPA fallback and traversal containment
 web/src/
   ws/                  JSON-RPC client (id↔promise, framing, backoff) + zod types
+  lib/slashCommands.ts the command table: which surface fulfils each command
   store/               streaming accumulator (session), preferences (ui)
   api/                 TanStack Query hooks per domain
   screens/             Chat, Sessions, Kanban, Hub

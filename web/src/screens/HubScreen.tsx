@@ -2,7 +2,8 @@
  * Hub — everything that isn't chat, sessions or the board, behind a segmented
  * control. Tabs mount lazily so opening the Hub doesn't fetch five domains.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { MemoryTab } from '../components/hub/MemoryTab';
 import { SkillsTab } from '../components/hub/SkillsTab';
 import { CronTab } from '../components/hub/CronTab';
@@ -20,8 +21,20 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]['id'];
 
+const isTabId = (value: string | null): value is TabId =>
+  TABS.some((t) => t.id === value);
+
 export function HubScreen() {
-  const [tab, setTab] = useState<TabId>('memory');
+  // `/skills`, `/cron`, … arrive as `/hub?tab=<id>` from the slash runner.
+  const [params] = useSearchParams();
+  const requested = params.get('tab');
+  const [tab, setTab] = useState<TabId>(isTabId(requested) ? requested : 'memory');
+
+  // A second `/cron` while the Hub is already open changes the URL without
+  // remounting, so follow the param rather than only seeding from it.
+  useEffect(() => {
+    if (isTabId(requested)) setTab(requested);
+  }, [requested]);
 
   return (
     <div className="screen">

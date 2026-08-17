@@ -36,7 +36,14 @@ import { hermes } from '../ws/client';
 import { buzz } from '../lib/haptics';
 
 export type ChatMessage =
-  | { kind: 'user'; id: string; text: string; at: number }
+  /**
+   * `displayText` exists for skill/bundle commands: `command.dispatch` hands
+   * back an expanded, model-facing prompt, but the transcript must keep
+   * showing the short invocation the user actually typed.
+   */
+  | { kind: 'user'; id: string; text: string; displayText?: string; at: number }
+  /** Local output — slash-command results, and why one wouldn't run. */
+  | { kind: 'notice'; id: string; text: string; tone: 'info' | 'error'; label?: string; at: number }
   | {
       kind: 'assistant';
       id: string;
@@ -85,7 +92,8 @@ interface SessionState {
   adoptSession: (r: { sessionId: string; storedSessionId?: string; info?: SessionInfo }) => void;
   loadHistory: (messages: HistoryMessage[]) => void;
   applyEvent: (params: { type: string; session_id?: string; payload?: unknown }) => void;
-  submitPrompt: (text: string) => Promise<void>;
+  submitPrompt: (text: string, opts?: { display?: string }) => Promise<void>;
+  addNotice: (text: string, tone?: 'info' | 'error', label?: string) => void;
   interrupt: () => Promise<void>;
   respondApproval: (choice: string, all?: boolean) => Promise<void>;
   refreshUsage: () => Promise<void>;
@@ -329,12 +337,15 @@ export const useSession = create<SessionState>((set, get) => ({
     }
   },
 
-  submitPrompt: async (text) => {
+  submitPrompt: async (text, opts) => {
     const { sessionId } = get();
     if (!sessionId || !text.trim()) return;
 
     set((st) => ({
-      messages: [...st.messages, { kind: 'user', id: nextId(), text, at: Date.now() }],
+      messages: [
+        ...st.messages,
+        { kind: 'user', id: nextId(), text, displayText: opts?.display, at: Date.now() },
+      ],
       running: true,
       error: null,
       streamingText: '',
@@ -347,6 +358,11 @@ export const useSession = create<SessionState>((set, get) => ({
       set({ running: false, error: err instanceof Error ? err.message : 'submit failed' });
     }
   },
+
+  addNotice: (text, tone = 'info', label) =>
+    set((st) => ({
+      messages: [...st.messages, { kind: 'notice', id: nextId(), text, tone, label, at: Date.now() }],
+    })),
 
   interrupt: async () => {
     const { sessionId } = get();

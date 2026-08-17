@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { MessageList } from '../components/chat/MessageList';
 import { Composer } from '../components/composer/Composer';
+import { CommandPalette } from '../components/composer/CommandPalette';
 import { ApprovalSheet } from '../components/chat/ApprovalSheet';
 import { ModelSheet } from '../components/chat/ModelSheet';
 import { ContextSheet } from '../components/chat/ContextSheet';
@@ -21,11 +22,14 @@ import { useUi } from '../store/ui';
 import { hermes } from '../ws/client';
 import { createSession, fetchHistory, resumeSession } from '../api/gateway';
 import { fetchSessionTitle } from '../api/sessions';
+import { useSlashRunner } from '../lib/useSlashRunner';
 
 export function ChatScreen() {
   const [params, setParams] = useSearchParams();
   const [modelSheet, setModelSheet] = useState(false);
   const [contextSheet, setContextSheet] = useState(false);
+  const [palette, setPalette] = useState(false);
+  const [commandSeed, setCommandSeed] = useState('');
   const [booting, setBooting] = useState(false);
 
   const sessionId = useSession((s) => s.sessionId);
@@ -112,6 +116,15 @@ export function ChatScreen() {
     }
   };
 
+  // Slash commands: this screen owns the surfaces a command can open, so it
+  // hands them to the runner rather than the runner knowing about sheets.
+  const { run: runCommand, busy: commandBusy } = useSlashRunner({
+    onNewChat: () => void startNew(),
+    onOpenModel: () => setModelSheet(true),
+    onOpenContext: () => setContextSheet(true),
+    onOpenPalette: () => setPalette(true),
+  });
+
   // Boot / re-boot when the URL intent changes, once the socket is up.
   useEffect(() => {
     if (connection !== 'open') return;
@@ -190,6 +203,18 @@ export function ChatScreen() {
           setSeed('');
           setParams({}, { replace: true });
         }}
+        onRunCommand={runCommand}
+        commandBusy={commandBusy}
+        commandSeed={commandSeed}
+        onCommandSeedConsumed={() => setCommandSeed('')}
+        onOpenPalette={() => setPalette(true)}
+      />
+
+      <CommandPalette
+        open={palette}
+        onClose={() => setPalette(false)}
+        onRun={(command) => void runCommand(command)}
+        onSeed={setCommandSeed}
       />
 
       <ApprovalSheet />

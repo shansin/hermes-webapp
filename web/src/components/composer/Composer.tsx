@@ -1,6 +1,6 @@
 /**
  * Message composer: growing textarea, hold-to-talk voice, attachments,
- * quick-action chips, and the send/stop button.
+ * quick-action chips, slash-command completion, and the send/stop button.
  *
  * The mic is hidden entirely when neither server STT nor the Web Speech API is
  * usable — a dead button is worse than no button. On plain HTTP (our default)
@@ -9,9 +9,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { IconMic, IconPaperclip, IconSend, IconStop } from '../shared/Icons';
 import { CostRing } from './CostRing';
+import { SlashPopover } from './SlashPopover';
 import { useSession } from '../../store/session';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
+import { completeSlash, type CompletionItem } from '../../api/commands';
+import { isSlashInput, isSuggestion } from '../../lib/slashCommands';
 import {
   canRecord,
   probeAudio,
@@ -35,6 +38,9 @@ interface Attachment {
   attached: boolean;
 }
 
+/** How long the box must sit still before we ask the gateway for completions. */
+const COMPLETE_DEBOUNCE_MS = 90;
+
 interface ComposerProps {
   onOpenContext?: () => void;
   /**
@@ -43,13 +49,35 @@ interface ComposerProps {
    */
   seedText?: string;
   onSeedConsumed?: () => void;
+  /** Run a slash command instead of sending it to the model. */
+  onRunCommand: (text: string) => void | Promise<void>;
+  /** Command currently executing, shown in place of the quick actions. */
+  commandBusy?: string;
+  /** A command picked from the palette that still needs its argument typed. */
+  commandSeed?: string;
+  onCommandSeedConsumed?: () => void;
+  onOpenPalette: () => void;
 }
 
-export function Composer({ onOpenContext, seedText, onSeedConsumed }: ComposerProps) {
+export function Composer({
+  onOpenContext,
+  seedText,
+  onSeedConsumed,
+  onRunCommand,
+  commandBusy,
+  commandSeed,
+  onCommandSeedConsumed,
+  onOpenPalette,
+}: ComposerProps) {
   const [text, setText] = useState('');
   const [recording, setRecording] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [voiceOk, setVoiceOk] = useState(false);
+  const [completions, setCompletions] = useState<CompletionItem[]>([]);
+  const [replaceFrom, setReplaceFrom] = useState(1);
+  const [active, setActive] = useState(0);
+  /** Suppressed after accepting a completion, so the list doesn't re-open. */
+  const [popoverOpen, setPopoverOpen] = useState(true);
 
   const running = useSession((s) => s.running);
   const sessionId = useSession((s) => s.sessionId);
@@ -84,6 +112,48 @@ export function Composer({ onOpenContext, seedText, onSeedConsumed }: ComposerPr
     onSeedConsumed?.();
   }, [seedText, onSeedConsumed]);
 
+  // A palette pick lands here: replace the draft with `/cmd ` ready for its
+  // argument, and don't immediately re-open the completion list over it.
+  useEffect(() => {
+    if (!commandSeed) return;
+    setText(`${commandSeed} `);
+    setPopoverOpen(false);
+    taRef.current?.focus();
+    onCommandSeedConsumed?.();
+  }, [commandSeed, onCommandSeedConsumed]);
+
+  // Ask the gateway to complete a partially typed command. `complete.slash`
+  // does the ranking (names *and* descriptions, skills by usage); we only drop
+  // commands with no phone surface so the list can't dead-end.
+  useEffect(() => {
+    const query = text;
+    // `complete.slash` requires a leading slash at index 0, so an indented
+    // draft gets no completions — it still runs fine when sent.
+    if (!popoverOpen || !query.startsWith('/') || !isSlashInput(query) || query.includes('\n')) {
+      setCompletions([]);
+      return;
+    }
+    let alive = true;
+    const timer = setTimeout(() => {
+      completeSlash(query, sessionId ?? undefined)
+        .then((res) => {
+          if (!alive) return;
+          setCompletions(res.items.filter((i) => isSuggestion(i.display || i.text)));
+          setReplaceFrom(res.replace_from);
+          setActive(0);
+        })
+        .catch(() => {
+          // No completions is a degraded but working composer — the command
+          // still runs when sent. An older gateway simply has no such method.
+          if (alive) setCompletions([]);
+        });
+    }, COMPLETE_DEBOUNCE_MS);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [text, popoverOpen, sessionId]);
+
   // Grow the textarea with its content, up to the CSS max-height.
   useEffect(() => {
     const el = taRef.current;
@@ -95,10 +165,27 @@ export function Composer({ onOpenContext, seedText, onSeedConsumed }: ComposerPr
   const send = () => {
     const value = text.trim();
     if (!value || !sessionId) return;
-    buzz('tap');
-    void submit(value);
     setText('');
     setAttachments([]);
+    setCompletions([]);
+    setPopoverOpen(true);
+    // A leading slash is a command, not a message. The runner decides whether
+    // that means a local screen, a gateway RPC, or a backend execution.
+    if (isSlashInput(value)) {
+      void onRunCommand(value);
+      return;
+    }
+    buzz('tap');
+    void submit(value);
+  };
+
+  /** Splice the chosen completion in at the index the gateway gave us. */
+  const accept = (item: CompletionItem) => {
+    const completed = `${text.slice(0, replaceFrom)}${item.text} `;
+    setText(completed);
+    setCompletions([]);
+    setPopoverOpen(false);
+    taRef.current?.focus();
   };
 
   const startVoice = async () => {
@@ -178,8 +265,37 @@ export function Composer({ onOpenContext, seedText, onSeedConsumed }: ComposerPr
         </div>
       )}
 
+      {popoverOpen && (
+        <SlashPopover
+          items={completions}
+          active={active}
+          onPick={accept}
+          onBrowseAll={() => {
+            setCompletions([]);
+            onOpenPalette();
+          }}
+        />
+      )}
+
+      {commandBusy && (
+        <div className="composer__running">
+          <span className="spin" style={{ fontSize: 11 }}>◌</span>
+          Running {commandBusy}…
+        </div>
+      )}
+
       {!text && !running && (
         <div className="composer__quick">
+          <button
+            className="chip"
+            onClick={() => {
+              buzz('tap');
+              onOpenPalette();
+            }}
+            aria-label="Browse commands"
+          >
+            / Commands
+          </button>
           {QUICK_ACTIONS.map((q) => (
             <button
               key={q.label}
@@ -226,11 +342,38 @@ export function Composer({ onOpenContext, seedText, onSeedConsumed }: ComposerPr
           ref={taRef}
           className="composer__input"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            // Any further typing means the user wants suggestions again.
+            setPopoverOpen(true);
+          }}
           placeholder={recording ? 'Listening…' : 'Message Hermes…'}
           rows={1}
           enterKeyHint="send"
           onKeyDown={(e) => {
+            const suggesting = completions.length > 0;
+            if (suggesting && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+              e.preventDefault();
+              const step = e.key === 'ArrowDown' ? 1 : -1;
+              setActive((i) => (i + step + completions.length) % completions.length);
+              return;
+            }
+            if (suggesting && e.key === 'Escape') {
+              e.preventDefault();
+              setPopoverOpen(false);
+              setCompletions([]);
+              return;
+            }
+            // Tab always completes; Enter completes only while a suggestion is
+            // highlighted, so a fully typed command still sends on one press.
+            if (suggesting && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) {
+              const item = completions[active];
+              if (item) {
+                e.preventDefault();
+                accept(item);
+                return;
+              }
+            }
             // Enter sends on a hardware keyboard; Shift+Enter makes a newline.
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();

@@ -3,7 +3,7 @@
  * resume/delete, long-press to bulk-select.
  */
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { SessionRowItem } from '../components/sessions/SessionRow';
 import { PullToRefresh } from '../components/shared/PullToRefresh';
@@ -26,8 +26,12 @@ export function SessionsScreen() {
   const qc = useQueryClient();
   const toast = useUi((s) => s.toast);
 
-  const [query, setQuery] = useState('');
-  const [searching, setSearching] = useState(false);
+  // `/resume <text>` lands here with the typed argument as a search seed.
+  const [params] = useSearchParams();
+  const seededQuery = params.get('q') ?? '';
+
+  const [query, setQuery] = useState(seededQuery);
+  const [searching, setSearching] = useState(Boolean(seededQuery));
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const { data, isLoading, error, refetch } = useSessions();

@@ -80,7 +80,20 @@ export function MessageList() {
           if (m.kind === 'user') {
             return (
               <div className="msg msg--user" key={m.id}>
-                <div className="msg__bubble">{m.text}</div>
+                {/* A skill command shows its invocation, not the expanded
+                    prompt the model was actually handed. */}
+                <div className="msg__bubble">{m.displayText ?? m.text}</div>
+              </div>
+            );
+          }
+
+          if (m.kind === 'notice') {
+            return (
+              <div className="msg" key={m.id}>
+                <div className={`notice${m.tone === 'error' ? ' notice--error' : ''}`}>
+                  {m.label && <div className="notice__label">{m.label}</div>}
+                  <pre className="notice__body">{m.text}</pre>
+                </div>
               </div>
             );
           }

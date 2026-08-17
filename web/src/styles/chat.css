@@ -337,6 +337,156 @@
   animation: fade-in 0.15s ease;
 }
 
+/* --- slash-command output ------------------------------------------------- */
+
+.notice {
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  overflow: hidden;
+}
+
+.notice--error {
+  border-left-color: var(--error);
+}
+
+.notice__label {
+  padding: 7px 12px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Command output is preformatted text (tables, aligned columns), so it keeps
+   its own horizontal scroll rather than wrapping into nonsense. */
+.notice__body {
+  margin: 0;
+  padding: 7px 12px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  white-space: pre;
+  max-height: 340px;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* --- slash completion popover --------------------------------------------- */
+
+.slash-pop {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-elev-2);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.slash-pop__list {
+  max-height: 232px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.slash-pop__row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  background: none;
+}
+
+.slash-pop__row:last-child { border-bottom: none; }
+
+.slash-pop__row--active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.slash-pop__name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.slash-pop__kind {
+  font-family: var(--font);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: var(--shape-full);
+  background: var(--bg-elev);
+  color: var(--text-faint);
+}
+
+.slash-pop__meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-pop__all {
+  width: 100%;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-elev);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+/* --- command palette ------------------------------------------------------ */
+
+.palette__group { margin-top: 14px; }
+
+.palette__group-name {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+}
+
+.palette__row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  background: none;
+}
+
+.palette__row:active { background: var(--bg-elev-2); }
+
+.palette__cmd {
+  display: block;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.palette__desc {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.palette__note {
+  padding: 14px 2px;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
 /* --- composer ------------------------------------------------------------- */
 
 .composer {
@@ -359,6 +509,16 @@
 }
 
 .composer__quick::-webkit-scrollbar { display: none; }
+
+.composer__running {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-faint);
+}
 
 .composer__row {
   display: flex;
