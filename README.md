@@ -176,9 +176,38 @@ mkcert -cert-file certs/lan.pem -key-file certs/lan-key.pem <LAN-IP> localhost
 The phone must trust the mkcert root for that to count as a secure context,
 which is the reason Tailscale is the recommended path.
 
-Web push additionally needs a `web-push` fan-out from Hermes' `/api/events`
-stream; the event plumbing is already in place (it drives the in-app toasts), so
-that's the only remaining piece.
+### Push notifications
+
+Once the app is served over HTTPS and installed, turn on **Settings →
+Notifications → Push**. Banners arrive with the app closed for:
+
+| Event | Notification |
+| --- | --- |
+| `background.complete` | "Nightly index finished" |
+| `subagent.complete` | "Researcher finished" |
+| `notification.show` | whatever the agent asked to say |
+| `cron.changed` | "A scheduled job ran" |
+| `approval.request` | "Approval needed: Bash — rm -rf …" |
+
+That last one is the reason to bother: an approval blocks the turn until it is
+answered, and a phone in a pocket is the only place that answer can come from.
+
+There is nothing to configure. A VAPID keypair is generated on first boot and
+stored in `.hermes-push.json` next to `.env`, along with the devices that have
+subscribed; `.env.example` documents how to pin your own keypair instead, and
+`PUSH_ENABLED=0` switches the whole thing off.
+
+Two things behave differently than you might expect:
+
+- **iOS only gives push to an installed app**, never to a Safari tab. Add to
+  Home Screen and open it from there, or the toggle in Settings will tell you
+  it isn't supported. The Settings screen says so explicitly on iPhone.
+- **The proxy holds its own gateway socket** for this. Push has to deliver when
+  no browser is connected, so it cannot ride on the per-client socket
+  `wsProxy` opens — see `server/src/push/events.ts`.
+
+With the app open and visible, the service worker suppresses its banner and
+hands the text to the page instead, so an event never arrives twice.
 
 ## Security
 
@@ -194,6 +223,10 @@ server/src/
   config.ts            zod-validated env + token discovery
   routers/apiProxy.ts  /api/* → loopback, Host + Bearer rewrite, streamed bodies
   routers/wsProxy.ts   WS upgrade forwarding with the Origin rewrite
+  routers/push.ts      /push/* — subscribe, unsubscribe, send a test
+  push/events.ts       the proxy's own gateway socket: events → notifications
+  push/send.ts         VAPID identity and the web-push fan-out
+  push/store.ts        subscriptions + generated keypair, atomically on disk
   static.ts            web/dist with SPA fallback and traversal containment
 web/src/
   ws/                  JSON-RPC client (id↔promise, framing, backoff) + zod types
@@ -201,7 +234,10 @@ web/src/
   store/               streaming accumulator (session), preferences (ui)
   api/                 TanStack Query hooks per domain
   screens/             Chat, Sessions, Kanban, Files, and the Hub pages
+  lib/push.ts          permission, subscription, and what to say when it fails
   components/          chat, composer, sessions, kanban, hub, shared
+web/public/
+  push-sw.js           push + notificationclick, imported by the Workbox worker
 ```
 
 ### A note on the protocol

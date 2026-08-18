@@ -12,6 +12,155 @@ import { Sheet } from '../shared/Sheet';
 import { ModelPicker } from '../shared/ModelPicker';
 import { hermes } from '../../ws/client';
 import { buzz } from '../../lib/haptics';
+import {
+  disablePush,
+  enablePush,
+  isIosSafari,
+  isStandalone,
+  pushStatus,
+  sendTestPush,
+  type PushState,
+} from '../../lib/push';
+
+/**
+ * Web push.
+ *
+ * Three things have to be true before a banner arrives — HTTPS, permission,
+ * and a subscription the proxy knows about — and the section says which one is
+ * missing rather than offering a toggle that silently does nothing. The iOS
+ * case gets its own line because "install to the home screen first" is not
+ * something anyone guesses.
+ */
+function NotificationsSection() {
+  const toast = useUi((s) => s.toast);
+  const [state, setState] = useState<PushState | 'loading'>('loading');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    void pushStatus().then((s) => {
+      if (live) setState(s.state);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const toggle = async (next: boolean) => {
+    setBusy(true);
+    try {
+      if (next) {
+        // Must stay inside the click: iOS refuses `requestPermission()` outside
+        // a user gesture, and awaiting anything first can forfeit it.
+        const result = await enablePush();
+        setState(result.state);
+        if (result.state === 'on') {
+          buzz('done');
+          toast('Notifications on for this device', 'success');
+        } else if (result.state === 'denied') {
+          toast('Notifications are blocked in your browser settings', 'warn');
+        }
+      } else {
+        await disablePush();
+        setState('off');
+        toast('Notifications off for this device', 'info');
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not change notifications', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * iOS exposes no Push API to a Safari *tab*, only to an installed app — so
+   * 'unsupported' there means "not installed yet", which is worth saying. On
+   * every other browser it means plain HTTP, and the secure-context card below
+   * already explains that; a second dead toggle would only be noise.
+   */
+  const needsInstall = isIosSafari() && !isStandalone();
+
+  if (state === 'loading') return null;
+  if (state === 'unsupported' && !needsInstall) return null;
+
+  return (
+    <>
+      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
+        NOTIFICATIONS
+      </div>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 550, fontSize: 'var(--type-title-sm)' }}>Push</div>
+            <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>
+              Banners when a background task finishes, a scheduled job runs, or the
+              agent needs an approval — even with the app closed
+            </div>
+          </div>
+          <Switch
+            checked={state === 'on'}
+            onChange={(next) => {
+              if (busy || state === 'denied' || state === 'server-off' || state === 'unsupported') {
+                return;
+              }
+              void toggle(next);
+            }}
+            label="Push notifications"
+          />
+        </div>
+
+        {needsInstall && (
+          <div style={{ fontSize: 12.5, color: 'var(--warn)', marginTop: 10 }}>
+            On iPhone and iPad, notifications only work once the app is added to
+            the Home Screen — Safari tabs never get them. Share → Add to Home
+            Screen, then open it from there.
+          </div>
+        )}
+
+        {state === 'denied' && (
+          <div style={{ fontSize: 12.5, color: 'var(--warn)', marginTop: 10 }}>
+            Blocked. The browser won't ask again — allow notifications for this
+            site in its own settings, then come back.
+          </div>
+        )}
+
+        {state === 'server-off' && (
+          <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginTop: 10 }}>
+            The proxy has push switched off (<code>PUSH_ENABLED=0</code>).
+          </div>
+        )}
+
+        {state === 'on' && (
+          <button
+            onClick={async () => {
+              buzz('tap');
+              try {
+                const delivered = await sendTestPush();
+                toast(
+                  delivered ? `Sent to ${delivered} device(s)` : 'No devices registered',
+                  delivered ? 'success' : 'warn',
+                );
+              } catch (err) {
+                toast(err instanceof Error ? err.message : 'Test failed', 'error');
+              }
+            }}
+            style={{
+              marginTop: 12,
+              background: 'var(--bg-elev)',
+              border: '1px solid var(--border-soft)',
+              borderRadius: 8,
+              color: 'var(--text)',
+              fontSize: 13,
+              padding: '8px 12px',
+            }}
+          >
+            Send a test notification
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
 
 /**
  * The model new chats start with.
@@ -287,6 +436,8 @@ export function SettingsTab() {
         </div>
         <Switch checked={haptics} onChange={setHaptics} label="Haptics" />
       </div>
+
+      <NotificationsSection />
 
       <DefaultModelSection />
 

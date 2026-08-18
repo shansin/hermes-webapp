@@ -10,5 +10,8 @@ certs/
 *.log
 .DS_Store
 .hermes-webapp.pid
+# Push subscriptions and the generated VAPID keypair.
+.hermes-push.json
+.hermes-push.json.tmp
 .vscode/
 .idea/

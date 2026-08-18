@@ -6,7 +6,12 @@
  *   phone ──http──> :3000 ─┬─ /api/*  ──> 127.0.0.1:9119  (REST, Host+Bearer rewritten)
  *                          ├─ /api/ws ──> 127.0.0.1:9119  (JSON-RPC, Origin rewritten)
  *                          ├─ /healthz                    (proxy's own status)
+ *                          ├─ /push/*                     (web-push subscriptions)
  *                          └─ /*      ──> web/dist        (the React PWA)
+ *
+ * The one piece of state the proxy owns is the push subscription list, plus a
+ * gateway socket of its own to drive it — see `push/events.ts` for why that
+ * cannot ride on the per-client proxy socket.
  *
  * We deliberately do not implement any agent logic — Hermes already has all of
  * it, including the kanban board (`/api/plugins/kanban/*`, proxied like the
@@ -21,6 +26,9 @@ import { createServer as createHttpsServer } from 'node:https';
 import { config, getToken, resolveToken, upstreamHttp, upstreamHost } from './config.js';
 import { log } from './log.js';
 import { apiProxy } from './routers/apiProxy.js';
+import { pushRouter } from './routers/push.js';
+import { startPushListener, stopPushListener } from './push/events.js';
+import { pushPublicKey } from './push/send.js';
 import { attachWsProxy } from './routers/wsProxy.js';
 import { staticRouter, hasBuiltWeb, initStatic } from './static.js';
 
@@ -87,11 +95,13 @@ app.get('/healthz', async (c) => {
     upstream: upstreamHost,
     hasToken: Boolean(token),
     webBuilt: hasBuiltWeb(),
+    pushEnabled: Boolean(pushPublicKey()),
     lanUrl: lanUrl(),
     publicUrl: config.PUBLIC_URL ?? null,
   });
 });
 
+app.route('/', pushRouter);
 app.route('/', apiProxy);
 app.route('/', staticRouter);
 
@@ -171,6 +181,8 @@ const server = serve(
     log.info(`  Hermes backend: ${upstreamHost} (token ${token ? 'ok' : 'MISSING'})`);
     if (!config.https && !config.PUBLIC_URL) {
       log.info('  HTTP mode — PWA install/offline/push stay dormant until TLS is configured.');
+    } else if (pushPublicKey()) {
+      log.info('  Web push:       ready (enable it in Settings on the phone)');
     }
     if (!hasBuiltWeb()) log.warn('  web/dist not built — run `pnpm build`.');
   },
@@ -178,9 +190,14 @@ const server = serve(
 
 attachWsProxy(server as unknown as Parameters<typeof attachWsProxy>[0]);
 
+// Held open for the life of the process: push exists to deliver when no
+// browser is connected, so it cannot depend on a client socket being up.
+startPushListener();
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
     log.info(`${signal} — shutting down`);
+    stopPushListener();
     server.close(() => process.exit(0));
     // Don't let a wedged keep-alive socket hold the process open forever.
     setTimeout(() => process.exit(0), 3000).unref();

@@ -90,6 +90,13 @@ export default defineConfig({
       },
       workbox: {
         /**
+         * The `push` / `notificationclick` / `pushsubscriptionchange`
+         * listeners. `generateSW` builds the whole worker from this config and
+         * offers no hook to add code, so they are imported from a hand-written
+         * file in `public/` — see the comment at the top of `push-sw.js`.
+         */
+        importScripts: ['push-sw.js'],
+        /**
          * Take control of the page that registered us, instead of waiting for
          * the next navigation. Without this the first load is uncontrolled, so
          * nothing populates the runtime caches — install the app, lose
@@ -106,10 +113,13 @@ export default defineConfig({
          * offline. They stay network-loaded, and `runtimeCaching` below keeps
          * whichever ones actually get used.
          */
-        globIgnores: ['**/assets/diagrams/**'],
+        // `push-sw.js` is imported by the worker itself, so precaching it
+        // would have the worker cache a copy of its own source and serve a
+        // stale one after an update.
+        globIgnores: ['**/assets/diagrams/**', '**/push-sw.js'],
         navigateFallback: '/index.html',
         // Never let the SW answer an API call from cache by accident.
-        navigateFallbackDenylist: [/^\/api/, /^\/healthz/],
+        navigateFallbackDenylist: [/^\/api/, /^\/healthz/, /^\/push/],
         runtimeCaching: [
           {
             // Session history is the one thing worth reading offline.

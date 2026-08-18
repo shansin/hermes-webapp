@@ -14,17 +14,26 @@ import { z } from 'zod';
  * up whether the process was started from the root (`start.sh`) or from
  * `server/` (`pnpm --filter … dev`).
  */
+let dotEnvDir: string | null = null;
+
 function findDotEnv(): string | null {
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 5; i++) {
     const candidate = resolve(dir, '.env');
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(candidate)) {
+      dotEnvDir = dir;
+      return candidate;
+    }
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
   const fromCwd = resolve(process.cwd(), '.env');
-  return existsSync(fromCwd) ? fromCwd : null;
+  if (existsSync(fromCwd)) {
+    dotEnvDir = process.cwd();
+    return fromCwd;
+  }
+  return null;
 }
 
 // Hand-rolled rather than pulling in dotenv for a dozen lines.
@@ -62,6 +71,22 @@ const Schema = z.object({
     .transform((u) => u?.replace(/\/+$/, '')),
   HTTPS_CERT: z.string().optional(),
   HTTPS_KEY: z.string().optional(),
+  /**
+   * Web-push identity. Optional: when unset, a keypair is generated on first
+   * boot and persisted next to `.env`, so push works with no setup once the
+   * app is served over TLS. Set them explicitly to pin a keypair across
+   * machines — rotating the public key invalidates every existing
+   * subscription, so the stored one is only ever generated once.
+   */
+  VAPID_PUBLIC_KEY: z.string().default(''),
+  VAPID_PRIVATE_KEY: z.string().default(''),
+  /** Contact address VAPID requires. Push services want mailto: or https:. */
+  VAPID_SUBJECT: z.string().default('mailto:hermes@localhost'),
+  /** Set to 0 to keep the proxy from holding a socket open for push. */
+  PUSH_ENABLED: z
+    .enum(['0', '1'])
+    .default('1')
+    .transform((v) => v === '1'),
   LOG_LEVEL: z
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
     .default('info'),
@@ -145,6 +170,13 @@ export function clearToken(): void {
   if (env.HERMES_TOKEN) return;
   sessionToken = '';
 }
+
+/**
+ * Where the proxy keeps files it owns (push subscriptions, the generated VAPID
+ * keypair). Sits next to `.env` so a repo checkout keeps its state together,
+ * falling back to the working directory when there is no `.env` at all.
+ */
+export const stateDir = dotEnvDir ?? process.cwd();
 
 export const config = {
   ...env,
