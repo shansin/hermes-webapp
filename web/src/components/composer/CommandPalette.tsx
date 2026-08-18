@@ -139,11 +139,32 @@ export function CommandPalette({ open, onClose, onRun, onSeed }: Props) {
           {group.rows.map((row) => (
             <button className="palette__row" key={row.command} onClick={() => pick(row.command)}>
               <span className="palette__cmd">{row.command}</span>
-              <span className="palette__desc">{row.description}</span>
+              <PaletteDesc text={row.description} />
             </button>
           ))}
         </div>
       ))}
     </Sheet>
+  );
+}
+
+/**
+ * Split the gateway's trailing `(usage: …)` onto its own line.
+ *
+ * The registry appends it to the description, so commands with real arguments
+ * — `/heartbeat`, `/handoff` — rendered as three wrapped lines of parenthetical
+ * where the sentence explaining what the command does was the part worth
+ * reading. Same information, ranked.
+ */
+function PaletteDesc({ text }: { text: string }) {
+  const m = /^(.*?)\s*\(usage:\s*(.+)\)\s*$/s.exec(text);
+  if (!m) return <span className="palette__desc">{text}</span>;
+  return (
+    <>
+      <span className="palette__desc">{m[1]}</span>
+      <span className="palette__desc" style={{ fontFamily: 'var(--mono)', opacity: 0.62 }}>
+        {m[2]}
+      </span>
+    </>
   );
 }

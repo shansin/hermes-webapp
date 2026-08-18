@@ -96,19 +96,16 @@ export function Composer({
   const fileRef = useRef<HTMLInputElement>(null);
   const recRef = useRef<Recorder | { stop: () => Promise<string>; cancel: () => void } | null>(null);
 
-  // Decide once whether a mic button can do anything useful here.
+  // Whether a mic button can do anything useful here, decided from local
+  // capabilities alone. Asking the server whether STT is mounted needs a
+  // request that fails by design (an empty body, so a 400 means "mounted"),
+  // and doing that at mount spent one failed request and one red console
+  // error on every cold start — on every phone launch, once the app moved to
+  // HTTPS and recording became possible at all. The answer is only needed
+  // when someone actually taps the mic, so `startVoice` asks for it there and
+  // `probeAudio` caches it from then on.
   useEffect(() => {
-    let alive = true;
-    probeAudio()
-      .then((caps) => {
-        if (alive) setVoiceOk((caps.stt && caps.canRecord) || caps.webSpeech);
-      })
-      .catch(() => {
-        if (alive) setVoiceOk(webSpeechAvailable());
-      });
-    return () => {
-      alive = false;
-    };
+    setVoiceOk(canRecord() || webSpeechAvailable());
   }, []);
 
   // Adopt shared text once, appending rather than clobbering a draft.
@@ -215,6 +212,10 @@ export function Composer({
     try {
       const caps = await probeAudio();
       // Server STT is more accurate, but needs a secure context to record.
+      if (!(caps.stt && caps.canRecord) && !caps.webSpeech) {
+        toast('Voice input is not available on this device', 'warn');
+        return;
+      }
       recRef.current =
         caps.stt && canRecord() ? await startRecording() : webSpeechDictate();
       setRecording(true);

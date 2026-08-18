@@ -688,6 +688,13 @@ button.header__sub::after {
   border-radius: var(--shape-xl);
 }
 
+/* A send button painted full-accent while disabled invites a tap that does
+   nothing. Matches the .fab treatment below it. */
+.composer__btn--send:disabled {
+  opacity: 0.38;
+  filter: saturate(0.6);
+}
+
 .fab:disabled {
   opacity: 0.5;
   pointer-events: none;

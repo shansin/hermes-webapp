@@ -41,6 +41,15 @@ export function FilesScreen() {
   const [viewing, setViewing] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<FsEntry | null>(null);
   const [newFolder, setNewFolder] = useState<string | null>(null);
+  /**
+   * Dotfiles are hidden by default: a home directory opens on ~30 of them
+   * before anything a person put there themselves, which buries the reason
+   * they came to this screen. The count in the toggle keeps them discoverable
+   * rather than merely absent.
+   */
+  const [showHidden, setShowHidden] = useState(false);
+  /** Path whose destructive action is currently revealed. */
+  const [armed, setArmed] = useState<string | null>(null);
 
   const defaultCwd = useDefaultCwd();
   const listing = useDirectory(dir);
@@ -65,15 +74,18 @@ export function FilesScreen() {
     setParams({}, { replace: true });
   }, [requested, setParams]);
 
-  const { dirs, files } = useMemo(() => {
-    const entries = listing.data?.entries ?? [];
+  const { dirs, files, hiddenCount } = useMemo(() => {
+    const all = listing.data?.entries ?? [];
+    const hidden = all.filter((e) => e.name.startsWith('.')).length;
+    const entries = showHidden ? all : all.filter((e) => !e.name.startsWith('.'));
     const byName = (a: FsEntry, b: FsEntry) =>
       a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
     return {
       dirs: entries.filter((e) => e.isDirectory).sort(byName),
       files: entries.filter((e) => !e.isDirectory).sort(byName),
+      hiddenCount: hidden,
     };
-  }, [listing.data]);
+  }, [listing.data, showHidden]);
 
   const parent = dir ? parentOf(dir) : null;
 
@@ -145,8 +157,29 @@ export function FilesScreen() {
           }}
         >
           <div className="has-fab" style={{ padding: '6px 12px 16px' }}>
+            {hiddenCount > 0 && (
+              <button
+                className="chip"
+                onClick={() => {
+                  buzz('tap');
+                  setShowHidden((v) => !v);
+                }}
+                style={{ marginBottom: 8 }}
+              >
+                {showHidden ? 'Hide' : 'Show'} {hiddenCount} hidden
+              </button>
+            )}
+
             {dirs.length === 0 && files.length === 0 && (
-              <Empty icon="📂" title="Empty folder" hint="Nothing here yet." />
+              <Empty
+                icon="📂"
+                title={hiddenCount > 0 ? 'Nothing but hidden files' : 'Empty folder'}
+                hint={
+                  hiddenCount > 0
+                    ? `${hiddenCount} hidden entries here — use the toggle above.`
+                    : 'Nothing here yet.'
+                }
+              />
             )}
 
             {[...dirs, ...files].map((entry) => (
@@ -163,16 +196,35 @@ export function FilesScreen() {
                   <span className="files__name">{entry.name}</span>
                   {entry.isDirectory && <span className="files__chevron">›</span>}
                 </button>
-                <button
-                  className="icon-btn icon-btn--danger"
-                  aria-label={`Delete ${entry.name}`}
-                  onClick={() => {
-                    buzz('warn');
-                    setConfirmDelete(entry);
-                  }}
-                >
-                  <IconTrash size={16} />
-                </button>
+                {/* Delete used to sit in red beside every row, giving
+                    destruction the same billing as opening a folder — and
+                    disagreeing with Sessions, where it hides behind a gesture.
+                    It is revealed per row instead; the confirm sheet still
+                    stands behind it. */}
+                {armed === entry.path ? (
+                  <button
+                    className="icon-btn icon-btn--danger"
+                    aria-label={`Delete ${entry.name}`}
+                    onClick={() => {
+                      buzz('warn');
+                      setConfirmDelete(entry);
+                      setArmed(null);
+                    }}
+                  >
+                    <IconTrash size={16} />
+                  </button>
+                ) : (
+                  <button
+                    className="icon-btn"
+                    aria-label={`More actions for ${entry.name}`}
+                    onClick={() => {
+                      buzz('tap');
+                      setArmed(entry.path);
+                    }}
+                  >
+                    ⋯
+                  </button>
+                )}
               </div>
             ))}
           </div>

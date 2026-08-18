@@ -33,6 +33,25 @@ try {
   // Not a secure context — PWA features stay off. See README.
 }
 
+/**
+ * Re-issue the first load's data requests once the worker is in charge.
+ *
+ * `clientsClaim` lets a newly installed worker take control of the page that
+ * registered it, but control arrives *after* that page has already fetched its
+ * data — those responses bypassed the worker and so were never cached. The
+ * result was an app that looked installed but failed offline until its second
+ * launch. Refetching on `controllerchange` costs one extra round of requests on
+ * the visit that installs the worker, and buys a first launch that survives
+ * going offline.
+ */
+try {
+  navigator.serviceWorker?.addEventListener('controllerchange', () => {
+    void queryClient.invalidateQueries();
+  });
+} catch {
+  // No service worker support — nothing to warm.
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>

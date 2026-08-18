@@ -137,6 +137,12 @@ instead of the LAN IP. Open it on the phone and use "Add to Home Screen" — it
 launches standalone, caches session history for offline reading, and unlocks
 voice input.
 
+Offline, the session list comes from the service worker cache and opening a
+conversation shows its stored transcript read-only, with a banner saying so —
+the live transcript arrives over the WebSocket, which is exactly what is
+missing, so the app reads the REST copy instead and goes live again on
+reconnect.
+
 Two one-time prerequisites, both of which `start.sh` will name if they're
 missing:
 

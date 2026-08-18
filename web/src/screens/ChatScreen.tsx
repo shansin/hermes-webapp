@@ -16,13 +16,13 @@ import { ApprovalSheet } from '../components/chat/ApprovalSheet';
 import { ModelSheet } from '../components/chat/ModelSheet';
 import { ContextSheet } from '../components/chat/ContextSheet';
 import { IconPlus, IconChevron } from '../components/shared/Icons';
-import { Loader } from '../components/shared/misc';
+import { Empty, Loader } from '../components/shared/misc';
 import { useSession } from '../store/session';
 import { MenuButton } from '../components/shared/MenuButton';
 import { useUi } from '../store/ui';
 import { hermes } from '../ws/client';
 import { createSession, fetchHistory, resumeSession } from '../api/gateway';
-import { fetchSessionTitle } from '../api/sessions';
+import { fetchSessionTitle, fetchStoredMessages } from '../api/sessions';
 import { useSlashRunner } from '../lib/useSlashRunner';
 
 export function ChatScreen() {
@@ -32,6 +32,28 @@ export function ChatScreen() {
   const [palette, setPalette] = useState(false);
   const [commandSeed, setCommandSeed] = useState('');
   const [booting, setBooting] = useState(false);
+  /**
+   * Transcript read from the REST cache because the socket is down. The
+   * conversation is visible but frozen — the composer already refuses to send
+   * without a gateway session, and the banner says why.
+   */
+  const [offlineView, setOfflineView] = useState(false);
+  /**
+   * Browser connectivity, which leads `connection` — a WebSocket can read OPEN
+   * for a long while after the radio drops, and the screen should not wait for
+   * a timeout to admit what the browser already knows.
+   */
+  const [online, setOnline] = useState(() => navigator.onLine);
+  useEffect(() => {
+    const sync = () => setOnline(navigator.onLine);
+    window.addEventListener('online', sync);
+    window.addEventListener('offline', sync);
+    return () => {
+      window.removeEventListener('online', sync);
+      window.removeEventListener('offline', sync);
+    };
+  }, []);
+
 
   const sessionId = useSession((s) => s.sessionId);
   const title = useSession((s) => s.title);
@@ -45,6 +67,9 @@ export function ChatScreen() {
 
   const connection = useUi((s) => s.connection);
   const toast = useUi((s) => s.toast);
+
+  /** A socket that is actually usable, as opposed to one that merely says so. */
+  const live = online && connection === 'open';
 
   // Guards against double-boot in StrictMode and against a reconnect
   // re-running session setup for a session we already hold.
@@ -78,8 +103,13 @@ export function ChatScreen() {
     }
   };
 
-  const doResume = async (storedId: string) => {
-    if (bootingRef.current) return;
+  /** Resolves true when a live session was adopted. */
+  const doResume = async (storedId: string): Promise<boolean> => {
+    if (bootingRef.current) return false;
+    // The socket can still read OPEN for a while after the radio drops, so
+    // asking it first would buy a full timeout before learning what the
+    // browser already knows. The cached-transcript effect takes it from here.
+    if (!navigator.onLine) return false;
     bootingRef.current = true;
     setBooting(true);
     reset();
@@ -94,6 +124,12 @@ export function ChatScreen() {
       loadHistory(history);
       void refreshUsage();
 
+      // Warm the offline copy. The live transcript comes over the socket, so
+      // without this the REST mirror the service worker caches would never be
+      // requested while online — and would therefore never be there when it
+      // is the only thing that can answer.
+      void fetchStoredMessages(res.stored_session_id ?? storedId).catch(() => {});
+
       // Restore the stored title: `session.title` only fires when the agent
       // names a conversation, so a resumed one would keep the placeholder.
       // Prefer a title the resume result already carried (schema passes
@@ -105,12 +141,20 @@ export function ChatScreen() {
         const stored = await fetchSessionTitle(res.stored_session_id ?? storedId);
         if (stored) setTitle(stored);
       }
+      return true;
     } catch (err) {
+      // Offline is not a failed resume, it is a missing network: falling back
+      // to `startNew` would spend a second timeout on a socket that cannot
+      // answer either, and the cached-transcript effect below covers the case
+      // properly. Leave the `resume=` intent in the URL so a reconnect picks
+      // it up.
+      if (!navigator.onLine || connection !== 'open') return false;
+
       toast(err instanceof Error ? err.message : 'Could not resume', 'error');
       // Fall back to a fresh session rather than leaving a dead screen.
       bootingRef.current = false;
       await startNew();
-      return;
+      return false;
     } finally {
       bootingRef.current = false;
       setBooting(false);
@@ -131,9 +175,11 @@ export function ChatScreen() {
     if (connection !== 'open') return;
 
     if (resumeId) {
-      void doResume(resumeId).then(() => {
-        // Clear the intent so a reconnect doesn't resume all over again.
-        setParams({}, { replace: true });
+      void doResume(resumeId).then((ok) => {
+        // Clear the intent so a reconnect doesn't resume all over again —
+        // but only on success, or a resume that failed for want of a network
+        // would lose the very id the reconnect needs.
+        if (ok) setParams({}, { replace: true });
       });
       return;
     }
@@ -146,6 +192,47 @@ export function ChatScreen() {
     // Deliberately keyed on the connection + URL intent only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection, resumeId, wantNew]);
+
+  /**
+   * Offline: show the stored transcript instead of a spinner.
+   *
+   * The live transcript arrives over the socket (`session.history`), which is
+   * exactly what is unavailable here, so this reads the REST copy that the
+   * service worker caches. The `resume=` intent is deliberately left in the
+   * URL: when the socket comes back the boot effect above resumes the session
+   * for real and replaces this with the live one.
+   */
+  useEffect(() => {
+    if (live || !resumeId || sessionId) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const stored = await fetchStoredMessages(resumeId);
+        if (!alive || !stored.length) return;
+        loadHistory(
+          stored.map((m) => ({
+            role: m.role,
+            text: m.content ?? '',
+            name: m.tool_name ?? undefined,
+            reasoning: m.reasoning ?? undefined,
+          })),
+        );
+        setOfflineView(true);
+        const stitle = await fetchSessionTitle(resumeId);
+        if (alive && stitle) setTitle(stitle);
+      } catch {
+        // Nothing cached for this session — the waiting state below stands.
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [live, resumeId, sessionId, loadHistory, setTitle]);
+
+  // Drop the read-only view the moment a real session is adopted.
+  useEffect(() => {
+    if (sessionId && offlineView) setOfflineView(false);
+  }, [sessionId, offlineView]);
 
   // Feed gateway events into the session store.
   useEffect(() => hermes.onEvent((params) => useSession.getState().applyEvent(params)), []);
@@ -189,7 +276,25 @@ export function ChatScreen() {
         </div>
       )}
 
-      {booting && !sessionId ? (
+      {offlineView && (
+        <div className="conn-banner conn-banner--reconnecting">
+          Offline — showing the saved transcript. It goes live when the
+          connection returns.
+        </div>
+      )}
+
+      {!live && !sessionId && !offlineView ? (
+        <Empty
+          icon="⚡"
+          title="Waiting for connection…"
+          hint="Hermes is unreachable. This screen picks up on its own once the socket is back."
+          action={
+            <button className="btn" onClick={() => hermes.connect()}>
+              Retry now
+            </button>
+          }
+        />
+      ) : booting && !sessionId ? (
         <div className="empty">
           <Loader />
           <div className="empty__title">Starting a session…</div>

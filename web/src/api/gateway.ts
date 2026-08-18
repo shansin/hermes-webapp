@@ -4,7 +4,7 @@
  * Kept separate from the store so screens can call the gateway without
  * pulling in streaming state, and so every method name lives in one place.
  */
-import { hermes } from '../ws/client';
+import { hermes, CONTROL_TIMEOUT_MS } from '../ws/client';
 import { dispatchCommand } from './commands';
 import {
   ModelOptionsSchema,
@@ -31,23 +31,31 @@ export async function createSession(opts: CreateOptions = {}): Promise<SessionCr
   if (opts.cwd) params.cwd = opts.cwd;
   if (opts.title) params.title = opts.title;
 
-  const raw = await hermes.call('session.create', params);
+  const raw = await hermes.call('session.create', params, { timeoutMs: CONTROL_TIMEOUT_MS });
   return SessionCreateResultSchema.parse(raw);
 }
 
 /** Reopen a stored session by its persistent id. */
 export async function resumeSession(storedId: string): Promise<SessionCreateResult> {
-  const raw = await hermes.call('session.resume', { session_id: storedId, cols: 80, source: 'web' });
+  const raw = await hermes.call(
+    'session.resume',
+    { session_id: storedId, cols: 80, source: 'web' },
+    { timeoutMs: CONTROL_TIMEOUT_MS },
+  );
   return SessionCreateResultSchema.parse(raw);
 }
 
 export async function fetchHistory(sessionId: string): Promise<HistoryMessage[]> {
-  const raw = await hermes.call('session.history', { session_id: sessionId });
+  const raw = await hermes.call(
+    'session.history',
+    { session_id: sessionId },
+    { timeoutMs: CONTROL_TIMEOUT_MS },
+  );
   return SessionHistorySchema.parse(raw).messages;
 }
 
 export async function fetchModelOptions(): Promise<ModelOptions> {
-  const raw = await hermes.call('model.options', {});
+  const raw = await hermes.call('model.options', {}, { timeoutMs: CONTROL_TIMEOUT_MS });
   return ModelOptionsSchema.parse(raw);
 }
 
@@ -64,19 +72,27 @@ export async function setModel(
   const parts = [model];
   if (opts.provider) parts.push(`--provider`, opts.provider);
   if (opts.sessionOnly !== false) parts.push('--session');
-  await hermes.call('config.set', {
-    session_id: sessionId,
-    key: 'model',
-    value: parts.join(' '),
-  });
+  await hermes.call(
+    'config.set',
+    { session_id: sessionId, key: 'model', value: parts.join(' ') },
+    { timeoutMs: CONTROL_TIMEOUT_MS },
+  );
 }
 
 export async function setReasoning(sessionId: string, level: string): Promise<void> {
-  await hermes.call('config.set', { session_id: sessionId, key: 'reasoning', value: level });
+  await hermes.call(
+    'config.set',
+    { session_id: sessionId, key: 'reasoning', value: level },
+    { timeoutMs: CONTROL_TIMEOUT_MS },
+  );
 }
 
 export async function setApprovalMode(sessionId: string, mode: string): Promise<void> {
-  await hermes.call('config.set', { session_id: sessionId, key: 'approval_mode', value: mode });
+  await hermes.call(
+    'config.set',
+    { session_id: sessionId, key: 'approval_mode', value: mode },
+    { timeoutMs: CONTROL_TIMEOUT_MS },
+  );
 }
 
 export async function compressSession(sessionId: string): Promise<void> {

@@ -197,7 +197,11 @@ export function SessionRowItem({
 
         <div style={{ flex: 1, minWidth: 0 }}>
           {/* Two lines rather than one: most titles are sentences, and a
-              single-line ellipsis was cutting them mid-word. */}
+              single-line ellipsis was cutting them mid-word. The clamp can
+              only place its ellipsis at a break opportunity, so a title that
+              is one long unbreakable token — a path, typically, from a prompt
+              about a file — hard-clipped mid-word instead. `anywhere` gives
+              the clamp somewhere to break. */}
           <div
             style={{
               fontWeight: 550,
@@ -206,6 +210,7 @@ export function SessionRowItem({
               WebkitLineClamp: 2,
               WebkitBoxOrient: 'vertical',
               overflow: 'hidden',
+              overflowWrap: 'anywhere',
               lineHeight: 1.35,
             }}
           >

@@ -86,6 +86,14 @@ export default defineConfig({
         },
       },
       workbox: {
+        /**
+         * Take control of the page that registered us, instead of waiting for
+         * the next navigation. Without this the first load is uncontrolled, so
+         * nothing populates the runtime caches — install the app, lose
+         * connectivity, open it, and the session list fails with "Couldn't
+         * load" because its only chance to cache never happened.
+         */
+        clientsClaim: true,
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         /**
          * Mermaid ships one lazy chunk per diagram type — architecture,

@@ -29,6 +29,20 @@ const RECONNECT_MAX_MS = 15_000;
 /** Generous: a cold agent build behind `session.create` can take a while. */
 const REQUEST_TIMEOUT_MS = 180_000;
 
+/**
+ * Control-plane budget.
+ *
+ * The 180s above is sized for calls that can carry real agent work. Applying
+ * it to everything meant a `session.resume` issued just as connectivity dropped
+ * sat on a spinner for three minutes before failing — the socket was still
+ * `OPEN` as far as the browser knew, so the frame went out and nothing came
+ * back. Calls that only move metadata around should give up while the person
+ * holding the phone is still watching.
+ */
+const CONTROL_TIMEOUT_MS = 15_000;
+
+export { CONTROL_TIMEOUT_MS };
+
 export class HermesClient {
   private ws: WebSocket | null = null;
   private nextId = 1;
@@ -145,8 +159,18 @@ export class HermesClient {
     }
   }
 
-  /** Issue a JSON-RPC call. Rejects with `RpcError` on a gateway error. */
-  call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  /**
+   * Issue a JSON-RPC call. Rejects with `RpcError` on a gateway error.
+   *
+   * `timeoutMs` defaults to the long budget, since a call that carries a turn
+   * is the one that needs it; callers that only read or set metadata should
+   * pass `CONTROL_TIMEOUT_MS` so a dead socket surfaces quickly.
+   */
+  call<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    { timeoutMs = REQUEST_TIMEOUT_MS }: { timeoutMs?: number } = {},
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const socket = this.ws;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -159,7 +183,7 @@ export class HermesClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${method} timed out`));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
 
       this.pending.set(id, {
         resolve: resolve as (v: unknown) => void,

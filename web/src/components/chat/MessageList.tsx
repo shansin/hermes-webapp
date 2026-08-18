@@ -11,13 +11,15 @@
  * individually capped and scrollable, which is what actually bounds the DOM.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Markdown } from './Markdown';
 import { ToolCallCard } from './ToolCallCard';
 import { ThinkingBlock } from './ThinkingBlock';
 import { SubagentCard } from './SubagentCard';
 import { EditTurnSheet } from './EditTurnSheet';
-import { IconDown, IconRefresh, IconSpeaker } from '../shared/Icons';
-import { Empty, formatTokens } from '../shared/misc';
+import { IconChevron, IconDown, IconRefresh, IconSpeaker } from '../shared/Icons';
+import { useSessions } from '../../api/sessions';
+import { Empty, formatTokens, relTime } from '../shared/misc';
 import { useSession, type MessageTime } from '../../store/session';
 import { speak } from '../../lib/audio';
 import { useUi } from '../../store/ui';
@@ -110,6 +112,7 @@ export function MessageList() {
             icon="✦"
             title="Ready when you are"
             hint="Ask a question, or use a quick action below."
+            action={<RecentSessions />}
           />
         )}
 
@@ -260,5 +263,77 @@ export function MessageList() {
         }}
       />
     </>
+  );
+}
+
+/**
+ * The three most recent conversations, offered on the empty chat.
+ *
+ * This is the screen the app opens on, and picking up yesterday's thread is
+ * the most common thing to want next — it was previously three taps away
+ * through the drawer and the session list, on a screen that was otherwise
+ * two-thirds empty.
+ */
+function RecentSessions() {
+  const navigate = useNavigate();
+  const { data } = useSessions(3);
+  const rows = data?.sessions?.slice(0, 3) ?? [];
+  if (rows.length === 0) return null;
+
+  return (
+    <div style={{ width: '100%', maxWidth: 340, marginTop: 18 }}>
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: '0.1em',
+          color: 'var(--text-faint)',
+          marginBottom: 8,
+          textAlign: 'left',
+        }}
+      >
+        PICK UP WHERE YOU LEFT OFF
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {rows.map((r) => (
+          <button
+            key={r.id}
+            className="card"
+            onClick={() => {
+              buzz('tap');
+              navigate(`/chat?resume=${encodeURIComponent(r.id)}`);
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              textAlign: 'left',
+              padding: '10px 12px',
+              width: '100%',
+            }}
+          >
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span
+                style={{
+                  display: 'block',
+                  fontSize: 13.5,
+                  color: 'var(--text)',
+                  fontWeight: 550,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {r.title || 'Untitled'}
+              </span>
+              <span style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>
+                {r.message_count} msg · {relTime(r.ended_at ?? r.started_at)}
+              </span>
+            </span>
+            <IconChevron size={15} />
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
