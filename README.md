@@ -183,14 +183,24 @@ Notifications → Push**. Banners arrive with the app closed for:
 
 | Event | Notification |
 | --- | --- |
+| `message.complete` | the first ~140 characters of the reply |
 | `background.complete` | "Nightly index finished" |
 | `subagent.complete` | "Researcher finished" |
 | `notification.show` | whatever the agent asked to say |
 | `cron.changed` | "A scheduled job ran" |
 | `approval.request` | "Approval needed: Bash — rm -rf …" |
 
-That last one is the reason to bother: an approval blocks the turn until it is
-answered, and a phone in a pocket is the only place that answer can come from.
+The first and last are the reasons to bother: send a prompt, put the phone
+away, and the answer arrives as a banner — and an approval blocks the turn
+until it is answered, which is not something to discover an hour later.
+
+A reply that was interrupted, errored, or produced no prose stays silent
+rather than announcing an answer that isn't there. Markdown is flattened for
+the lock screen and code fences collapse to `[code]`.
+
+Notifications are tagged per conversation, so a second event in the same
+session replaces the first rather than stacking — one row per chat, however
+chatty the turn was. Approvals are exempt: a pending one is never replaced.
 
 There is nothing to configure. A VAPID keypair is generated on first boot and
 stored in `.hermes-push.json` next to `.env`, along with the devices that have

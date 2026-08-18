@@ -174,39 +174,78 @@ function str(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
+/** How much of a reply fits on a lock screen before the OS truncates anyway. */
+const PREVIEW_CHARS = 140;
+
+/**
+ * First line or so of a reply, as notification body text.
+ *
+ * Replies are markdown, and a lock screen renders none of it — so a leading
+ * heading or bullet marker is noise, and the newlines that separate them
+ * collapse to spaces. Enough to recognise the answer, not to read it.
+ */
+function previewOf(text: string | null): string | null {
+  if (!text) return null;
+
+  const flat = text
+    .replace(/```[\s\S]*?```/g, ' [code] ')
+    .replace(/^\s{0,3}[#>*-]+\s*/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!flat) return null;
+  return flat.length > PREVIEW_CHARS ? `${flat.slice(0, PREVIEW_CHARS - 1).trimEnd()}…` : flat;
+}
+
 /**
  * Map a gateway event to a notification, or null to stay silent.
  *
- * Deliberately the same four event types `useEventToasts` handles, plus
- * `approval.request` — an approval blocks the agent until it is answered, so
- * it is the one event where a banner on a locked phone is the difference
- * between a turn finishing and a turn sitting there all afternoon.
+ * The four types `useEventToasts` handles, plus two the in-app path has no
+ * need for:
+ *
+ *  - `approval.request`, because an approval blocks the agent until it is
+ *    answered, and a phone in a pocket is where that answer has to come from.
+ *  - `message.complete`, because "the agent replied while I was away" is the
+ *    single most common reason to want a banner at all.
  *
  * Everything else the gateway emits (token deltas, tool starts, status lines)
  * is firehose traffic that belongs on screen, never on a lock screen.
  */
-function toMessage(
+export function toMessage(
   type: string,
   payload: Record<string, unknown>,
   sessionId: string | null,
 ): PushMessage | null {
   const chatUrl = sessionId ? `/chat?session=${encodeURIComponent(sessionId)}` : '/chat';
 
+  /**
+   * One row per conversation.
+   *
+   * Tagging by session rather than by event type collapses "the agent
+   * replied", "the background task finished" and "here's a notification" for
+   * the same conversation into a single banner showing the most recent of
+   * them — which also settles whether a background task that ends with a reply
+   * produces one notification or two. Approvals are deliberately excluded
+   * below: replacing a pending approval with a later banner would bury the one
+   * thing that still needs an answer.
+   */
+  const sessionTag = `session:${sessionId ?? 'default'}`;
+
   switch (type) {
     case 'background.complete': {
       const label = str(payload.title) ?? 'Background task';
-      return { title: 'Hermes', body: `${label} finished`, url: chatUrl, tag: 'background', kind: type };
+      return { title: 'Hermes', body: `${label} finished`, url: chatUrl, tag: sessionTag, kind: type };
     }
 
     case 'subagent.complete': {
       const name = str(payload.name) ?? 'Subagent';
-      return { title: 'Hermes', body: `${name} finished`, url: chatUrl, tag: 'subagent', kind: type };
+      return { title: 'Hermes', body: `${name} finished`, url: chatUrl, tag: sessionTag, kind: type };
     }
 
     case 'notification.show': {
       const text = str(payload.text) ?? str(payload.message);
       if (!text) return null;
-      return { title: 'Hermes', body: text, url: chatUrl, tag: 'notification', kind: type };
+      return { title: 'Hermes', body: text, url: chatUrl, tag: sessionTag, kind: type };
     }
 
     case 'cron.changed':
@@ -217,6 +256,26 @@ function toMessage(
         tag: 'cron',
         kind: type,
       };
+
+    case 'message.complete': {
+      /**
+       * A turn that was stopped, errored or cancelled is not a reply, and
+       * announcing it as one is worse than silence — the banner would claim
+       * an answer that isn't there. `interrupted` is the value actually seen
+       * on the wire (the chat store keys off the same one); the others are
+       * defensive, since the gateway has no published schema.
+       */
+      const status = str(payload.status);
+      if (status && ['interrupted', 'cancelled', 'canceled', 'error', 'failed'].includes(status)) {
+        return null;
+      }
+
+      // A turn that only ran tools and produced no prose has nothing to say.
+      const preview = previewOf(str(payload.text));
+      if (!preview) return null;
+
+      return { title: 'Hermes', body: preview, url: chatUrl, tag: sessionTag, kind: type };
+    }
 
     case 'approval.request': {
       const tool = str(payload.tool) ?? str(payload.name) ?? 'A tool';
