@@ -1,14 +1,140 @@
 /**
- * Settings: theme, haptics, onboarding QR, backend status, and the hidden dev
- * panel (triple-tap the heading) that shows raw JSON-RPC frames.
+ * Settings: theme, haptics, the default model, onboarding QR, backend status,
+ * and the hidden dev panel (triple-tap the heading) that shows raw JSON-RPC
+ * frames.
  */
 import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { useHealth } from '../../api/hub';
+import { useDefaultModel, useHealth, useSetDefaultModel } from '../../api/hub';
 import { useUi, type Theme } from '../../store/ui';
 import { Switch } from '../shared/misc';
+import { Sheet } from '../shared/Sheet';
+import { ModelPicker } from '../shared/ModelPicker';
 import { hermes } from '../../ws/client';
 import { buzz } from '../../lib/haptics';
+
+/**
+ * The model new chats start with.
+ *
+ * Deliberately separate from the model sheet in chat: that one hot-swaps the
+ * running session and leaves this untouched, this one writes Hermes' own config
+ * and leaves running sessions untouched. Saying so on the card is the only way
+ * a user can tell the two apart from the phone.
+ */
+function DefaultModelSection() {
+  const { data, isLoading } = useDefaultModel();
+  const setDefault = useSetDefaultModel();
+  const toast = useUi((s) => s.toast);
+
+  const [open, setOpen] = useState(false);
+  // Set when Hermes wants a second look at an expensive model. Holds the pick
+  // so confirming can resend it without making the user find it again.
+  const [confirm, setConfirm] = useState<{ model: string; provider: string; message: string } | null>(
+    null,
+  );
+
+  const main = data?.main;
+  const busy = setDefault.isPending;
+
+  const apply = async (model: string, provider: string, confirmExpensive = false) => {
+    try {
+      const res = await setDefault.mutateAsync({ model, provider, confirmExpensive });
+      if (res.confirm_required) {
+        setConfirm({ model, provider, message: res.confirm_message || 'This model is expensive.' });
+        return;
+      }
+      buzz('done');
+      toast(`New chats will use ${model}`, 'success');
+      setConfirm(null);
+      setOpen(false);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not set the default model', 'error');
+    }
+  };
+
+  return (
+    <>
+      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
+        DEFAULT MODEL
+      </div>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <button
+          onClick={() => {
+            buzz('tap');
+            setOpen(true);
+          }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            width: '100%',
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            textAlign: 'left',
+            color: 'var(--text)',
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontFamily: 'var(--mono)',
+                fontSize: 13.5,
+                overflowWrap: 'anywhere',
+              }}
+            >
+              {isLoading ? '…' : main?.model || 'Not set'}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 2 }}>
+              {main?.provider ? `via ${main.provider}` : 'Hermes picks one automatically'}
+            </div>
+          </div>
+          <span style={{ fontSize: 13, color: 'var(--accent)' }}>Change</span>
+        </button>
+        <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 9, lineHeight: 1.45 }}>
+          Used by new chats, everywhere Hermes runs — including the terminal.
+          The chat you have open keeps its own model; change that from the model
+          button in the composer.
+        </div>
+      </div>
+
+      <Sheet open={open} onClose={() => setOpen(false)} title="Default model">
+        {confirm ? (
+          <div>
+            <div style={{ fontSize: 13.5, color: 'var(--text-dim)', lineHeight: 1.5, marginBottom: 14 }}>
+              {confirm.message}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn" style={{ flex: 1 }} onClick={() => setConfirm(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn--primary"
+                style={{ flex: 1 }}
+                disabled={busy}
+                onClick={() => void apply(confirm.model, confirm.provider, true)}
+              >
+                Use it anyway
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
+              Saved to Hermes' config and used by every new chat. Running chats
+              are unaffected.
+            </div>
+            <ModelPicker
+              selected={main?.model}
+              onPick={(m, p) => void apply(m, p)}
+              busy={busy}
+            />
+          </>
+        )}
+      </Sheet>
+    </>
+  );
+}
 
 const THEMES: { id: Theme; label: string; swatch: string }[] = [
   { id: 'dark', label: 'Dark', swatch: '#0b0b0f' },
@@ -161,6 +287,8 @@ export function SettingsTab() {
         </div>
         <Switch checked={haptics} onChange={setHaptics} label="Haptics" />
       </div>
+
+      <DefaultModelSection />
 
       <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
         BACKEND

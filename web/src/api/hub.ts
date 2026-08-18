@@ -195,6 +195,74 @@ export function useModelAnalytics() {
   });
 }
 
+// --- default model -----------------------------------------------------------
+
+export interface ModelAssignment {
+  provider: string;
+  model: string;
+}
+
+/**
+ * The model **new** sessions start with, as stored in `~/.hermes/config.yaml`.
+ *
+ * Read from `/api/model/auxiliary` despite the name: that endpoint returns the
+ * auxiliary task slots *and* the main assignment, and it is the only route that
+ * reports what is written to disk. `/api/model/info` and the gateway's
+ * `model.options` both answer with the live resolved model instead, which drifts
+ * from the stored default as soon as any chat switches model for itself.
+ */
+export function useDefaultModel() {
+  return useQuery({
+    queryKey: ['model', 'default'],
+    queryFn: () =>
+      api.get<{ main: ModelAssignment; tasks: { task: string; provider: string; model: string }[] }>(
+        '/api/model/auxiliary',
+      ),
+    staleTime: 60_000,
+  });
+}
+
+export interface SetModelResult {
+  ok?: boolean;
+  /**
+   * Set when the model is priced steeply enough that Hermes wants a second
+   * look. Nothing is written in that case — resend with `confirmExpensive`.
+   */
+  confirm_required?: boolean;
+  confirm_message?: string;
+}
+
+/**
+ * Write the default model. Affects new sessions only — a chat already running
+ * keeps whatever it was using, which is what the in-chat model sheet changes.
+ *
+ * Note the confirmation path resolves as a 200 with `ok: false`, not an error,
+ * so callers must inspect the result rather than trusting the promise.
+ */
+export function useSetDefaultModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      provider,
+      model,
+      confirmExpensive = false,
+    }: {
+      provider: string;
+      model: string;
+      confirmExpensive?: boolean;
+    }) =>
+      api.post<SetModelResult>('/api/model/set', {
+        scope: 'main',
+        provider,
+        model,
+        confirm_expensive_model: confirmExpensive,
+      }),
+    onSuccess: (res) => {
+      if (!res.confirm_required) void qc.invalidateQueries({ queryKey: ['model', 'default'] });
+    },
+  });
+}
+
 // --- config ------------------------------------------------------------------
 
 export function useConfig() {
