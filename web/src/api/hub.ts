@@ -218,6 +218,12 @@ export function useHealth() {
         hasToken: boolean;
         /** Where another device on the LAN should point. Null if undetectable. */
         lanUrl?: string | null;
+        /**
+         * Set when the proxy sits behind a public front (`tailscale serve`).
+         * Preferred over `lanUrl`: it's HTTPS, so it's the address that gets
+         * the other phone an installable PWA rather than a bookmark.
+         */
+        publicUrl?: string | null;
       }>('/healthz'),
     refetchInterval: 30_000,
     retry: false,

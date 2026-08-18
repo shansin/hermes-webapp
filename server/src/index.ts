@@ -59,6 +59,7 @@ app.get('/healthz', async (c) => {
     hasToken: Boolean(token),
     webBuilt: hasBuiltWeb(),
     lanUrl: lanUrl(),
+    publicUrl: config.PUBLIC_URL ?? null,
   });
 });
 
@@ -134,8 +135,9 @@ const server = serve(
     const lan = lanAddress();
     log.info(`Hermes Control listening on ${scheme}://${config.PROXY_HOST}:${info.port}`);
     if (lan) log.info(`  On your phone:  ${scheme}://${lan}:${info.port}`);
+    if (config.PUBLIC_URL) log.info(`  Public URL:     ${config.PUBLIC_URL}`);
     log.info(`  Hermes backend: ${upstreamHost} (token ${token ? 'ok' : 'MISSING'})`);
-    if (!config.https) {
+    if (!config.https && !config.PUBLIC_URL) {
       log.info('  HTTP mode — PWA install/offline/push stay dormant until TLS is configured.');
     }
     if (!hasBuiltWeb()) log.warn('  web/dist not built — run `pnpm build`.');

@@ -96,11 +96,13 @@ export function SettingsTab() {
     }
   };
 
-  // Prefer the LAN address the server reports: `location.origin` is whatever
-  // *this* device used to connect, so on localhost the QR encoded 127.0.0.1 —
-  // which resolves to the scanning phone itself.
+  // Prefer an address the server reports: `location.origin` is whatever *this*
+  // device used to connect, so on localhost the QR encoded 127.0.0.1 — which
+  // resolves to the scanning phone itself. A public URL (`tailscale serve`)
+  // beats the LAN one: it is HTTPS, so the phone that scans it can install the
+  // app rather than just bookmark it, and it works away from the house.
   const origin = typeof location !== 'undefined' ? location.origin : '';
-  const url = health.data?.lanUrl ?? origin;
+  const url = health.data?.publicUrl ?? health.data?.lanUrl ?? origin;
   const qrIsLoopback = /^https?:\/\/(localhost|127\.|\[::1\])/.test(url);
 
   return (
@@ -186,8 +188,21 @@ export function SettingsTab() {
           Running over plain HTTP, so install-to-home-screen, offline caching,
           push notifications and <strong>voice input</strong> stay dormant — the
           browser withholds the microphone and its dictation service outside a
-          secure context. Add TLS to switch them on — see the README for the
-          one-line <code>tailscale serve</code> or mkcert setup.
+          secure context.{' '}
+          {health.data?.publicUrl ? (
+            <>
+              This machine already has an HTTPS front — open{' '}
+              <a href={health.data.publicUrl} style={{ color: 'var(--accent)' }}>
+                {health.data.publicUrl}
+              </a>{' '}
+              instead and everything above switches on.
+            </>
+          ) : (
+            <>
+              Add TLS to switch them on — see the README for the one-line{' '}
+              <code>tailscale serve</code> or mkcert setup.
+            </>
+          )}
         </div>
       )}
 

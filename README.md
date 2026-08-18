@@ -34,9 +34,9 @@ cp .env.example .env     # optional — the defaults work
 bash start.sh
 ```
 
-`start.sh` health-checks the Hermes backend and starts it if needed, builds the
-web app if `web/dist` is missing, then runs the proxy. It prints the LAN URL to
-open on your phone:
+`start.sh` health-checks the Hermes backend and starts it if needed, rebuilds
+the web app, then runs the proxy. It prints the LAN URL to open on your phone
+(`SKIP_BUILD=1` reuses the existing `web/dist` when the tree hasn't changed):
 
 ```
 Hermes Control
@@ -106,25 +106,53 @@ control with run history, an active-model card with usage charts, and settings
 (three themes, haptics, a QR code to open the app on another phone, and a hidden
 raw-frame dev panel behind a triple-tap on the "Appearance" heading).
 
-## The PWA layer is built but dormant
+## The PWA: install it over Tailscale
 
 The manifest, icons, share target, shortcuts, and a Workbox service worker with
 offline session-history caching are all built and shipped — but browsers only
-enable service workers, installability, and push in a **secure context**. Over
-plain HTTP on a LAN IP, none of it activates, and the app degrades to a normal
-browser bookmark with in-app toasts instead of push. That's the intended default.
+enable service workers, installability, push, and the **microphone** in a
+**secure context**. Over plain HTTP on a LAN IP none of it activates, and the
+app degrades to a browser bookmark with in-app toasts instead of push.
 
-Adding TLS switches all of it on with no code change. Either:
+Tailscale is the way to switch all of it on, with no code change and no
+certificate to install on the phone: `tailscale serve` terminates TLS under this
+machine's MagicDNS name using a real Let's Encrypt cert, and forwards to the
+proxy over loopback. It also makes the app reachable when you're away from the
+house.
 
 ```bash
-# Option A — Tailscale (also makes it reachable off your LAN)
-tailscale serve --bg https / http://localhost:3000
+TAILSCALE=1 bash start.sh
+```
 
-# Option B — mkcert, for LAN-only HTTPS
+That publishes the proxy, prints the `https://<host>.<tailnet>.ts.net` URL, and
+tells the server to hand that address out in the QR code and install hint
+instead of the LAN IP. Open it on the phone and use "Add to Home Screen" — it
+launches standalone, caches session history for offline reading, and unlocks
+voice input.
+
+Two one-time prerequisites, both of which `start.sh` will name if they're
+missing:
+
+```bash
+sudo tailscale set --operator=$USER    # manage serve config without root
+```
+
+…and **HTTPS Certificates** enabled for the tailnet, in the admin console under
+[DNS](https://login.tailscale.com/admin/dns).
+
+To take it down again: `tailscale serve reset`.
+
+For LAN-only HTTPS without Tailscale, mkcert works too — the proxy terminates
+TLS itself when you point it at a keypair:
+
+```bash
 mkcert -install
 mkcert -cert-file certs/lan.pem -key-file certs/lan-key.pem <LAN-IP> localhost
 # then set HTTPS_CERT and HTTPS_KEY in .env
 ```
+
+The phone must trust the mkcert root for that to count as a secure context,
+which is the reason Tailscale is the recommended path.
 
 Web push additionally needs a `web-push` fan-out from Hermes' `/api/events`
 stream; the event plumbing is already in place (it drives the in-app toasts), so

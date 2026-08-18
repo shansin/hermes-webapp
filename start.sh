@@ -80,12 +80,64 @@ command -v pnpm >/dev/null || die "pnpm not found. Install it: corepack enable p
 
 [ -d node_modules ] || { bold "→ Installing dependencies…"; pnpm install; }
 
-if [ ! -f web/dist/index.html ] || [ "${REBUILD:-0}" = "1" ]; then
+# Always rebuild: the proxy serves the prebuilt bundle, so reusing a stale
+# `web/dist` silently ships yesterday's app to a phone that has no way to tell.
+# SKIP_BUILD=1 opts out when restarting the proxy against an unchanged tree.
+if [ "${SKIP_BUILD:-0}" = "1" ] && [ -f web/dist/index.html ]; then
+  bold "→ Skipping the web build (SKIP_BUILD=1)"
+else
   bold "→ Building the web app…"
   pnpm build
 fi
 
-# --- 3. proxy ----------------------------------------------------------------
+# --- 3. tailscale serve (optional HTTPS front) -------------------------------
+#
+# The PWA layer only wakes up in a secure context. `tailscale serve` terminates
+# TLS under this node's MagicDNS name with a real Let's Encrypt cert and
+# forwards to the proxy over loopback, so the phone gets HTTPS with nothing to
+# install — and it keeps working off the LAN. The proxy itself stays plain HTTP.
+#
+# Managing serve config needs root unless the operator was set once:
+#   sudo tailscale set --operator=$USER
+# and the tailnet needs HTTPS certificates enabled (admin console → DNS).
+
+TS_URL=""
+if [ "${TAILSCALE:-0}" = "1" ]; then
+  command -v tailscale >/dev/null || die "TAILSCALE=1 but tailscale is not on PATH."
+
+  bold "→ Publishing over Tailscale…"
+
+  # Reading the serve config is unprivileged; *writing* it needs root, or the
+  # operator bit. So look before leaping — once the mapping exists it survives
+  # reboots, making "already correct" the normal case on every run after the
+  # first, and blindly re-asserting it would fail noisily for nothing.
+  ts_serve="$(timeout 10 tailscale serve status 2>/dev/null || true)"
+
+  if ! grep -qE "proxy +https?://(127\.0\.0\.1|localhost):${PROXY_PORT}\b" <<<"${ts_serve}"; then
+    # </dev/null so the first-run prompt (it asks before enabling HTTPS certs
+    # tailnet-wide) fails fast instead of hanging the script forever.
+    if timeout 30 tailscale serve --bg "${PROXY_PORT}" </dev/null >/dev/null 2>&1; then
+      ts_serve="$(timeout 10 tailscale serve status 2>/dev/null || true)"
+    else
+      warn "  ! Could not publish port ${PROXY_PORT}. Writing serve config needs root:"
+      warn "      sudo tailscale serve --bg ${PROXY_PORT}       # once — it persists"
+      warn "      sudo tailscale set --operator=\$USER        # …or grant it for good"
+      warn "    The tailnet also needs HTTPS certificates enabled:"
+      warn "      https://login.tailscale.com/admin/dns"
+    fi
+  fi
+
+  TS_URL="$(grep -m1 -oE 'https://[^ ]+' <<<"${ts_serve}" || true)"
+  if [ -n "${TS_URL}" ]; then
+    # The server can't see past the front, so tell it the address to hand out
+    # for the QR code and the install hint.
+    export PUBLIC_URL="${TS_URL}"
+  else
+    warn "  ! No HTTPS URL from tailscale — falling back to plain LAN HTTP."
+  fi
+fi
+
+# --- 4. proxy ----------------------------------------------------------------
 
 LAN_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I 2>/dev/null | awk '{print $1}')"
 SCHEME="http"
@@ -95,7 +147,12 @@ echo
 bold "Hermes Control"
 echo "  On this machine: ${SCHEME}://localhost:${PROXY_PORT}"
 [ -n "${LAN_IP}" ] && echo "  On your phone:   ${SCHEME}://${LAN_IP}:${PROXY_PORT}"
-[ "${SCHEME}" = "http" ] && warn "  HTTP mode — install/offline/push stay dormant (see README)."
+if [ -n "${TS_URL}" ]; then
+  echo "  Over Tailscale:  ${TS_URL}   ← open this one to install the PWA"
+elif [ "${SCHEME}" = "http" ]; then
+  warn "  HTTP mode — install/offline/push stay dormant (see README)."
+  warn "  TAILSCALE=1 bash start.sh puts an HTTPS front on it."
+fi
 echo
 
 exec pnpm --filter @hermes-webapp/server start

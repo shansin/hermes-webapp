@@ -50,6 +50,16 @@ const Schema = z.object({
   HERMES_HOST: z.string().default('127.0.0.1'),
   HERMES_PORT: z.coerce.number().int().positive().default(9119),
   HERMES_TOKEN: z.string().default(''),
+  /**
+   * The URL other devices should use, when it isn't derivable from this
+   * machine's interfaces — a `tailscale serve` front, say, which terminates TLS
+   * under a MagicDNS name and forwards here over loopback. start.sh sets it.
+   */
+  PUBLIC_URL: z
+    .string()
+    .url()
+    .optional()
+    .transform((u) => u?.replace(/\/+$/, '')),
   HTTPS_CERT: z.string().optional(),
   HTTPS_KEY: z.string().optional(),
   LOG_LEVEL: z
