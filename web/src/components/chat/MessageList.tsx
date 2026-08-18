@@ -10,9 +10,9 @@
  * than it saves at realistic transcript lengths. The tool/reasoning bodies are
  * individually capped and scrollable, which is what actually bounds the DOM.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Markdown } from './Markdown';
+import { Markdown } from './MarkdownAsync';
 import { ToolCallCard } from './ToolCallCard';
 import { ThinkingBlock } from './ThinkingBlock';
 import { SubagentCard } from './SubagentCard';
@@ -24,8 +24,16 @@ import { useSession, type MessageTime } from '../../store/session';
 import { speak } from '../../lib/audio';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
+import { useThrottled } from '../../lib/useThrottled';
 
 const NEAR_BOTTOM_PX = 120;
+
+/**
+ * How often the streaming bubble is allowed to re-render, in ms. ~10 fps: fast
+ * enough to read as continuous, slow enough that markdown parsing stops
+ * dominating the frame budget on a phone.
+ */
+const STREAM_RENDER_MS = 100;
 
 /**
  * Clock time for a message, or null when it isn't known.
@@ -45,10 +53,6 @@ function Stamp({ at }: { at: MessageTime }) {
 
 export function MessageList() {
   const messages = useSession((s) => s.messages);
-  const streamingText = useSession((s) => s.streamingText);
-  const streamingReasoning = useSession((s) => s.streamingReasoning);
-  const thinkingHint = useSession((s) => s.thinkingHint);
-  const statusLine = useSession((s) => s.statusLine);
   const running = useSession((s) => s.running);
   const rewinding = useSession((s) => s.rewinding);
   const retryLast = useSession((s) => s.retryLast);
@@ -56,6 +60,12 @@ export function MessageList() {
 
   const ref = useRef<HTMLDivElement>(null);
   const [stuck, setStuck] = useState(true);
+  /**
+   * Mirrors `stuck` for `followTail`, which must keep a stable identity: it is
+   * handed to the streaming bubble, and a new function each render would make
+   * memoizing that bubble pointless.
+   */
+  const stuckRef = useRef(true);
   /** The user message whose bubble is showing its actions, if any. */
   const [openActions, setOpenActions] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
@@ -79,18 +89,29 @@ export function MessageList() {
     return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
   };
 
-  // useLayoutEffect so the scroll lands in the same frame as the new content,
-  // which avoids a visible jump while tokens stream.
-  useLayoutEffect(() => {
-    if (stuck && ref.current) {
+  /**
+   * Follow the tail. Stable identity on purpose — the streaming bubble calls
+   * this as it grows, which is what keeps the transcript itself out of the
+   * per-token render path.
+   */
+  const followTail = useCallback(() => {
+    if (stuckRef.current && ref.current) {
       ref.current.scrollTop = ref.current.scrollHeight;
     }
-  }, [messages, streamingText, streamingReasoning, statusLine, stuck]);
+  }, []);
+
+  // useLayoutEffect so the scroll lands in the same frame as the new content,
+  // which avoids a visible jump when a turn finalizes.
+  useLayoutEffect(followTail, [messages, stuck, followTail]);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const onScroll = () => setStuck(isNearBottom());
+    const onScroll = () => {
+      const near = isNearBottom();
+      stuckRef.current = near;
+      setStuck(near);
+    };
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
@@ -99,10 +120,11 @@ export function MessageList() {
     const el = ref.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    stuckRef.current = true;
     setStuck(true);
   };
 
-  const empty = messages.length === 0 && !running && !streamingText;
+  const empty = messages.length === 0 && !running;
 
   return (
     <>
@@ -226,25 +248,7 @@ export function MessageList() {
           );
         })}
 
-        {/* Live turn */}
-        {(streamingReasoning || streamingText || running) && (
-          <div className="msg msg--assistant">
-            {streamingReasoning && <ThinkingBlock text={streamingReasoning} streaming />}
-            {streamingText ? (
-              <div className="msg__body">
-                <Markdown>{streamingText}</Markdown>
-              </div>
-            ) : (
-              !streamingReasoning && (
-                <div className="status-line">
-                  {statusLine || thinkingHint || 'Working…'}
-                  <span className="caret" />
-                </div>
-              )
-            )}
-            {streamingText && statusLine && <div className="status-line">{statusLine}</div>}
-          </div>
-        )}
+        <StreamingTail onGrow={followTail} />
       </div>
 
       {!stuck && (
@@ -265,6 +269,56 @@ export function MessageList() {
     </>
   );
 }
+
+/**
+ * The live turn — the only thing in the chat that re-renders per token.
+ *
+ * This is deliberately a separate component from the transcript. Both read the
+ * same store, but `MessageList` subscribes only to `messages`, so a delta
+ * arriving 40×/second no longer walks and re-renders every historical bubble,
+ * tool card and thinking block. The per-token cost goes from O(transcript) to
+ * O(1).
+ *
+ * The text is throttled on top of that, because rendering it means re-parsing
+ * the whole partial markdown document — remark-gfm and highlight.js included —
+ * from scratch each time.
+ */
+const StreamingTail = memo(function StreamingTail({ onGrow }: { onGrow: () => void }) {
+  const streamingText = useSession((s) => s.streamingText);
+  const streamingReasoning = useSession((s) => s.streamingReasoning);
+  const statusLine = useSession((s) => s.statusLine);
+  const thinkingHint = useSession((s) => s.thinkingHint);
+  const running = useSession((s) => s.running);
+
+  const text = useThrottled(streamingText, STREAM_RENDER_MS);
+  const reasoning = useThrottled(streamingReasoning, STREAM_RENDER_MS);
+
+  // Same frame as the new content, so the tail never visibly lags the tokens.
+  useLayoutEffect(() => {
+    onGrow();
+  }, [text, reasoning, statusLine, onGrow]);
+
+  if (!reasoning && !text && !running) return null;
+
+  return (
+    <div className="msg msg--assistant">
+      {reasoning && <ThinkingBlock text={reasoning} streaming />}
+      {text ? (
+        <div className="msg__body">
+          <Markdown>{text}</Markdown>
+        </div>
+      ) : (
+        !reasoning && (
+          <div className="status-line">
+            {statusLine || thinkingHint || 'Working…'}
+            <span className="caret" />
+          </div>
+        )
+      )}
+      {text && statusLine && <div className="status-line">{statusLine}</div>}
+    </div>
+  );
+});
 
 /**
  * The three most recent conversations, offered on the empty chat.

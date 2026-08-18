@@ -14,7 +14,7 @@
  * downloads don't buffer in memory.
  */
 import { Hono } from 'hono';
-import { config, getToken, resolveToken, upstreamHttp, upstreamHost } from '../config.js';
+import { config, getToken, clearToken, resolveToken, upstreamHttp, upstreamHost } from '../config.js';
 import { log } from '../log.js';
 
 export const apiProxy = new Hono();
@@ -79,7 +79,8 @@ apiProxy.all('/api/*', async (c) => {
     // A 401 here almost always means a scraped token went stale because the
     // backend restarted. Drop it so the next request re-discovers.
     if (upstream.status === 401 && !config.HERMES_TOKEN) {
-      log.warn('upstream 401 — token may be stale, will re-resolve');
+      log.warn('upstream 401 — dropping stale token, next request re-resolves');
+      clearToken();
     }
 
     return new Response(upstream.body, {

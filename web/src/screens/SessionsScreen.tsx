@@ -2,10 +2,11 @@
  * Session history: date-grouped list, full-text search, swipe to
  * resume/delete, long-press to bulk-select.
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { SessionRowItem } from '../components/sessions/SessionRow';
+import { useDebounced } from '../lib/useDebounced';
 import { SessionActionsSheet } from '../components/sessions/SessionActionsSheet';
 import { PullToRefresh } from '../components/shared/PullToRefresh';
 import { Empty, ErrorNote, SkeletonList, dayGroup } from '../components/shared/misc';
@@ -26,6 +27,12 @@ import { useSession } from '../store/session';
 import { collectTags, hasTag, tagHue } from '../lib/sessionTags';
 import { buzz } from '../lib/haptics';
 
+/**
+ * How long the search box waits for typing to stop. Long enough to collapse a
+ * word into one request, short enough that results feel immediate.
+ */
+const SEARCH_DEBOUNCE_MS = 250;
+
 export function SessionsScreen() {
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -44,7 +51,10 @@ export function SessionsScreen() {
 
   const archivedFilter: ArchivedFilter = showArchived ? 'only' : 'exclude';
   const { data, isLoading, error, refetch } = useSessions(undefined, archivedFilter);
-  const search = useSessionSearch(query);
+  // Search on the settled value: every keystroke was otherwise a new query
+  // key, and so a new request to the backend.
+  const debouncedQuery = useDebounced(query, SEARCH_DEBOUNCE_MS);
+  const search = useSessionSearch(debouncedQuery);
   const del = useDeleteSession();
   const bulkDel = useBulkDeleteSessions();
 
@@ -94,19 +104,33 @@ export function SessionsScreen() {
    */
   const commonModel = useSession((s) => s.info?.model) ?? null;
 
-  const resume = (id: string) => {
-    buzz('tap');
-    navigate(`/chat?resume=${encodeURIComponent(id)}`);
-  };
+  /**
+   * Stable so `SessionRowItem`'s memo holds: the list can be 100 rows, and a
+   * background refetch or a selection change would otherwise re-render every
+   * one of them. `mutateAsync` keeps its identity across renders; the mutation
+   * object it comes from does not.
+   */
+  const deleteSession = del.mutateAsync;
 
-  const removeOne = async (id: string) => {
-    try {
-      await del.mutateAsync(id);
-      toast('Session deleted', 'success');
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Delete failed', 'error');
-    }
-  };
+  const resume = useCallback(
+    (id: string) => {
+      buzz('tap');
+      navigate(`/chat?resume=${encodeURIComponent(id)}`);
+    },
+    [navigate],
+  );
+
+  const removeOne = useCallback(
+    async (id: string) => {
+      try {
+        await deleteSession(id);
+        toast('Session deleted', 'success');
+      } catch (e) {
+        toast(e instanceof Error ? e.message : 'Delete failed', 'error');
+      }
+    },
+    [deleteSession, toast],
+  );
 
   const removeSelected = async () => {
     const ids = [...selected];
@@ -119,16 +143,18 @@ export function SessionsScreen() {
     }
   };
 
-  const toggle = (id: string) => {
+  const toggle = useCallback((id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  };
+  }, []);
 
-  const showingSearch = searching && query.trim().length >= 2;
+  const pickTag = useCallback((t: string) => setTag((cur) => (cur === t ? null : t)), []);
+
+  const showingSearch = searching && debouncedQuery.trim().length >= 2;
 
   return (
     <div className="screen">
@@ -301,12 +327,12 @@ export function SessionsScreen() {
                         selected={selected.has(s.id)}
                         selecting={selecting}
                         commonModel={commonModel}
-                        onResume={() => resume(s.id)}
-                        onDelete={() => void removeOne(s.id)}
-                        onToggleSelect={() => toggle(s.id)}
-                        onLongPress={() => toggle(s.id)}
-                        onActions={() => setActionsFor(s.id)}
-                        onPickTag={(t) => setTag((cur) => (cur === t ? null : t))}
+                        onResume={resume}
+                        onDelete={removeOne}
+                        onToggleSelect={toggle}
+                        onLongPress={toggle}
+                        onActions={setActionsFor}
+                        onPickTag={pickTag}
                       />
                     ))}
                   </div>

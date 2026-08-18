@@ -19,6 +19,23 @@
  * newline-delimited JSON-RPC and we deliberately do not parse or reframe it.
  */
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
+
+/** Session history replays and file attachments can be large. */
+const MAX_PAYLOAD = 512 * 1024 * 1024;
+
+/**
+ * How much may queue for a socket before we treat the peer as unable to keep
+ * up. Reached only if a client stops reading mid-stream; dropping the bridge
+ * is better than growing the send buffer until the process dies.
+ */
+const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Frames a client may send before the upstream socket finishes opening. The
+ * window is milliseconds on loopback, so anything past a handful means the
+ * peer is not waiting for a reply — and the buffer was previously unbounded.
+ */
+const MAX_PENDING_FRAMES = 64;
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { getToken, resolveToken, upstreamWs, upstreamHost } from '../config.js';
@@ -40,7 +57,10 @@ export function isProxiedWsPath(pathname: string): boolean {
 export function attachWsProxy(server: {
   on(event: 'upgrade', cb: (req: IncomingMessage, socket: Duplex, head: Buffer) => void): void;
 }): void {
-  const wss = new WebSocketServer({ noServer: true });
+  // Same ceiling as the upstream socket below. Left at ws's 100 MiB default,
+  // a history replay between 100 and 512 MiB would pass the upstream limit and
+  // then kill the client socket on the way out.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
 
   server.on('upgrade', (req, socket, head) => {
     let pathname: string;
@@ -86,7 +106,7 @@ async function bridge(client: WebSocket, pathname: string, search: string): Prom
       origin: `http://${upstreamHost}`,
     },
     // Session history replays and file attachments can be large.
-    maxPayload: 512 * 1024 * 1024,
+    maxPayload: MAX_PAYLOAD,
   });
 
   // Frames produced before the upstream socket finishes opening would be lost,
@@ -116,12 +136,33 @@ async function bridge(client: WebSocket, pathname: string, search: string): Prom
   });
 
   client.on('message', (data, isBinary) => {
-    if (upstreamOpen) upstream.send(data, { binary: isBinary });
-    else pending.push(data);
+    if (!upstreamOpen) {
+      if (pending.length >= MAX_PENDING_FRAMES) {
+        log.warn({ pathname }, 'ws pre-open buffer overflow — dropping bridge');
+        closeBoth(1013, 'upstream not ready');
+        return;
+      }
+      pending.push(data);
+      return;
+    }
+    if (upstream.bufferedAmount > MAX_BUFFERED_BYTES) {
+      log.warn({ pathname, buffered: upstream.bufferedAmount }, 'upstream backpressure');
+      closeBoth(1011, 'upstream backpressure');
+      return;
+    }
+    upstream.send(data, { binary: isBinary });
   });
 
   upstream.on('message', (data, isBinary) => {
-    if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
+    if (client.readyState !== WebSocket.OPEN) return;
+    // A phone that has stopped reading — backgrounded, or on a stalled radio —
+    // must not be allowed to queue the whole stream in this process.
+    if (client.bufferedAmount > MAX_BUFFERED_BYTES) {
+      log.warn({ pathname, buffered: client.bufferedAmount }, 'client backpressure');
+      closeBoth(1011, 'client backpressure');
+      return;
+    }
+    client.send(data, { binary: isBinary });
   });
 
   client.on('close', (code, reason) => closeBoth(code, reason.toString()));

@@ -6,7 +6,7 @@
  * through eight columns on a 390px screen is miserable. Cards swipe right to
  * advance a stage and left to delete.
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { PullToRefresh } from '../components/shared/PullToRefresh';
 import { Empty, ErrorNote, SkeletonList } from '../components/shared/misc';
@@ -65,27 +65,47 @@ export function KanbanScreen() {
 
   const tasks = data?.columns.find((c) => c.name === shown)?.tasks ?? [];
 
-  const advance = async (id: string) => {
-    const to = NEXT_STAGE[shown];
-    if (!to) return;
-    buzz('done');
-    try {
-      await update.mutateAsync({ id, status: to });
-      toast(`Moved to ${COLUMN_LABEL[to]}`, 'success');
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Could not move the card', 'error');
-    }
-  };
+  /**
+   * The card handlers are stable so `TaskCard`'s memo actually holds. The
+   * board refetches every 10s; React Query's structural sharing keeps each
+   * unchanged task object identical, so with stable callbacks an unchanged
+   * card skips re-rendering entirely.
+   *
+   * `mutateAsync` keeps its identity across renders — depending on the
+   * mutation object itself would not.
+   */
+  const updateTask = update.mutateAsync;
+  const deleteTask = del.mutateAsync;
 
-  const remove = async (id: string) => {
-    buzz('warn');
-    try {
-      await del.mutateAsync(id);
-      toast('Task deleted', 'success');
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Delete failed', 'error');
-    }
-  };
+  const advanceById = useCallback(
+    async (id: string) => {
+      const to = NEXT_STAGE[shown];
+      if (!to) return;
+      buzz('done');
+      try {
+        await updateTask({ id, status: to });
+        toast(`Moved to ${COLUMN_LABEL[to]}`, 'success');
+      } catch (e) {
+        toast(e instanceof Error ? e.message : 'Could not move the card', 'error');
+      }
+    },
+    [shown, updateTask, toast],
+  );
+
+  const removeById = useCallback(
+    async (id: string) => {
+      buzz('warn');
+      try {
+        await deleteTask(id);
+        toast('Task deleted', 'success');
+      } catch (e) {
+        toast(e instanceof Error ? e.message : 'Delete failed', 'error');
+      }
+    },
+    [deleteTask, toast],
+  );
+
+  const openTaskById = useCallback((id: string) => setOpenTask(id), []);
 
   // The kanban plugin may not be installed on every Hermes profile.
   const unavailable =
@@ -150,9 +170,9 @@ export function KanbanScreen() {
                     task={t}
                     canAdvance={Boolean(NEXT_STAGE[shown])}
                     nextLabel={NEXT_STAGE[shown] ? COLUMN_LABEL[NEXT_STAGE[shown]!] : ''}
-                    onOpen={() => setOpenTask(t.id)}
-                    onAdvance={() => void advance(t.id)}
-                    onDelete={() => void remove(t.id)}
+                    onOpen={openTaskById}
+                    onAdvance={advanceById}
+                    onDelete={removeById}
                   />
                 ))}
               </div>

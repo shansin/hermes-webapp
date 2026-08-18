@@ -4,7 +4,7 @@
  * Collapsed by default — a turn can fire a dozen tools and the reply is what
  * the user came for. Tapping expands the arguments and the tool's output.
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { IconChevron } from '../shared/Icons';
 import type { ChatMessage } from '../../store/session';
 import { buzz } from '../../lib/haptics';
@@ -52,7 +52,11 @@ function renderResult(result: unknown): string {
 
 const MAX_CHARS = 4000;
 
-export function ToolCallCard({ msg }: { msg: Extract<ChatMessage, { kind: 'tool' }> }) {
+export const ToolCallCard = memo(function ToolCallCard({
+  msg,
+}: {
+  msg: Extract<ChatMessage, { kind: 'tool' }>;
+}) {
   const [open, setOpen] = useState(false);
   const running = msg.status === 'running';
 
@@ -111,4 +115,4 @@ export function ToolCallCard({ msg }: { msg: Extract<ChatMessage, { kind: 'tool'
       )}
     </div>
   );
-}
+});

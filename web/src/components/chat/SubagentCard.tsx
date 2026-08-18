@@ -9,12 +9,13 @@
  * to the parent session (only its goal, tools, and a final summary), so there
  * is nothing further to reveal.
  */
+import { memo } from 'react';
 import { formatTokens } from '../shared/misc';
 import type { ChatMessage } from '../../store/session';
 
 type Subagent = Extract<ChatMessage, { kind: 'subagent' }>;
 
-export function SubagentCard({ msg }: { msg: Subagent }) {
+export const SubagentCard = memo(function SubagentCard({ msg }: { msg: Subagent }) {
   const running = msg.status === 'running';
 
   return (
@@ -48,4 +49,4 @@ export function SubagentCard({ msg }: { msg: Subagent }) {
       )}
     </div>
   );
-}
+});

@@ -8,7 +8,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Sheet } from '../shared/Sheet';
-import { Markdown } from '../chat/Markdown';
+import { Markdown } from '../chat/MarkdownAsync';
 import { Loader } from '../shared/misc';
 import {
   basename,

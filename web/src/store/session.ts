@@ -23,7 +23,6 @@ import {
   SessionTitleSchema,
   StatusUpdateSchema,
   SubagentEventSchema,
-  TextDeltaSchema,
   ToolCompleteSchema,
   ToolStartSchema,
   UsageSchema,
@@ -195,6 +194,13 @@ async function rewind(get: Get, set: Set, idx: number, replacement?: string): Pr
   }
 }
 
+/** The `text` of a streaming delta, or null when the payload isn't one. */
+function deltaText(payload: unknown): string | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const t = (payload as { text?: unknown }).text;
+  return typeof t === 'string' ? t : null;
+}
+
 export const useSession = create<SessionState>((set, get) => ({
   sessionId: null,
   storedSessionId: null,
@@ -286,22 +292,29 @@ export const useSession = create<SessionState>((set, get) => ({
         });
         return;
 
+      // The two delta cases are the only events on a per-token path — 30–60×
+      // a second for the length of a turn. `TextDeltaSchema` is a
+      // `.passthrough()` object, so validating here allocated a fresh copy of
+      // every delta payload; a shape check costs nothing and rejects exactly
+      // the same things. The rest of the events stay on zod, where the
+      // frequency is low and the payloads are worth checking properly.
       case 'message.delta': {
-        const p = TextDeltaSchema.safeParse(payload);
-        if (p.success) set({ streamingText: s.streamingText + p.data.text, thinkingHint: '' });
+        const text = deltaText(payload);
+        if (text !== null) set({ streamingText: s.streamingText + text, thinkingHint: '' });
         return;
       }
 
       case 'reasoning.delta': {
-        const p = TextDeltaSchema.safeParse(payload);
-        if (p.success) set({ streamingReasoning: s.streamingReasoning + p.data.text });
+        const text = deltaText(payload);
+        if (text !== null) set({ streamingReasoning: s.streamingReasoning + text });
         return;
       }
 
       case 'thinking.delta': {
-        // Decorative only — never appended to the transcript.
-        const p = TextDeltaSchema.safeParse(payload);
-        if (p.success) set({ thinkingHint: p.data.text });
+        // Decorative only — never appended to the transcript, and just as
+        // frequent as the deltas above, so it gets the same cheap check.
+        const text = deltaText(payload);
+        if (text !== null) set({ thinkingHint: text });
         return;
       }
 

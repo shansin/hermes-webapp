@@ -24,13 +24,16 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: false,
     rollupOptions: {
+      /**
+       * No `manualChunks` for recharts or the markdown pipeline any more.
+       * Grouping them by hand produced separate *files* that were still
+       * reached by a static import from the entry, so Vite emitted a
+       * `modulepreload` for both and the phone downloaded every byte before
+       * first paint — the opposite of the intent. The routes in `App.tsx` are
+       * `React.lazy` now, so Rollup splits along the dynamic-import boundaries
+       * and each chunk loads on the navigation that needs it.
+       */
       output: {
-        // Keep the charting library out of the initial bundle — the Hub is the
-        // only screen that needs it, and the phone should paint chat fast.
-        manualChunks: {
-          charts: ['recharts'],
-          markdown: ['react-markdown', 'remark-gfm', 'rehype-highlight'],
-        },
         /**
          * Mermaid splits itself into ~40 chunks — one per diagram type, plus
          * cytoscape, katex, dagre and friends — under opaque hashed names like

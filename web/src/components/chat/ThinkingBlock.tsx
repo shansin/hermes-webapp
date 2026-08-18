@@ -4,7 +4,7 @@
  * Collapsed by default for finished messages, but auto-expanded while a turn
  * is streaming so there is something to watch before the answer starts.
  */
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { IconChevron } from '../shared/Icons';
 import { buzz } from '../../lib/haptics';
 
@@ -13,7 +13,7 @@ interface Props {
   streaming?: boolean;
 }
 
-export function ThinkingBlock({ text, streaming = false }: Props) {
+export const ThinkingBlock = memo(function ThinkingBlock({ text, streaming = false }: Props) {
   const [open, setOpen] = useState(streaming);
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -60,4 +60,4 @@ export function ThinkingBlock({ text, streaming = false }: Props) {
       )}
     </div>
   );
-}
+});

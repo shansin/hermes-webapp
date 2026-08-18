@@ -192,6 +192,46 @@ a {
   position: relative;
 }
 
+/*
+ * Skip layout, paint and style work for rows scrolled out of view.
+ *
+ * The session list runs to 100 rows, each with tag chips and two action layers
+ * behind a swipe — enough DOM that scrolling it on a phone costs real frames.
+ * `content-visibility` gets most of what virtualization would, without a
+ * virtualizer: these rows carry touch gestures and sit inside a
+ * pull-to-refresh container that transforms while dragging, and threading a
+ * windowing library through both is a good way to break scroll anchoring and
+ * swipe-to-delete at once.
+ *
+ * `contain-intrinsic-size` is the placeholder height for a row that has not
+ * been rendered yet, so the scrollbar stays honest. It is a hint, not a
+ * constraint — a taller row (more tag chips) still lays out correctly once it
+ * comes into view. Browsers without support simply render everything, which is
+ * the behaviour we had before.
+ */
+.srow {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 72px;
+}
+
+/*
+ * The raw text shown while the markdown renderer is still downloading. Keeps
+ * the author's line breaks so the message reads correctly in the meantime.
+ */
+.md--plain {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Placeholder while a lazily-loaded route arrives. Deliberately blank rather
+ * than a spinner: on a LAN the chunk lands in a few milliseconds, and a
+ * spinner that flashes for one frame reads as jank, not as progress.
+ */
+.route-pending {
+  height: 100%;
+}
+
 .screen {
   display: flex;
   flex-direction: column;

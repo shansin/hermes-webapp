@@ -4,7 +4,7 @@
  * Code blocks get their own header with the language and a copy button —
  * selecting text precisely on a phone is painful, so copy has to be a tap.
  */
-import { memo, useState, type ReactNode } from 'react';
+import { memo, useState, type ComponentProps, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -68,6 +68,28 @@ function workspacePath(href: string | undefined, cwd: string | undefined): strin
   return `${cwd.replace(/\/+$/, '')}/${rel}`;
 }
 
+/**
+ * Hoisted so the array identities are stable. react-markdown rebuilds its
+ * unified processor whenever the plugin list changes, and the streaming bubble
+ * renders this component repeatedly for the length of a turn.
+ *
+ * `detect` is off. Auto-detection ran highlight.js' classifier over every code
+ * block on every render — during streaming that is once per frame, on a
+ * fragment that is still being written — and it guesses badly on short input.
+ * Fences that declare a language still highlight, across lowlight's full
+ * common set; an undeclared one renders as plain code.
+ *
+ * (Narrowing the grammar list was tried and reverted: `rehype-highlight`
+ * imports lowlight's `common` at module scope, so passing `languages` adds
+ * grammars without letting the bundler drop any.)
+ */
+type MarkdownProps = ComponentProps<typeof ReactMarkdown>;
+
+const remarkPlugins: MarkdownProps['remarkPlugins'] = [remarkGfm];
+const rehypePlugins: MarkdownProps['rehypePlugins'] = [
+  [rehypeHighlight, { detect: false, ignoreMissing: true }],
+];
+
 export const Markdown = memo(function Markdown({ children }: { children: string }) {
   // The workspace root for resolving `workspace://` links.
   const cwd = useSession((s) => s.info?.cwd) ?? undefined;
@@ -75,12 +97,12 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
   return (
     <div className="md">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
         components={{
           pre({ children }) {
             const text = nodeText(children);
-            // The <code> child carries hljs' detected language class.
+            // The <code> child carries the fence's language class.
             let lang = '';
             const child = Array.isArray(children) ? children[0] : children;
             const cls =
@@ -91,8 +113,9 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
             if (m?.[1]) lang = m[1];
 
             // A mermaid fence becomes a diagram instead of a code block. Only
-            // an explicit fence qualifies — hljs' `detect` guesses languages,
-            // and rendering a guess through mermaid would mangle real code.
+            // an explicit fence qualifies, which is the only kind there is now
+            // that detection is off — a guess rendered through mermaid would
+            // mangle real code.
             if (lang === 'mermaid' && text.trim()) {
               return <MermaidBlock source={text.trim()} />;
             }

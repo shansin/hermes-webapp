@@ -22,9 +22,54 @@ import { config, getToken, resolveToken, upstreamHttp, upstreamHost } from './co
 import { log } from './log.js';
 import { apiProxy } from './routers/apiProxy.js';
 import { attachWsProxy } from './routers/wsProxy.js';
-import { staticRouter, hasBuiltWeb } from './static.js';
+import { staticRouter, hasBuiltWeb, initStatic } from './static.js';
 
 const app = new Hono();
+
+/**
+ * Upstream health, cached briefly.
+ *
+ * The app polls this every 30s from every open tab, and start.sh hammers it
+ * while waiting for the backend. Without a cache each poll is a real round
+ * trip to Hermes; a short TTL plus single-flight collapses a burst into one.
+ */
+const HEALTH_TTL_MS = 2000;
+let healthAt = 0;
+let healthCache: { backend: 'up' | 'down' | 'unauthorized'; version: string | null } | null = null;
+let healthInFlight: Promise<{
+  backend: 'up' | 'down' | 'unauthorized';
+  version: string | null;
+}> | null = null;
+
+async function probeBackend(token: string) {
+  if (healthCache && Date.now() - healthAt < HEALTH_TTL_MS) return healthCache;
+  if (healthInFlight) return healthInFlight;
+
+  healthInFlight = (async () => {
+    let backend: 'up' | 'down' | 'unauthorized' = 'down';
+    let version: string | null = null;
+    try {
+      const res = await fetch(upstreamHttp + '/api/health', {
+        headers: { host: upstreamHost, authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (res.status === 401) {
+        backend = 'unauthorized';
+      } else if (res.ok) {
+        backend = 'up';
+        version = ((await res.json()) as { version?: string }).version ?? null;
+      }
+    } catch {
+      backend = 'down';
+    }
+    healthCache = { backend, version };
+    healthAt = Date.now();
+    healthInFlight = null;
+    return healthCache;
+  })();
+
+  return healthInFlight;
+}
 
 /**
  * Proxy health — deliberately distinct from Hermes' own `/api/health`, which
@@ -33,23 +78,7 @@ const app = new Hono();
  */
 app.get('/healthz', async (c) => {
   const token = getToken() || (await resolveToken());
-  let backend: 'up' | 'down' | 'unauthorized' = 'down';
-  let version: string | null = null;
-
-  try {
-    const res = await fetch(upstreamHttp + '/api/health', {
-      headers: { host: upstreamHost, authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(4000),
-    });
-    if (res.status === 401) {
-      backend = 'unauthorized';
-    } else if (res.ok) {
-      backend = 'up';
-      version = ((await res.json()) as { version?: string }).version ?? null;
-    }
-  } catch {
-    backend = 'down';
-  }
+  const { backend, version } = await probeBackend(token);
 
   return c.json({
     ok: backend === 'up',
@@ -107,6 +136,9 @@ function lanAddress(): string | null {
   }
   return null;
 }
+
+// Index web/dist once, so the request path never makes a blocking fs call.
+await initStatic();
 
 const token = await resolveToken();
 if (!token) {

@@ -2,7 +2,7 @@
  * A kanban card. Swipe right to advance a stage, left to delete.
  * Shares the axis-locking gesture approach used by the session rows.
  */
-import { useRef, useState } from 'react';
+import { memo, useRef, useState } from 'react';
 import { IconChevron, IconTrash } from '../shared/Icons';
 import { relTime } from '../shared/misc';
 import { buzz } from '../../lib/haptics';
@@ -17,12 +17,24 @@ interface Props {
   task: Task;
   canAdvance: boolean;
   nextLabel: string;
-  onOpen: () => void;
-  onAdvance: () => void;
-  onDelete: () => void;
+  /**
+   * The handlers take the task id rather than closing over it, so the board
+   * can pass the same function to every card. With per-card arrows the memo
+   * below would never hit: a new closure each render counts as a changed prop.
+   */
+  onOpen: (id: string) => void;
+  onAdvance: (id: string) => void;
+  onDelete: (id: string) => void;
 }
 
-export function TaskCard({ task, canAdvance, nextLabel, onOpen, onAdvance, onDelete }: Props) {
+export const TaskCard = memo(function TaskCard({
+  task,
+  canAdvance,
+  nextLabel,
+  onOpen,
+  onAdvance,
+  onDelete,
+}: Props) {
   const [dx, setDx] = useState(0);
   const startX = useRef(0);
   const startY = useRef(0);
@@ -55,8 +67,8 @@ export function TaskCard({ task, canAdvance, nextLabel, onOpen, onAdvance, onDel
   };
 
   const onTouchEnd = () => {
-    if (dx <= -COMMIT_PX) onDelete();
-    else if (dx >= COMMIT_PX && canAdvance) onAdvance();
+    if (dx <= -COMMIT_PX) onDelete(task.id);
+    else if (dx >= COMMIT_PX && canAdvance) onAdvance(task.id);
     setDx(0);
     axis.current = 'none';
     armed.current = false;
@@ -99,7 +111,7 @@ export function TaskCard({ task, canAdvance, nextLabel, onOpen, onAdvance, onDel
         onTouchEnd={onTouchEnd}
         onClick={() => {
           buzz('tap');
-          onOpen();
+          onOpen(task.id);
         }}
         style={{
           position: 'relative',
@@ -156,4 +168,4 @@ export function TaskCard({ task, canAdvance, nextLabel, onOpen, onAdvance, onDel
       </div>
     </div>
   );
-}
+});

@@ -5,7 +5,7 @@
  * the finger, then either snaps back or commits past a threshold — the usual
  * mobile list idiom, so it needs no instructions.
  */
-import { useRef, useState } from 'react';
+import { memo, useRef, useState } from 'react';
 import { IconTrash, IconChat } from '../shared/Icons';
 import { relTime } from '../shared/misc';
 import { buzz } from '../../lib/haptics';
@@ -33,17 +33,22 @@ interface Props {
    * whole list is noise, so a row hides its model when it matches.
    */
   commonModel?: string | null;
-  onResume: () => void;
-  onDelete: () => void;
-  onToggleSelect: () => void;
-  onLongPress: () => void;
+  /**
+   * Handlers take the session id instead of closing over it, so the list can
+   * hand every row the same functions. Per-row arrows would defeat the memo
+   * below — a fresh closure each render reads as a changed prop.
+   */
+  onResume: (id: string) => void;
+  onDelete: (id: string) => void;
+  onToggleSelect: (id: string) => void;
+  onLongPress: (id: string) => void;
   /** Opens the pin / archive / export sheet for this session. */
-  onActions: () => void;
+  onActions: (id: string) => void;
   /** Tapping a tag chip filters the list to it. */
   onPickTag: (tag: string) => void;
 }
 
-export function SessionRowItem({
+export const SessionRowItem = memo(function SessionRowItem({
   session,
   selected,
   selecting,
@@ -79,7 +84,7 @@ export function SessionRowItem({
     armed.current = false;
     longTimer.current = setTimeout(() => {
       buzz('warn');
-      onLongPress();
+      onLongPress(session.id);
     }, 480);
   };
 
@@ -115,10 +120,10 @@ export function SessionRowItem({
     cancelLongPress();
     if (dx <= -COMMIT_PX) {
       buzz('warn');
-      onDelete();
+      onDelete(session.id);
     } else if (dx >= COMMIT_PX) {
       buzz('done');
-      onResume();
+      onResume(session.id);
     }
     setDx(0);
     axis.current = 'none';
@@ -130,7 +135,10 @@ export function SessionRowItem({
   const title = parsed.text || 'Untitled session';
 
   return (
-    <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 'var(--radius-sm)' }}>
+    <div
+      className="srow"
+      style={{ position: 'relative', overflow: 'hidden', borderRadius: 'var(--radius-sm)' }}
+    >
       {/* Action layers, revealed by the drag */}
       <div
         style={{
@@ -153,7 +161,7 @@ export function SessionRowItem({
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
-        onClick={() => (selecting ? onToggleSelect() : onResume())}
+        onClick={() => (selecting ? onToggleSelect(session.id) : onResume(session.id))}
         style={{
           position: 'relative',
           transform: `translateX(${dx}px)`,
@@ -272,7 +280,7 @@ export function SessionRowItem({
             onClick={(e) => {
               e.stopPropagation();
               buzz('tap');
-              onActions();
+              onActions(session.id);
             }}
             style={{ flexShrink: 0, minWidth: 32, minHeight: 32, marginRight: -4 }}
           >
@@ -282,4 +290,4 @@ export function SessionRowItem({
       </div>
     </div>
   );
-}
+});

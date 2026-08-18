@@ -108,20 +108,42 @@ export function getToken(): string {
  * `hermes dashboard` (which serves a UI); headless `hermes serve` has no HTML,
  * in which case the token must be supplied explicitly.
  */
+let pendingResolve: Promise<string> | null = null;
+
 export async function resolveToken(): Promise<string> {
   if (sessionToken) return sessionToken;
-  try {
-    const res = await fetch(upstreamHttp + '/', {
-      headers: { host: upstreamHost },
-      signal: AbortSignal.timeout(5000),
-    });
-    const html = await res.text();
-    const m = /__HERMES_DASHBOARD_SESSION_TOKEN__\s*=\s*"([^"]+)"/.exec(html);
-    if (m?.[1]) sessionToken = m[1];
-  } catch {
-    // Backend down or headless — callers surface this as a health warning.
-  }
-  return sessionToken;
+  // Single-flight: a WS upgrade and an API call arriving together during boot
+  // would otherwise each scrape the SPA HTML independently.
+  if (pendingResolve) return pendingResolve;
+
+  pendingResolve = (async () => {
+    try {
+      const res = await fetch(upstreamHttp + '/', {
+        headers: { host: upstreamHost },
+        signal: AbortSignal.timeout(5000),
+      });
+      const html = await res.text();
+      const m = /__HERMES_DASHBOARD_SESSION_TOKEN__\s*=\s*"([^"]+)"/.exec(html);
+      if (m?.[1]) sessionToken = m[1];
+    } catch {
+      // Backend down or headless — callers surface this as a health warning.
+    } finally {
+      pendingResolve = null;
+    }
+    return sessionToken;
+  })();
+
+  return pendingResolve;
+}
+
+/**
+ * Forget a scraped token after the backend rejects it, so the next caller
+ * re-discovers. Never clears an explicitly configured `HERMES_TOKEN`: that one
+ * is not guesswork, and dropping it would just scrape a worse answer.
+ */
+export function clearToken(): void {
+  if (env.HERMES_TOKEN) return;
+  sessionToken = '';
 }
 
 export const config = {
