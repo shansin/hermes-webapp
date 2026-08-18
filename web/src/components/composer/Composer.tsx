@@ -36,6 +36,11 @@ interface Attachment {
   name: string;
   /** Set once the gateway has accepted the file. */
   attached: boolean;
+  /**
+   * The gateway's own `[User attached image: …]` line, sent as the prompt when
+   * an image goes out with no message typed alongside it.
+   */
+  placeholder?: string;
 }
 
 /** How long the box must sit still before we ask the gateway for completions. */
@@ -164,8 +169,22 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 168)}px`;
   }, [text]);
 
+  /**
+   * An image already sits in the session's queue by the time it shows as a
+   * pill, so a send with nothing typed still has something to carry — it goes
+   * out under the gateway's own `[User attached image: …]` line rather than an
+   * empty prompt.
+   */
+  const imagePlaceholders = () =>
+    attachments
+      .filter((a) => a.attached && a.placeholder)
+      .map((a) => a.placeholder)
+      .join('\n');
+
+  const sendable = Boolean(text.trim() || imagePlaceholders());
+
   const send = () => {
-    const value = text.trim();
+    const value = text.trim() || imagePlaceholders();
     if (!value || !sessionId) return;
     setText('');
     setAttachments([]);
@@ -232,16 +251,32 @@ export function Composer({
           fr.onerror = () => reject(new Error('read failed'));
           fr.readAsDataURL(file);
         });
-        // Images and other files take different gateway methods.
-        const method = file.type.startsWith('image/') ? 'image.attach_bytes' : 'file.attach';
-        await hermes.call(method, {
-          session_id: sessionId,
-          filename: file.name,
-          data_url: dataUrl,
-          mime_type: file.type,
-        });
+        // Images and other files take different gateway methods, and the two
+        // disagree on how bytes arrive: `image.attach_bytes` wants bare base64
+        // under `content_base64`, `file.attach` wants the whole data: URL.
+        let placeholder: string | undefined;
+        if (file.type.startsWith('image/')) {
+          const res = await hermes.call<{ text?: string }>('image.attach_bytes', {
+            session_id: sessionId,
+            content_base64: dataUrl.slice(dataUrl.indexOf(',') + 1),
+            filename: file.name,
+          });
+          placeholder = res?.text || `[User attached image: ${file.name}]`;
+        } else {
+          // Non-images aren't queued as vision tiles — they land in the session
+          // workspace and come back as an `@file:` ref the agent's file tools
+          // can read, so it has to go into the prompt text.
+          const res = await hermes.call<{ ref_text?: string }>('file.attach', {
+            session_id: sessionId,
+            name: file.name,
+            data_url: dataUrl,
+          });
+          if (res?.ref_text) {
+            setText((t) => (t ? `${t} ${res.ref_text}` : `${res.ref_text} `));
+          }
+        }
         setAttachments((a) =>
-          a.map((x) => (x.name === file.name ? { ...x, attached: true } : x)),
+          a.map((x) => (x.name === file.name ? { ...x, attached: true, placeholder } : x)),
         );
         buzz('tap');
       } catch (err) {
@@ -439,11 +474,11 @@ export function Composer({
             <IconStop size={17} />
           </button>
         )}
-        {(!running || text.trim()) && (
+        {(!running || sendable) && (
           <button
             className="composer__btn composer__btn--send"
             onClick={send}
-            disabled={!text.trim() || !sessionId}
+            disabled={!sendable || !sessionId}
             aria-label={running ? 'Queue this message' : 'Send'}
           >
             <IconSend size={18} />
