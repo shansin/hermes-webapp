@@ -1,6 +1,6 @@
 /**
- * App shell: routes, the tab bar, the connection banner, and the single place
- * the gateway socket is opened.
+ * App shell: routes, the navigation drawer, the connection banner, and the
+ * single place the gateway socket is opened.
  */
 import { useEffect } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
@@ -8,7 +8,13 @@ import { ChatScreen } from './screens/ChatScreen';
 import { SessionsScreen } from './screens/SessionsScreen';
 import { KanbanScreen } from './screens/KanbanScreen';
 import { FilesScreen } from './screens/FilesScreen';
-import { HubScreen } from './screens/HubScreen';
+import { HubPage, HubRedirect } from './screens/HubPage';
+import { MemoryTab } from './components/hub/MemoryTab';
+import { SkillsTab } from './components/hub/SkillsTab';
+import { CronTab } from './components/hub/CronTab';
+import { ModelsTab } from './components/hub/ModelsTab';
+import { ProfilesTab } from './components/hub/ProfilesTab';
+import { SettingsTab } from './components/hub/SettingsTab';
 import { NavDrawer } from './components/shared/NavDrawer';
 import { Toasts } from './components/shared/misc';
 import { useUi } from './store/ui';
@@ -69,7 +75,13 @@ export function App() {
           <Route path="/sessions" element={<SessionsScreen />} />
           <Route path="/kanban" element={<KanbanScreen />} />
           <Route path="/files" element={<FilesScreen />} />
-          <Route path="/hub" element={<HubScreen />} />
+          <Route path="/memory" element={<HubPage title="Memory"><MemoryTab /></HubPage>} />
+          <Route path="/skills" element={<HubPage title="Skills"><SkillsTab /></HubPage>} />
+          <Route path="/cron" element={<HubPage title="Cron"><CronTab /></HubPage>} />
+          <Route path="/models" element={<HubPage title="Models"><ModelsTab /></HubPage>} />
+          <Route path="/profiles" element={<HubPage title="Profiles"><ProfilesTab /></HubPage>} />
+          <Route path="/settings" element={<HubPage title="Settings"><SettingsTab /></HubPage>} />
+          <Route path="/hub" element={<HubRedirect />} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Routes>
       </div>

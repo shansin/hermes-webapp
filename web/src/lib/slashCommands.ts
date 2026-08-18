@@ -10,7 +10,7 @@
  * Every command falls into one of four surfaces:
  *
  *  - `local`       — this app already has a better screen for it. `/model`
- *                    opens the model sheet; `/skills` goes to the Hub. Sending
+ *                    opens the model sheet; `/skills` opens the Skills page. Sending
  *                    these to the backend would print a terminal-shaped answer
  *                    on a phone.
  *  - `rpc`         — a dedicated gateway method exists. Prefer it over

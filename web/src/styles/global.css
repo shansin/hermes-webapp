@@ -356,6 +356,35 @@ button.header__sub::after {
   gap: 2px;
 }
 
+/* Group label between the working surfaces and the configuration ones.
+   The rule trails the label rather than sitting above it as a bare hairline:
+   one element reads as a deliberate heading, a line plus floating caps reads
+   as a stray border. */
+.drawer__section {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 12px 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  color: var(--text-faint);
+}
+
+.drawer__section::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+
+/* Single-line rows: tighter than the hinted ones above so the group reads as
+   one block. Padding shrinks, but min-height stays at Material's 48dp — the
+   row is a navigation target before it is a layout element. */
+.drawer__item--compact {
+  padding-block: 8px;
+}
+
 .drawer__item {
   display: flex;
   align-items: center;

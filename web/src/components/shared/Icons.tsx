@@ -56,13 +56,6 @@ export const IconKanban = (p: P) => (
   </Svg>
 );
 
-export const IconHub = (p: P) => (
-  <Svg {...p}>
-    <circle cx="12" cy="12" r="3" />
-    <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" />
-  </Svg>
-);
-
 export const IconSend = (p: P) => (
   <Svg {...p}>
     <path d="m22 2-7 20-4-9-9-4Z" />
@@ -175,5 +168,65 @@ export const IconWarn = (p: P) => (
   <Svg {...p}>
     <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
     <path d="M12 9v4M12 17h.01" />
+  </Svg>
+);
+
+// --- Hub sections, promoted to top-level drawer destinations -----------------
+//
+// Drawn for 21px: at that size an outline with interior detail (a toothed gear,
+// an anatomical brain) collapses into a smudge, so each of these is a single
+// closed silhouette plus at most two interior strokes.
+
+/** Memory files. An open book: a closed one is a rectangle with a line in it,
+ *  which reads as a sidebar layout rather than something you read. */
+export const IconMemory = (p: P) => (
+  <Svg {...p}>
+    <path d="M12 7.2C10.2 5.8 7.9 5.2 5.4 5.4a.9.9 0 0 0-.9.9v10.2c0 .5.4.9.9.9 2.5-.2 4.8.4 6.6 1.8 1.8-1.4 4.1-2 6.6-1.8.5 0 .9-.4.9-.9V6.3a.9.9 0 0 0-.9-.9c-2.5-.2-4.8.4-6.6 1.8Z" />
+    <path d="M12 7.2v12" />
+  </Svg>
+);
+
+/** Skills — what the agent can do. A bolt: the puzzle piece every extension UI
+ *  reaches for needs its knobs read individually, and at 21px they merge into a
+ *  blob. One diagonal silhouette survives the size. */
+export const IconSkills = (p: P) => (
+  <Svg {...p}>
+    <path d="M13.4 3.5 5.8 13.1a.6.6 0 0 0 .5 1h4.3l-1 6.4 7.6-9.6a.6.6 0 0 0-.5-1h-4.3Z" />
+  </Svg>
+);
+
+/** Scheduled jobs. */
+export const IconCron = (p: P) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12.4" r="7.6" />
+    <path d="M12 8.2v4.4l3 1.8" />
+  </Svg>
+);
+
+/** Models. A cube: one object, three visible faces, reads at any size. */
+export const IconModels = (p: P) => (
+  <Svg {...p}>
+    <path d="M12 3.6 19.5 8v8L12 20.4 4.5 16V8Z" />
+    <path d="m4.5 8 7.5 4.4L19.5 8" />
+    <path d="M12 12.4v8" />
+  </Svg>
+);
+
+/** Config profiles — an ID card rather than a person: these name setups, not people. */
+export const IconProfiles = (p: P) => (
+  <Svg {...p}>
+    <rect x="3.4" y="5.4" width="17.2" height="13.2" rx="2.2" />
+    <circle cx="8.9" cy="10.9" r="1.9" />
+    <path d="M5.8 15.9a3.3 3.3 0 0 1 6.2 0M14.6 10.2h3.5M14.6 13.4h3.5" />
+  </Svg>
+);
+
+/** Settings. Sliders, not a gear: gear teeth turn to mush at 21px, and the sun
+ *  shape a simple gear degrades into collides with the theme picker it sits next to. */
+export const IconSettings = (p: P) => (
+  <Svg {...p}>
+    <path d="M4.5 8h15M4.5 16h15" />
+    <circle cx="9.5" cy="8" r="2.3" />
+    <circle cx="15" cy="16" r="2.3" />
   </Svg>
 );

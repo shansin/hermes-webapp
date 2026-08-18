@@ -10,25 +10,47 @@
  * `NavLink` handles the active state; the drawer closes on navigate, backdrop
  * tap, Escape, or a leftward drag on the panel itself.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   IconChat,
   IconClose,
+  IconCron,
   IconFolder,
-  IconHub,
   IconKanban,
+  IconMemory,
+  IconModels,
+  IconProfiles,
   IconSessions,
+  IconSettings,
+  IconSkills,
 } from './Icons';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 
-const DESTINATIONS = [
+/**
+ * The Hub's six tabs used to hide behind a single "Hub" entry, which cost two
+ * taps and a segmented control to reach any of them. They are top-level
+ * destinations now — the drawer is the one surface with room for ten.
+ *
+ * Split into two groups because ten equal rows with hints is taller than a
+ * phone: the working surfaces keep their hints, the configuration ones are
+ * self-evident from the label and stay compact.
+ */
+const WORK = [
   { to: '/chat', label: 'Chat', hint: 'Talk to the agent', Icon: IconChat },
   { to: '/sessions', label: 'Sessions', hint: 'History and search', Icon: IconSessions },
   { to: '/kanban', label: 'Kanban', hint: 'The task board', Icon: IconKanban },
   { to: '/files', label: 'Files', hint: 'Browse the workspace', Icon: IconFolder },
-  { to: '/hub', label: 'Hub', hint: 'Memory, skills, cron, settings', Icon: IconHub },
+];
+
+const SYSTEM = [
+  { to: '/memory', label: 'Memory', Icon: IconMemory },
+  { to: '/skills', label: 'Skills', Icon: IconSkills },
+  { to: '/cron', label: 'Cron', Icon: IconCron },
+  { to: '/models', label: 'Models', Icon: IconModels },
+  { to: '/profiles', label: 'Profiles', Icon: IconProfiles },
+  { to: '/settings', label: 'Settings', Icon: IconSettings },
 ];
 
 /** How far the panel must be dragged left before it closes. */
@@ -104,27 +126,56 @@ export function NavDrawer() {
         </div>
 
         <div className="drawer__list">
-          {DESTINATIONS.map(({ to, label, hint, Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) => `drawer__item${isActive ? ' drawer__item--active' : ''}`}
-              onClick={() => {
-                buzz('tap');
-                setOpen(false);
-              }}
-            >
-              <span className="drawer__icon">
-                <Icon size={21} />
-              </span>
-              <span className="drawer__main">
-                <span className="drawer__label">{label}</span>
-                <span className="drawer__hint">{hint}</span>
-              </span>
-            </NavLink>
+          {WORK.map(({ to, label, hint, Icon }) => (
+            <Item key={to} to={to} label={label} hint={hint} Icon={Icon} onNavigate={close} />
+          ))}
+
+          <div className="drawer__section">SYSTEM</div>
+
+          {SYSTEM.map(({ to, label, Icon }) => (
+            <Item key={to} to={to} label={label} Icon={Icon} compact onNavigate={close} />
           ))}
         </div>
       </nav>
     </>
+  );
+}
+
+function Item({
+  to,
+  label,
+  hint,
+  Icon,
+  compact = false,
+  onNavigate,
+}: {
+  to: string;
+  label: string;
+  hint?: string;
+  Icon: ComponentType<{ size?: number }>;
+  compact?: boolean;
+  onNavigate: () => void;
+}) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        `drawer__item${compact ? ' drawer__item--compact' : ''}${
+          isActive ? ' drawer__item--active' : ''
+        }`
+      }
+      onClick={() => {
+        buzz('tap');
+        onNavigate();
+      }}
+    >
+      <span className="drawer__icon">
+        <Icon size={21} />
+      </span>
+      <span className="drawer__main">
+        <span className="drawer__label">{label}</span>
+        {hint && <span className="drawer__hint">{hint}</span>}
+      </span>
+    </NavLink>
   );
 }

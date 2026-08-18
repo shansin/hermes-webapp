@@ -89,7 +89,7 @@ compact the conversation; voice input and per-reply playback; file attachments.
 ranks names *and* descriptions, and orders skills by how much you use them), and
 the `/ Commands` chip opens the whole catalog grouped by category. Each command
 runs on the surface that fits a phone: `/model` opens the model sheet, `/skills`
-jumps to the Hub, `/compress` uses the dedicated RPC, skill commands expand into
+goes to the Skills page, `/compress` uses the dedicated RPC, skill commands expand into
 a normal turn (the transcript keeps showing what you typed, not the expanded
 prompt), and terminal-only commands like `/mouse` say so instead of failing.
 
@@ -101,10 +101,17 @@ switch, swipe a card right to advance a stage or left to delete, a detail sheet
 with comments and run history, and a create sheet. Polls every 10s so cards the
 agent moves show up on their own.
 
-**Hub** — editable memory files, skill toggles plus hub search/install, cron job
-control with run history, an active-model card with usage charts, and settings
-(three themes, haptics, a QR code to open the app on another phone, and a hidden
-raw-frame dev panel behind a triple-tap on the "Appearance" heading).
+**Memory, Skills, Cron, Models, Profiles, Settings** — six destinations in the
+navigation drawer, under a SYSTEM divider below the working surfaces. Editable
+memory files; skill toggles plus hub search/install; cron job control with run
+history; an active-model card with usage charts; and settings (the default model
+for new chats, three themes, haptics, a QR code to open the app on another
+phone, and a hidden raw-frame dev panel behind a triple-tap on the "Appearance"
+heading).
+
+These were one "Hub" screen behind a segmented control, which cost two taps to
+reach any of them. `/hub?tab=<id>` still redirects to the matching page, since
+those URLs live on in bookmarks and home-screen installs.
 
 ## The PWA: install it over Tailscale
 
@@ -178,7 +185,7 @@ web/src/
   lib/slashCommands.ts the command table: which surface fulfils each command
   store/               streaming accumulator (session), preferences (ui)
   api/                 TanStack Query hooks per domain
-  screens/             Chat, Sessions, Kanban, Hub
+  screens/             Chat, Sessions, Kanban, Files, and the Hub pages
   components/          chat, composer, sessions, kanban, hub, shared
 ```
 

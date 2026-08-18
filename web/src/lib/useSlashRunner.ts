@@ -72,7 +72,8 @@ export function useSlashRunner(handlers: SlashHandlers) {
           h.onOpenPalette();
           return;
         default:
-          navigate(`/hub?tab=${action.replace('hub-', '')}`);
+          // Each former Hub tab is its own route now.
+          navigate(`/${action.replace('hub-', '')}`);
       }
     },
     [navigate],
