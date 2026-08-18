@@ -4,7 +4,16 @@
 #
 #   1. make sure the Hermes backend is up on loopback (start it if not)
 #   2. make sure the web app is built
-#   3. run the LAN-facing proxy
+#   3. optionally publish it over Tailscale (TAILSCALE=1)
+#   4. run the LAN-facing proxy, replacing one already on the port
+#
+# Safe to re-run: every step checks before it acts, and step 4 takes the port
+# back rather than failing on it.
+#
+#   bash start.sh              # foreground
+#   bash start.sh --bg         # detach, log to .logs/hermes-control.log
+#   bash start.sh --status     # report, change nothing
+#   TAILSCALE=1 bash start.sh  # with the HTTPS front
 #
 # Everything is configurable through .env — see .env.example.
 
@@ -27,9 +36,121 @@ bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*"; }
 die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
+BACKGROUND=0
+STATUS_ONLY=0
+
+for arg in "$@"; do
+  case "${arg}" in
+    --bg|--background) BACKGROUND=1 ;;
+    --status)          STATUS_ONLY=1 ;;
+    -h|--help)         sed -n '3,18p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+    *)                 die "Unknown option: ${arg}" ;;
+  esac
+done
+
 healthy() {
   curl -fsS -m 3 "${BACKEND}/api/health" >/dev/null 2>&1
 }
+
+# The proxy's own endpoint, as opposed to the backend's /api/health above: a
+# 200 here means the thing on the port is Hermes Control and not something else.
+proxy_up() {
+  curl -fsS -m 3 "http://127.0.0.1:${PROXY_PORT}/healthz" >/dev/null 2>&1
+}
+
+# Whatever holds the proxy port, found through the listening socket.
+#
+# Not by command line and not by environment: the server reads PROXY_PORT out
+# of .env itself, so it does not reliably appear in the process environment,
+# and the tree is pnpm -> tsx -> node.
+#
+# The trailing `|| true` matters: `grep` exits non-zero when nothing is
+# listening, and under `set -o pipefail` that would propagate out of the
+# command substitution in `stop_proxy` and take the whole script down under
+# `set -e` — precisely in the case where the port is free and everything is
+# fine. "Nothing found" is an ordinary answer here, not a failure.
+port_pids() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnpH "sport = :${PROXY_PORT}" 2>/dev/null |
+      grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"${PROXY_PORT}" -sTCP:LISTEN 2>/dev/null | sort -u || true
+  fi
+}
+
+port_free() { [ -z "$(port_pids)" ]; }
+
+# Take the port back. We have just rebuilt web/dist, so an already-running proxy
+# is serving the previous build — leaving it alone would silently ship the old
+# app to a phone that has no way to tell.
+stop_proxy() {
+  local pids
+  pids="$(port_pids)"
+  [ -z "${pids}" ] && return 0
+
+  bold "-> Stopping the proxy already on port ${PROXY_PORT} (${pids//$'\n'/ })..."
+  # shellcheck disable=SC2086
+  kill ${pids} 2>/dev/null || true
+
+  # Killing the listener is enough: tsx exits with it and pnpm follows.
+  for _ in $(seq 1 20); do
+    port_free && return 0
+    sleep 0.5
+  done
+
+  warn "  ! Did not shut down cleanly - forcing."
+  pids="$(port_pids)"
+  # shellcheck disable=SC2086
+  [ -n "${pids}" ] && kill -9 ${pids} 2>/dev/null || true
+
+  for _ in $(seq 1 10); do
+    port_free && return 0
+    sleep 0.5
+  done
+  die "Port ${PROXY_PORT} is still held by: $(port_pids | tr '\n' ' ')"
+}
+
+# Read the published HTTPS URL without touching the serve config.
+tailscale_url() {
+  command -v tailscale >/dev/null 2>&1 || return 0
+  timeout 10 tailscale serve status 2>/dev/null |
+    grep -m1 -oE 'https://[^ ]+' || true
+}
+
+report() {
+  local lan_ip scheme
+  lan_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I 2>/dev/null | awk '{print $1}')"
+  scheme="http"
+  [ -n "${HTTPS_CERT:-}" ] && [ -n "${HTTPS_KEY:-}" ] && scheme="https"
+
+  echo
+  bold "Hermes Control"
+  echo "  On this machine: ${scheme}://localhost:${PROXY_PORT}"
+  [ -n "${lan_ip}" ] && echo "  On your phone:   ${scheme}://${lan_ip}:${PROXY_PORT}"
+  if [ -n "${TS_URL}" ]; then
+    echo "  Over Tailscale:  ${TS_URL}   <- open this one to install the PWA"
+  elif [ "${scheme}" = "http" ]; then
+    warn "  HTTP mode - install/offline/push stay dormant (see README)."
+    warn "  TAILSCALE=1 bash start.sh puts an HTTPS front on it."
+  fi
+  [ "${BACKGROUND}" = "1" ] && echo "  Logs:            ${LOG_DIR}/hermes-control.log"
+  echo
+}
+
+# --- 0. status --------------------------------------------------------------
+#
+# Report and change nothing. Deliberately ahead of every step below so it never
+# starts a backend or kicks off a build as a side effect of being asked.
+
+TS_URL=""
+
+if [ "${STATUS_ONLY}" = "1" ]; then
+  healthy   && bold "* Hermes backend up on ${HERMES_HOST}:${HERMES_PORT}" || warn "x Hermes backend down"
+  proxy_up  && bold "* Proxy up on ${PROXY_PORT}"                          || warn "x Proxy not running"
+  TS_URL="$(tailscale_url)"
+  report
+  exit 0
+fi
 
 # --- 1. Hermes backend -------------------------------------------------------
 
@@ -101,7 +222,6 @@ fi
 #   sudo tailscale set --operator=$USER
 # and the tailnet needs HTTPS certificates enabled (admin console → DNS).
 
-TS_URL=""
 if [ "${TAILSCALE:-0}" = "1" ]; then
   command -v tailscale >/dev/null || die "TAILSCALE=1 but tailscale is not on PATH."
 
@@ -138,21 +258,35 @@ if [ "${TAILSCALE:-0}" = "1" ]; then
 fi
 
 # --- 4. proxy ----------------------------------------------------------------
+#
+# Take the port before binding it. Step 2 just rebuilt `web/dist`, so a proxy
+# already running here is serving the previous build; replacing it is the whole
+# point of having run this script. Without this the script died of EADDRINUSE
+# whenever it was run twice — every step above is happy to be repeated, and
+# this was the one that was not.
 
-LAN_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I 2>/dev/null | awk '{print $1}')"
-SCHEME="http"
-[ -n "${HTTPS_CERT:-}" ] && [ -n "${HTTPS_KEY:-}" ] && SCHEME="https"
+stop_proxy
+port_free || die "Port ${PROXY_PORT} is in use by: $(port_pids | tr '\n' ' ')"
 
-echo
-bold "Hermes Control"
-echo "  On this machine: ${SCHEME}://localhost:${PROXY_PORT}"
-[ -n "${LAN_IP}" ] && echo "  On your phone:   ${SCHEME}://${LAN_IP}:${PROXY_PORT}"
-if [ -n "${TS_URL}" ]; then
-  echo "  Over Tailscale:  ${TS_URL}   ← open this one to install the PWA"
-elif [ "${SCHEME}" = "http" ]; then
-  warn "  HTTP mode — install/offline/push stay dormant (see README)."
-  warn "  TAILSCALE=1 bash start.sh puts an HTTPS front on it."
+if [ "${BACKGROUND}" = "1" ]; then
+  mkdir -p "${LOG_DIR}"
+  bold "→ Starting the proxy in the background…"
+  # setsid so it outlives this shell and its terminal.
+  setsid nohup pnpm --filter @hermes-webapp/server start \
+    >> "${LOG_DIR}/hermes-control.log" 2>&1 < /dev/null &
+
+  for _ in $(seq 1 60); do
+    proxy_up && break
+    sleep 1
+  done
+  if ! proxy_up; then
+    warn "  ! Proxy did not come up. Last lines of ${LOG_DIR}/hermes-control.log:"
+    tail -n 15 "${LOG_DIR}/hermes-control.log" >&2 || true
+    die "Startup failed."
+  fi
+  bold "✓ Proxy up on ${PROXY_PORT}"
+  report
+else
+  report
+  exec pnpm --filter @hermes-webapp/server start
 fi
-echo
-
-exec pnpm --filter @hermes-webapp/server start

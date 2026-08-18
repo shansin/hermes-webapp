@@ -46,6 +46,15 @@ Hermes Control
 
 Add it to your home screen for an app-like launch.
 
+Re-running it is safe. Each step checks before it acts, and the proxy step
+takes the port back from an already-running instance — which is what you want,
+since the run just rebuilt the bundle that instance was serving.
+
+```bash
+bash start.sh --bg        # detach; logs to .logs/hermes-control.log
+bash start.sh --status    # report what's up, change nothing
+```
+
 ### The session token
 
 Hermes protects its API with a per-process session token. There are two paths:
