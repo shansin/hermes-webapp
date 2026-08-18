@@ -33,9 +33,9 @@ import { buzz } from '../../lib/haptics';
  * taps and a segmented control to reach any of them. They are top-level
  * destinations now — the drawer is the one surface with room for ten.
  *
- * Split into two groups because ten equal rows with hints is taller than a
- * phone: the working surfaces keep their hints, the configuration ones are
- * self-evident from the label and stay compact.
+ * Split into two groups so the configuration destinations read as a set rather
+ * than as four more peers of Chat. Both groups carry a hint — ten of them run
+ * past the fold on a short phone, which the list scrolls for.
  */
 const WORK = [
   { to: '/chat', label: 'Chat', hint: 'Talk to the agent', Icon: IconChat },
@@ -45,12 +45,12 @@ const WORK = [
 ];
 
 const SYSTEM = [
-  { to: '/memory', label: 'Memory', Icon: IconMemory },
-  { to: '/skills', label: 'Skills', Icon: IconSkills },
-  { to: '/cron', label: 'Cron', Icon: IconCron },
-  { to: '/models', label: 'Models', Icon: IconModels },
-  { to: '/profiles', label: 'Profiles', Icon: IconProfiles },
-  { to: '/settings', label: 'Settings', Icon: IconSettings },
+  { to: '/memory', label: 'Memory', hint: 'What the agent remembers', Icon: IconMemory },
+  { to: '/skills', label: 'Skills', hint: 'Toggle, search, install', Icon: IconSkills },
+  { to: '/cron', label: 'Cron', hint: 'Scheduled jobs', Icon: IconCron },
+  { to: '/models', label: 'Models', hint: 'Active model and usage', Icon: IconModels },
+  { to: '/profiles', label: 'Profiles', hint: 'Named configurations', Icon: IconProfiles },
+  { to: '/settings', label: 'Settings', hint: 'Default model, theme, status', Icon: IconSettings },
 ];
 
 /** How far the panel must be dragged left before it closes. */
@@ -132,8 +132,8 @@ export function NavDrawer() {
 
           <div className="drawer__section">SYSTEM</div>
 
-          {SYSTEM.map(({ to, label, Icon }) => (
-            <Item key={to} to={to} label={label} Icon={Icon} compact onNavigate={close} />
+          {SYSTEM.map(({ to, label, hint, Icon }) => (
+            <Item key={to} to={to} label={label} hint={hint} Icon={Icon} compact onNavigate={close} />
           ))}
         </div>
       </nav>
