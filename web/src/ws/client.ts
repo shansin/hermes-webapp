@@ -41,6 +41,13 @@ const REQUEST_TIMEOUT_MS = 180_000;
  */
 const CONTROL_TIMEOUT_MS = 15_000;
 
+/**
+ * How long a socket may sit in CONNECTING before a resume treats it as dead.
+ * Backgrounding mid-handshake produces exactly that, and nothing else times
+ * it out — the browser has no deadline of its own here.
+ */
+const STALE_CONNECTING_MS = 10_000;
+
 export { CONTROL_TIMEOUT_MS };
 
 export class HermesClient {
@@ -52,6 +59,8 @@ export class HermesClient {
   private frameHandlers = new Set<FrameHandler>();
   private attempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the current socket started connecting, to spot one wedged there. */
+  private connectingSince = 0;
   private closedByUser = false;
   private _state: ConnState = 'closed';
 
@@ -61,11 +70,45 @@ export class HermesClient {
 
   constructor(private url: string = defaultWsUrl()) {}
 
-  connect(): void {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+  /**
+   * Open the socket, or do nothing if one is already up.
+   *
+   * `resume` is the phone coming back to the foreground, and it means two
+   * things beyond "try again":
+   *
+   *  - **Start over on the backoff.** A wait computed while the app was in a
+   *    pocket has nothing to do with the network the user just came back to.
+   *    Without this, returning to the app after a few failed attempts meant
+   *    sitting on "Reconnecting…" for up to the 15s cap with a perfectly good
+   *    connection available.
+   *  - **Distrust a socket stuck in CONNECTING.** Suspending mid-handshake
+   *    leaves one that never opens and never closes, and the early-out below
+   *    would otherwise treat it as progress forever.
+   */
+  connect({ resume = false }: { resume?: boolean } = {}): void {
+    const state = this.ws?.readyState;
+
+    if (state === WebSocket.CONNECTING) {
+      const wedged = resume && Date.now() - this.connectingSince > STALE_CONNECTING_MS;
+      if (!wedged) return;
+      // Detach the handlers first: closing fires `onclose`, which would
+      // otherwise schedule a second reconnect on top of the one below.
+      this.discard(this.ws);
+    } else if (state === WebSocket.OPEN) {
       return;
     }
+
+    if (resume) this.attempt = 0;
+
+    // This call supersedes any pending retry; leaving the timer armed meant a
+    // failure moments later hit the `if (this.reconnectTimer) return` guard in
+    // `scheduleReconnect` and waited out the *old* delay instead of backing
+    // off from now.
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+
     this.closedByUser = false;
+    this.connectingSince = Date.now();
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
 
     let socket: WebSocket;
@@ -219,6 +262,21 @@ export class HermesClient {
   onFrame(h: FrameHandler): () => void {
     this.frameHandlers.add(h);
     return () => this.frameHandlers.delete(h);
+  }
+
+  /** Drop a socket without letting its lifecycle events run. */
+  private discard(socket: WebSocket | null): void {
+    if (!socket) return;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    try {
+      socket.close(1000, 'superseded');
+    } catch {
+      // Already gone; nothing to clean up.
+    }
+    if (this.ws === socket) this.ws = null;
   }
 
   private setState(s: ConnState): void {

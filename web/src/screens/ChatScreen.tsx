@@ -289,7 +289,8 @@ export function ChatScreen() {
           title="Waiting for connection…"
           hint="Hermes is unreachable. This screen picks up on its own once the socket is back."
           action={
-            <button className="btn" onClick={() => hermes.connect()}>
+            // "Now" means now: `resume` drops any pending backoff.
+            <button className="btn" onClick={() => hermes.connect({ resume: true })}>
               Retry now
             </button>
           }

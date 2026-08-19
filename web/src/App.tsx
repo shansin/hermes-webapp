@@ -72,9 +72,11 @@ export function App() {
   }, [token, setConnection]);
 
   // A phone suspends the socket when the app is backgrounded; nudge it awake.
+  // `resume` restarts the backoff — the delay computed while the app sat in a
+  // pocket says nothing about the network it just came back to.
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === 'visible') hermes.connect();
+      if (document.visibilityState === 'visible') hermes.connect({ resume: true });
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('online', onVisible);

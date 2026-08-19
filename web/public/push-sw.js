@@ -27,17 +27,22 @@ function vapidKeyToBytes(base64url) {
 }
 
 /**
- * Show the banner — unless the app is already on screen.
+ * Show the banner — unless the app is genuinely in front of the user.
  *
  * A phone with the app open gets an in-app toast from `useEventToasts` over
- * the WebSocket, so showing a system banner too would double every event. The
- * page is told instead, and shows its own toast.
+ * the WebSocket, so a system banner too would double every event. The page is
+ * told instead and shows its own toast.
  *
- * The cost of that: `userVisibleOnly` subscriptions are expected to display
- * something for every push, and browsers track a budget for the ones that
- * don't. Suppressing only while a client is genuinely *visible* keeps this
- * rare — that window is exactly when the user is looking at the app and the
- * WebSocket is delivering anyway.
+ * The test is `focused`, not `visibilityState` alone. A backgrounded PWA can
+ * still be returned by `matchAll` reporting itself visible — the OS moved on
+ * without the page ever running a visibilitychange handler — and suppressing
+ * on that means posting a message into a page nobody is looking at, which
+ * shows nothing at all. That failure is silent and total: no banner, no
+ * toast. `focused` is the one signal a backgrounded window cannot claim.
+ *
+ * Erring this way is also the safer side of the `userVisibleOnly` bargain:
+ * the budget browsers keep is for pushes that display *nothing*, so showing
+ * one too many costs nothing while showing one too few costs the feature.
  */
 self.addEventListener('push', (event) => {
   let data = {};
@@ -54,10 +59,10 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     (async () => {
       const open = await clients.matchAll({ type: 'window', includeUncontrolled: true });
-      const visible = open.filter((c) => c.visibilityState === 'visible');
+      const inFront = open.filter((c) => c.focused && c.visibilityState === 'visible');
 
-      if (visible.length) {
-        for (const client of visible) {
+      if (inFront.length) {
+        for (const client of inFront) {
           client.postMessage({ source: 'hermes-push', kind: data.kind || '', text: body, url });
         }
         return;

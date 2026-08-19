@@ -97,7 +97,14 @@ export async function sendPush(message: PushMessage): Promise<number> {
       try {
         await webpush.sendNotification(row.subscription, payload, {
           TTL: 60 * 60 * 12,
-          urgency: 'normal',
+          /**
+           * Not 'normal'. A dozing Android device defers normal-urgency
+           * messages until it next wakes for its own reasons, which can be
+           * many minutes — and the whole point of these is that the phone is
+           * face-down on a table. Every message we send is one a person is
+           * waiting on: a reply, or an approval blocking the agent outright.
+           */
+          urgency: 'high',
         });
         delivered.push(endpoint);
       } catch (err) {
@@ -113,5 +120,9 @@ export async function sendPush(message: PushMessage): Promise<number> {
   );
 
   markSent(delivered);
+  // Logged per send, not just on failure: "the banner never arrived" is
+  // otherwise impossible to split into "we never sent it" and "the phone
+  // never showed it", which is exactly the question worth answering first.
+  log.info(`Pushed ${message.kind} to ${delivered.length}/${rows.length} device(s).`);
   return delivered.length;
 }
