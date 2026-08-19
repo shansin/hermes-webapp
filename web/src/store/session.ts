@@ -144,12 +144,13 @@ interface SessionState {
   // --- actions
   reset: () => void;
   adoptSession: (r: { sessionId: string; storedSessionId?: string; info?: SessionInfo }) => void;
-  loadHistory: (messages: HistoryMessage[]) => void;
+  loadHistory: (messages: HistoryMessage[], opts?: { resync?: boolean }) => void;
   applyEvent: (params: { type: string; session_id?: string; payload?: unknown }) => void;
   submitPrompt: (text: string, opts?: { display?: string }) => Promise<void>;
   addNotice: (text: string, tone?: 'info' | 'error', label?: string) => void;
   clearQueued: () => void;
   retryLast: () => Promise<void>;
+  applyResync: (messages: HistoryMessage[]) => void;
   resendFailed: (messageId: string) => Promise<void>;
   editTurn: (messageId: string, newText: string) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -261,35 +262,61 @@ export const useSession = create<SessionState>((set, get) => ({
       error: null,
     }),
 
-  loadHistory: (messages) => {
+  /**
+   * Replace the transcript with the server's copy.
+   *
+   * `resync` marks the case where this is the *same* conversation being
+   * reconciled after a dropped socket, rather than a different one being
+   * opened. That distinction is worth carrying: a reconciliation should not
+   * throw away what the user can already see — the clock times on messages
+   * this session produced, or a message they typed and have not sent yet.
+   */
+  loadHistory: (messages, opts) => {
+    const prior = opts?.resync ? get().messages : [];
+
+    /**
+     * The time already known for the message at this position, when the
+     * server's copy agrees with what we are showing. History carries no
+     * timestamps of its own — see `MessageTime` — so without this a
+     * reconnect would strip the clock off every message in the session.
+     */
+    const priorTime = (i: number, kind: ChatMessage['kind'], text: string): MessageTime => {
+      const old = prior[i];
+      if (!old || old.kind !== kind) return null;
+      if (kind === 'tool') return old.kind === 'tool' && old.name === text ? old.at : null;
+      return 'text' in old && old.text === text ? old.at : null;
+    };
+
     const out: ChatMessage[] = [];
-    for (const m of messages) {
-      // Replayed history carries no time of its own — see `MessageTime`.
-      const at = null;
+    for (const [i, m] of messages.entries()) {
       if (m.role === 'user') {
-        out.push({ kind: 'user', id: nextId(), text: m.text ?? '', at });
+        const text = m.text ?? '';
+        out.push({ kind: 'user', id: nextId(), text, at: priorTime(i, 'user', text) });
       } else if (m.role === 'assistant') {
+        const text = m.text ?? '';
         out.push({
           kind: 'assistant',
           id: nextId(),
-          text: m.text ?? '',
+          text,
           reasoning: m.reasoning,
-          at,
+          at: priorTime(i, 'assistant', text),
         });
       } else if (m.role === 'tool') {
         // Replayed history has no tool_id and no result — only what was called.
+        const name = m.name ?? 'tool';
         out.push({
           kind: 'tool',
           id: nextId(),
           toolId: `hist-${seq}`,
-          name: m.name ?? 'tool',
+          name,
           context: m.context,
           status: 'done',
-          at,
+          at: priorTime(i, 'tool', name),
         });
       }
     }
-    set({ messages: out, queued: null });
+
+    set({ messages: out, queued: opts?.resync ? get().queued : null });
   },
 
   applyEvent: ({ type, payload }) => {
@@ -616,6 +643,57 @@ export const useSession = create<SessionState>((set, get) => ({
     const idx = messages.findIndex((m) => m.id === messageId && m.kind === 'user');
     if (idx < 0 || !newText.trim()) return;
     await rewind(get, set, idx, newText);
+  },
+
+  /**
+   * Reconcile with the server after the socket came back.
+   *
+   * A turn interrupted by a dropped connection leaves a half-written bubble
+   * and `running` stuck true — the `message.complete` that would have ended it
+   * was emitted while nothing was listening. The server's history is the only
+   * thing that knows how the turn actually ended, so it wins.
+   *
+   * The streaming buffers are cleared rather than kept: whatever they hold is
+   * either already in the history we just loaded, or belongs to a turn still
+   * being written, which will stream in again from wherever it has got to.
+   */
+  applyResync: (messages) => {
+    const current = get().messages;
+
+    // The server's copy can legitimately be *behind* ours. A prompt submitted
+    // just as the socket dropped exists as a bubble here but was never
+    // recorded there, and adopting a shorter history would wipe it off the
+    // screen — losing what someone typed to fix a display glitch.
+    if (messages.length < current.length) {
+      set({ error: null });
+      return;
+    }
+
+    /**
+     * Whether the conversation actually moved on while we were away. A turn
+     * that finished in the gap shows up here as an extra message; one still
+     * being written does not, because the reply only joins the transcript when
+     * it completes.
+     */
+    const advanced = messages.length > current.length;
+
+    get().loadHistory(messages, { resync: true });
+
+    // Only tear down the live turn once the server shows it ended. Clearing
+    // unconditionally would blank a reply that is still streaming and merely
+    // hasn't been recorded yet.
+    set(
+      advanced
+        ? {
+            running: false,
+            streamingText: '',
+            streamingReasoning: '',
+            thinkingHint: '',
+            statusLine: '',
+            error: null,
+          }
+        : { error: null },
+    );
   },
 
   interrupt: async () => {

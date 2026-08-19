@@ -57,12 +57,14 @@ export function ChatScreen() {
 
 
   const sessionId = useSession((s) => s.sessionId);
+  const storedSessionId = useSession((s) => s.storedSessionId);
   const title = useSession((s) => s.title);
   const info = useSession((s) => s.info);
   const error = useSession((s) => s.error);
   const reset = useSession((s) => s.reset);
   const adopt = useSession((s) => s.adoptSession);
   const loadHistory = useSession((s) => s.loadHistory);
+  const applyResync = useSession((s) => s.applyResync);
   const setTitle = useSession((s) => s.setTitle);
   const refreshUsage = useSession((s) => s.refreshUsage);
 
@@ -193,6 +195,46 @@ export function ChatScreen() {
     // Deliberately keyed on the connection + URL intent only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection, resumeId, wantNew]);
+
+  /**
+   * Reconcile the transcript when the socket comes back.
+   *
+   * The gateway session outlives the socket — the socket is only transport —
+   * so the boot effect above deliberately does nothing on a reconnect that
+   * already holds a session. That left the one case this fixes: events emitted
+   * while the connection was down are gone for good. A turn that finished in
+   * that window never delivered its `message.complete`, so the reply stayed
+   * frozen mid-sentence and `running` stayed true, and the only way out was to
+   * open a session from the list and come back — which resumed for real.
+   */
+  const wasLive = useRef(false);
+  useEffect(() => {
+    const live = connection === 'open';
+    const reconnected = live && !wasLive.current;
+    wasLive.current = live;
+
+    // The boot effect owns anything with a URL intent behind it, and a session
+    // still being adopted has nothing to reconcile against yet.
+    if (!reconnected || !sessionId || resumeId || wantNew || bootingRef.current) return;
+
+    let alive = true;
+    void (async () => {
+      try {
+        const history = await fetchHistory(sessionId);
+        if (alive) applyResync(history);
+        void refreshUsage();
+      } catch {
+        // The handle didn't survive — a gateway restart rather than a network
+        // blip. Resuming the stored session rebuilds it from disk.
+        if (!alive || !storedSessionId) return;
+        await doResume(storedSessionId);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection, sessionId]);
 
   /**
    * Offline: show the stored transcript instead of a spinner.
