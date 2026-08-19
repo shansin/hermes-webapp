@@ -15,7 +15,7 @@ import { CommandPalette } from '../components/composer/CommandPalette';
 import { ApprovalSheet } from '../components/chat/ApprovalSheet';
 import { ModelSheet } from '../components/chat/ModelSheet';
 import { ContextSheet } from '../components/chat/ContextSheet';
-import { IconPlus, IconChevron } from '../components/shared/Icons';
+import { IconPlus, IconChevron, IconSearch } from '../components/shared/Icons';
 import { Empty, Loader } from '../components/shared/misc';
 import { useSession } from '../store/session';
 import { MenuButton } from '../components/shared/MenuButton';
@@ -30,6 +30,7 @@ export function ChatScreen() {
   const [modelSheet, setModelSheet] = useState(false);
   const [contextSheet, setContextSheet] = useState(false);
   const [palette, setPalette] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [commandSeed, setCommandSeed] = useState('');
   const [booting, setBooting] = useState(false);
   /**
@@ -265,6 +266,14 @@ export function ChatScreen() {
             <IconChevron size={11} style={{ transform: 'rotate(90deg)' }} />
           </button>
         </div>
+        <button
+          className="icon-btn"
+          onClick={() => setSearchOpen((o) => !o)}
+          aria-label="Find in conversation"
+          aria-pressed={searchOpen}
+        >
+          <IconSearch size={19} />
+        </button>
         <button className="icon-btn" onClick={() => void startNew()} aria-label="New chat">
           <IconPlus size={21} />
         </button>
@@ -301,7 +310,7 @@ export function ChatScreen() {
           <div className="empty__title">Starting a session…</div>
         </div>
       ) : (
-        <MessageList />
+        <MessageList searchOpen={searchOpen} onCloseSearch={() => setSearchOpen(false)} />
       )}
 
       <Composer

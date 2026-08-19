@@ -13,22 +13,26 @@ import { IconCheck, IconCopy } from '../shared/Icons';
 import { MermaidBlock } from './MermaidBlock';
 import { useSession } from '../../store/session';
 import { buzz } from '../../lib/haptics';
+import { copyText } from '../../lib/share';
 
+/**
+ * Copy a code block.
+ *
+ * This used to call `navigator.clipboard` directly and swallow the failure,
+ * which meant the button did nothing at all over plain HTTP — the app's own
+ * default deployment. `copyText` carries the legacy fallback that works there.
+ */
 function CopyButton({ getText }: { getText: () => string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       className="code__copy"
       onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(getText());
-          buzz('tap');
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1600);
-        } catch {
-          // Clipboard needs a secure context; silently no-op on plain HTTP
-          // where it is unavailable.
-        }
+        const ok = await copyText(getText());
+        if (!ok) return;
+        buzz('tap');
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1600);
       }}
     >
       {copied ? (

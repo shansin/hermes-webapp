@@ -105,15 +105,53 @@ export async function probeAudio(): Promise<AudioCaps> {
 // --- text to speech ----------------------------------------------------------
 
 let current: HTMLAudioElement | null = null;
+/**
+ * The utterance on the synthesis path, tracked for the same reason as
+ * `current`: `cancel()` fires `onend` on whatever it stopped, and without an
+ * identity check that late event would clear the state belonging to the clip
+ * that replaced it.
+ */
+let currentUtter: SpeechSynthesisUtterance | null = null;
+
+type SpeakListener = (speaking: boolean) => void;
+const speakListeners = new Set<SpeakListener>();
+let speaking = false;
+
+function setSpeaking(next: boolean): void {
+  if (speaking === next) return;
+  speaking = next;
+  for (const l of speakListeners) l(next);
+}
+
+/** Whether anything is being read aloud right now. */
+export function isSpeaking(): boolean {
+  return speaking;
+}
+
+/**
+ * Subscribe to playback starting and stopping.
+ *
+ * Playback ends on its own — the clip runs out — so a button that offers to
+ * stop it needs telling, or it sits there offering to stop silence. Returns an
+ * unsubscribe.
+ */
+export function onSpeakingChange(cb: SpeakListener): () => void {
+  speakListeners.add(cb);
+  return () => {
+    speakListeners.delete(cb);
+  };
+}
 
 export function stopSpeaking(): void {
   current?.pause();
   current = null;
+  currentUtter = null;
   try {
     speechSynthesis?.cancel();
   } catch {
     // No synthesis engine — nothing to cancel.
   }
+  setSpeaking(false);
 }
 
 /** Speak text, preferring Hermes' TTS and falling back to the browser voice. */
@@ -130,7 +168,23 @@ export async function speak(text: string): Promise<void> {
     if (res.ok && res.data_url) {
       const audio = new Audio(res.data_url);
       current = audio;
+      // Only the clip that is still current may report itself finished.
+      const done = () => {
+        if (current !== audio) return;
+        current = null;
+        setSpeaking(false);
+      };
+      audio.addEventListener('ended', done);
+      audio.addEventListener('error', done);
       await audio.play();
+      // `play()` can resolve after something else already took over — a second
+      // tap while this clip was still loading. Reporting playback then would
+      // leave the state describing audio that has already been stopped.
+      if (current !== audio) {
+        audio.pause();
+        return;
+      }
+      setSpeaking(true);
       return;
     }
   } catch {
@@ -139,7 +193,16 @@ export async function speak(text: string): Promise<void> {
 
   if (typeof speechSynthesis !== 'undefined') {
     const utter = new SpeechSynthesisUtterance(clean.slice(0, 4000));
+    currentUtter = utter;
+    const done = () => {
+      if (currentUtter !== utter) return;
+      currentUtter = null;
+      setSpeaking(false);
+    };
+    utter.onend = done;
+    utter.onerror = done;
     speechSynthesis.speak(utter);
+    setSpeaking(true);
     return;
   }
 

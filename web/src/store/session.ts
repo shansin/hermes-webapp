@@ -51,7 +51,20 @@ export type ChatMessage =
    * back an expanded, model-facing prompt, but the transcript must keep
    * showing the short invocation the user actually typed.
    */
-  | { kind: 'user'; id: string; text: string; displayText?: string; at: MessageTime }
+  | {
+      kind: 'user';
+      id: string;
+      text: string;
+      displayText?: string;
+      at: MessageTime;
+      /**
+       * The submit RPC rejected, so the gateway never saw this turn. The
+       * bubble stays in the transcript — losing what someone typed is the
+       * worst possible response to a dropped connection — and offers to send
+       * it again.
+       */
+      failed?: boolean;
+    }
   /** Local output — slash-command results, and why one wouldn't run. */
   | { kind: 'notice'; id: string; text: string; tone: 'info' | 'error'; label?: string; at: MessageTime }
   | {
@@ -137,6 +150,7 @@ interface SessionState {
   addNotice: (text: string, tone?: 'info' | 'error', label?: string) => void;
   clearQueued: () => void;
   retryLast: () => Promise<void>;
+  resendFailed: (messageId: string) => Promise<void>;
   editTurn: (messageId: string, newText: string) => Promise<void>;
   interrupt: () => Promise<void>;
   respondApproval: (choice: string, all?: boolean) => Promise<void>;
@@ -538,10 +552,13 @@ export const useSession = create<SessionState>((set, get) => ({
       return;
     }
 
+    // Held so the catch below can mark this exact bubble rather than guessing
+    // at the last user message, which a queued send could have moved on from.
+    const id = nextId();
     set((st) => ({
       messages: [
         ...st.messages,
-        { kind: 'user', id: nextId(), text, displayText: opts?.display, at: Date.now() },
+        { kind: 'user', id, text, displayText: opts?.display, at: Date.now() },
       ],
       running: true,
       error: null,
@@ -552,7 +569,13 @@ export const useSession = create<SessionState>((set, get) => ({
     try {
       await hermes.call('prompt.submit', { session_id: sessionId, text });
     } catch (err) {
-      set({ running: false, error: err instanceof Error ? err.message : 'submit failed' });
+      set((st) => ({
+        running: false,
+        error: err instanceof Error ? err.message : 'submit failed',
+        messages: st.messages.map((m) =>
+          m.id === id && m.kind === 'user' ? { ...m, failed: true } : m,
+        ),
+      }));
     }
   },
 
@@ -568,6 +591,24 @@ export const useSession = create<SessionState>((set, get) => ({
     const idx = lastIndexOf(messages, (m) => m.kind === 'user');
     if (idx < 0) return;
     await rewind(get, set, idx, undefined);
+  },
+
+  /**
+   * Send a message whose submit rejected.
+   *
+   * Deliberately not a `rewind`: that asks the gateway to undo turns, and a
+   * failed submit means the gateway never recorded one. The bubble is simply
+   * dropped and resubmitted, so there is nothing on the server to unwind.
+   */
+  resendFailed: async (messageId) => {
+    const { messages, running } = get();
+    const target = messages.find((m) => m.id === messageId);
+    if (!target || target.kind !== 'user' || !target.failed || running) return;
+    set({
+      messages: messages.filter((m) => m.id !== messageId),
+      error: null,
+    });
+    await get().submitPrompt(target.text, { display: target.displayText });
   },
 
   editTurn: async (messageId, newText) => {

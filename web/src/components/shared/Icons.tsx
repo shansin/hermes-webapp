@@ -127,6 +127,28 @@ export const IconCopy = (p: P) => (
   </Svg>
 );
 
+export const IconShare = (p: P) => (
+  <Svg {...p} size={p.size ?? 14}>
+    <path d="M12 3v13" />
+    <path d="m8 7 4-4 4 4" />
+    <path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
+  </Svg>
+);
+
+export const IconSelect = (p: P) => (
+  <Svg {...p} size={p.size ?? 14}>
+    <rect x="3" y="3" width="18" height="18" rx="3" />
+    <path d="m8 12 3 3 5-6" />
+  </Svg>
+);
+
+export const IconUp = (p: P) => (
+  <Svg {...p}>
+    <path d="M12 19V5" />
+    <path d="m5 12 7-7 7 7" />
+  </Svg>
+);
+
 export const IconSpeaker = (p: P) => (
   <Svg {...p} size={p.size ?? 15}>
     <path d="M11 5 6 9H2v6h4l5 4V5Z" />

@@ -75,6 +75,233 @@
   font-weight: 600;
 }
 
+.msg__failed {
+  color: var(--error);
+  font-weight: 600;
+}
+
+/* The meta row is a wrap container, so every action has to align the same way
+   or the icons sit at different heights once the row breaks. */
+.msg__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* An action that is currently doing something — reading aloud — rather than
+   merely offering to. Without this the row gives no sign which message the
+   voice belongs to. */
+.msg__action--on {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+/* --- long replies --------------------------------------------------------- */
+
+.msg__body--clamped {
+  overflow: hidden;
+  position: relative;
+  /* Fade the cut rather than slicing a line of text in half. */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
+}
+
+.msg__more {
+  align-self: flex-start;
+  margin-top: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  padding: 3px 8px;
+  border-radius: 5px;
+}
+
+.msg__more:active { background: var(--bg-elev); }
+
+/* --- history boundary ----------------------------------------------------- */
+
+/* Replayed history carries no timestamps, so without this marker the run of
+   bubbles with no clock time above it just reads as broken. */
+.msg-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.msg-divider::before,
+.msg-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+
+/* --- search --------------------------------------------------------------- */
+
+.chat-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 10px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.chat-search__input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  padding: 7px 10px;
+}
+
+/* Safari draws its own clear button, which collides with the count. */
+.chat-search__input::-webkit-search-decoration,
+.chat-search__input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+
+.chat-search__count {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+}
+
+.chat-search__none {
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13px;
+  padding: 24px 12px;
+}
+
+.msg--match .msg__bubble,
+.msg--match .msg__body,
+.msg--match .notice,
+.msg--match .tool,
+.msg--match .think {
+  box-shadow: 0 0 0 1px var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.msg--match-current .msg__bubble,
+.msg--match-current .msg__body,
+.msg--match-current .notice,
+.msg--match-current .tool,
+.msg--match-current .think {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* --- selection mode ------------------------------------------------------- */
+
+.sel-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.sel-bar__count {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Rows become checkboxes: the tick needs room, and nothing inside may swallow
+   the tap that toggles the row. */
+.chat__list--selecting .msg {
+  padding-left: 26px;
+  position: relative;
+  cursor: pointer;
+}
+
+.chat__list--selecting .msg * {
+  pointer-events: none;
+}
+
+.msg__tick {
+  position: absolute;
+  left: 2px;
+  top: 4px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: var(--bg-elev-2);
+}
+
+.msg__tick--on {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* A tick alone is easy to miss on a dense transcript. */
+.msg--selected {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+/* --- recent sessions (empty state) ---------------------------------------- */
+
+.recents {
+  width: 100%;
+  max-width: 340px;
+  margin-top: 18px;
+}
+
+.recents__label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+  text-align: left;
+}
+
+.recents__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recents__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.recents__text { flex: 1; min-width: 0; }
+
+.recents__title {
+  display: block;
+  font-size: 13.5px;
+  color: var(--text);
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recents__meta {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
 /* --- markdown ------------------------------------------------------------- */
 
 .md > *:first-child { margin-top: 0; }
@@ -336,10 +563,32 @@
 
 /* --- jump to bottom ------------------------------------------------------- */
 
-.jump-fab {
+/* The fab stack: turn navigation above jump-to-latest, all thumb-reachable. */
+.chat-nav {
   position: absolute;
   right: 14px;
   bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 4;
+  animation: fade-in 0.15s ease;
+}
+
+.chat-nav__btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border-soft);
+  color: var(--text-dim);
+  display: grid;
+  place-items: center;
+  box-shadow: var(--shadow);
+  align-self: center;
+}
+
+.jump-fab {
   width: 42px;
   height: 42px;
   border-radius: 50%;
@@ -349,8 +598,6 @@
   display: grid;
   place-items: center;
   box-shadow: var(--shadow);
-  z-index: 4;
-  animation: fade-in 0.15s ease;
 }
 
 /* --- slash-command output ------------------------------------------------- */
