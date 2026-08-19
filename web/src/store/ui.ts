@@ -9,7 +9,30 @@ import { create } from 'zustand';
 import { setHapticsEnabled } from '../lib/haptics';
 import type { ConnState } from '../ws/types';
 
-export type Theme = 'dark' | 'amoled' | 'light';
+/** A palette that actually exists in CSS — what `data-theme` can be set to. */
+export type ResolvedTheme = 'dark' | 'amoled' | 'light';
+
+/**
+ * The stored preference, which is not the same thing: `system` names a rule
+ * for choosing rather than a palette, and has to be resolved against the
+ * device every time it is applied.
+ */
+export type Theme = ResolvedTheme | 'system';
+
+const darkQuery = '(prefers-color-scheme: dark)';
+
+/**
+ * What `system` currently means on this device.
+ *
+ * AMOLED is deliberately not reachable this way. The OS says light or dark and
+ * nothing finer, so a preference for the black-pixel variant is a choice only
+ * the user can make — `system` going dark picks the ordinary dark palette.
+ */
+export function resolveTheme(theme: Theme): ResolvedTheme {
+  if (theme !== 'system') return theme;
+  if (typeof matchMedia === 'undefined') return 'dark';
+  return matchMedia(darkQuery).matches ? 'dark' : 'light';
+}
 
 export interface Toast {
   id: number;
@@ -41,7 +64,10 @@ function write(key: string, value: string): void {
 }
 
 interface UiState {
+  /** What the user picked, which may be `system`. */
   theme: Theme;
+  /** What that currently resolves to — the palette actually on screen. */
+  resolvedTheme: ResolvedTheme;
   haptics: boolean;
   /** Optional explicit token, only needed when bypassing the proxy. */
   token: string;
@@ -67,12 +93,16 @@ interface UiState {
 
 let toastSeq = 0;
 
+// The default stays `dark` rather than `system`: anyone who has never opened
+// Settings has no stored preference, and quietly repainting their app white
+// because their phone is in light mode is not an improvement they asked for.
 const initialTheme = read(KEYS.theme, 'dark') as Theme;
 const initialHaptics = read(KEYS.haptics, 'on') === 'on';
 setHapticsEnabled(initialHaptics);
 
 export const useUi = create<UiState>((set, get) => ({
   theme: initialTheme,
+  resolvedTheme: resolveTheme(initialTheme),
   haptics: initialHaptics,
   token: read(KEYS.token, ''),
   devPanel: read(KEYS.devPanel, 'off') === 'on',
@@ -85,7 +115,7 @@ export const useUi = create<UiState>((set, get) => ({
   setTheme: (theme) => {
     write(KEYS.theme, theme);
     applyTheme(theme);
-    set({ theme });
+    set({ theme, resolvedTheme: resolveTheme(theme) });
   },
 
   setHaptics: (on) => {
@@ -115,12 +145,38 @@ export const useUi = create<UiState>((set, get) => ({
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
 }));
 
-/** Reflect the theme on <html> so CSS custom properties can switch wholesale. */
+/**
+ * Reflect the theme on <html> so CSS custom properties can switch wholesale.
+ *
+ * `data-theme` only ever carries a resolved palette — the stylesheet has no
+ * rule for `system`, and writing it there would fall back to the `:root` dark
+ * values whatever the device actually prefers.
+ */
 export function applyTheme(theme: Theme): void {
-  document.documentElement.dataset.theme = theme;
+  const resolved = resolveTheme(theme);
+  document.documentElement.dataset.theme = resolved;
   const meta = document.querySelector('meta[name="theme-color"]');
-  const color = theme === 'light' ? '#f7f7fa' : theme === 'amoled' ? '#000000' : '#0b0b0f';
+  const color = resolved === 'light' ? '#f7f7fa' : resolved === 'amoled' ? '#000000' : '#0b0b0f';
   meta?.setAttribute('content', color);
 }
 
 applyTheme(initialTheme);
+
+/**
+ * Follow the device while `system` is selected.
+ *
+ * Without this the app only picks up an OS change on reload — and a phone
+ * switching to dark at sunset with the app already open is the exact moment
+ * the setting is supposed to earn its place.
+ */
+if (typeof matchMedia !== 'undefined') {
+  const mq = matchMedia(darkQuery);
+  const onChange = () => {
+    if (useUi.getState().theme !== 'system') return;
+    applyTheme('system');
+    useUi.setState({ resolvedTheme: resolveTheme('system') });
+  };
+  // Safari only grew `addEventListener` on MediaQueryList in 14.
+  if (mq.addEventListener) mq.addEventListener('change', onChange);
+  else mq.addListener(onChange);
+}

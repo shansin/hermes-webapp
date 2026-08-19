@@ -289,7 +289,10 @@ function DefaultModelSection() {
   );
 }
 
+// `system` leads: it is the option most people want once they know it exists,
+// and its swatch is split down the middle to say so without a caption.
 const THEMES: { id: Theme; label: string; swatch: string }[] = [
+  { id: 'system', label: 'System', swatch: 'linear-gradient(135deg, #0b0b0f 0 50%, #f7f7fa 50% 100%)' },
   { id: 'dark', label: 'Dark', swatch: '#0b0b0f' },
   { id: 'amoled', label: 'AMOLED', swatch: '#000000' },
   { id: 'light', label: 'Light', swatch: '#f7f7fa' },
@@ -354,6 +357,7 @@ function DevPanel() {
 
 export function SettingsTab() {
   const theme = useUi((s) => s.theme);
+  const resolvedTheme = useUi((s) => s.resolvedTheme);
   const setTheme = useUi((s) => s.setTheme);
   const haptics = useUi((s) => s.haptics);
   const setHaptics = useUi((s) => s.setHaptics);
@@ -393,7 +397,7 @@ export function SettingsTab() {
         APPEARANCE
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
         {THEMES.map((t) => (
           <button
             key={t.id}
@@ -401,8 +405,11 @@ export function SettingsTab() {
               buzz('tap');
               setTheme(t.id);
             }}
+            aria-pressed={theme === t.id}
             style={{
-              flex: 1,
+              // Two per row on a narrow phone, four across when there's room.
+              flex: '1 1 calc(50% - 4px)',
+              minWidth: 74,
               padding: '11px 8px',
               borderRadius: 'var(--radius-sm)',
               background: theme === t.id ? 'var(--accent-soft)' : 'var(--bg-elev)',
@@ -426,6 +433,21 @@ export function SettingsTab() {
             {t.label}
           </button>
         ))}
+      </div>
+
+      {/* Only shown for `system`, where the button label alone doesn't say what
+          is actually on screen — the other three are self-evident. */}
+      <div
+        style={{
+          fontSize: 'var(--type-body-sm)',
+          color: 'var(--text-faint)',
+          margin: '0 2px 16px',
+          minHeight: 16,
+        }}
+      >
+        {theme === 'system'
+          ? `Following your device — currently ${resolvedTheme}. AMOLED stays a manual choice.`
+          : ''}
       </div>
 
       <div
