@@ -210,8 +210,12 @@ subscribed; `.env.example` documents how to pin your own keypair instead, and
 Two things behave differently than you might expect:
 
 - **iOS only gives push to an installed app**, never to a Safari tab. Add to
-  Home Screen and open it from there, or the toggle in Settings will tell you
-  it isn't supported. The Settings screen says so explicitly on iPhone.
+  Home Screen and open it from there; Settings says so explicitly on iPhone
+  rather than leaving you with a switch that does nothing.
+- **The Notifications section hides itself** when the proxy has no push to
+  offer — `PUSH_ENABLED=0`, or a proxy still running a build from before push
+  existed. Neither is fixable from the phone, so there is nothing to show. If
+  you expected the toggle and don't see it, restart the proxy on the host.
 - **The proxy holds its own gateway socket** for this. Push has to deliver when
   no browser is connected, so it cannot ride on the per-client socket
   `wsProxy` opens — see `server/src/push/events.ts`.

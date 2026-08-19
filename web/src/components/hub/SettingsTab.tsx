@@ -76,12 +76,20 @@ function NotificationsSection() {
    * iOS exposes no Push API to a Safari *tab*, only to an installed app — so
    * 'unsupported' there means "not installed yet", which is worth saying. On
    * every other browser it means plain HTTP, and the secure-context card below
-   * already explains that; a second dead toggle would only be noise.
+   * already explains that.
    */
   const needsInstall = isIosSafari() && !isStandalone();
 
   if (state === 'loading') return null;
   if (state === 'unsupported' && !needsInstall) return null;
+
+  /**
+   * Nothing to offer when the server has no push: `server-off` is a setting on
+   * the host and `server-unsupported` is a proxy that needs restarting there.
+   * Neither is actionable from the phone, and a switch that explains why it
+   * cannot be used is worse than no switch — so the whole section goes.
+   */
+  if (state === 'server-off' || state === 'server-unsupported') return null;
 
   return (
     <>
@@ -93,14 +101,17 @@ function NotificationsSection() {
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 550, fontSize: 'var(--type-title-sm)' }}>Push</div>
             <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>
-              Banners when a background task finishes, a scheduled job runs, or the
-              agent needs an approval — even with the app closed
+              Banners when the agent replies, a background task finishes, or an
+              approval is needed — with the app closed
             </div>
           </div>
           <Switch
             checked={state === 'on'}
             onChange={(next) => {
-              const dead: PushState[] = ['denied', 'server-off', 'server-unsupported', 'unsupported'];
+              // 'denied' is undoable only in browser settings; 'unsupported'
+              // here is the iOS not-installed-yet case. Both explain
+              // themselves below rather than acting.
+              const dead: PushState[] = ['denied', 'unsupported'];
               if (busy || dead.includes(state)) return;
               void toggle(next);
             }}
@@ -120,19 +131,6 @@ function NotificationsSection() {
           <div style={{ fontSize: 12.5, color: 'var(--warn)', marginTop: 10 }}>
             Blocked. The browser won't ask again — allow notifications for this
             site in its own settings, then come back.
-          </div>
-        )}
-
-        {state === 'server-off' && (
-          <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginTop: 10 }}>
-            The proxy has push switched off (<code>PUSH_ENABLED=0</code>).
-          </div>
-        )}
-
-        {state === 'server-unsupported' && (
-          <div style={{ fontSize: 12.5, color: 'var(--warn)', marginTop: 10 }}>
-            This proxy is running a build without push. Restart it on the host —{' '}
-            <code>bash start.sh</code> — and reload.
           </div>
         )}
 
