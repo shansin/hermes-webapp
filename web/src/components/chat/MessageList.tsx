@@ -42,6 +42,7 @@ import { onSpeakingChange, speak, stopSpeaking } from '../../lib/audio';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 import { useThrottled } from '../../lib/useThrottled';
+import { useDebounced } from '../../lib/useDebounced';
 import { useLongPress } from '../../lib/useLongPress';
 import { chatToMarkdown, copyText, messageText, outcomeToast, shareText } from '../../lib/share';
 
@@ -53,6 +54,12 @@ const NEAR_BOTTOM_PX = 120;
  * dominating the frame budget on a phone.
  */
 const STREAM_RENDER_MS = 100;
+
+/**
+ * How long the find box must sit still before the transcript is filtered.
+ * Matches the session list's search, which settles on the same budget.
+ */
+const SEARCH_DEBOUNCE_MS = 250;
 
 /**
  * Clock time for a message, or null when it isn't known.
@@ -109,11 +116,33 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
   const [query, setQuery] = useState('');
   const [matchIdx, setMatchIdx] = useState(0);
 
+  /**
+   * Search on the settled value. The raw one still drives the input, so typing
+   * stays responsive — but every keystroke was otherwise a full rescan of the
+   * transcript *and* a re-render of the filtered list, on the screen where the
+   * transcript is by definition long enough to need searching.
+   *
+   * `filtering` below keys off this too, so the list and the match count flip
+   * together instead of showing "no matches" for a beat on every character.
+   */
+  const settledQuery = useDebounced(query, SEARCH_DEBOUNCE_MS);
+
+  /**
+   * The transcript, lowercased once. Rebuilt when the messages change rather
+   * than when the query does, so stepping through a search doesn't re-case
+   * every message; built only while the search bar is open, so a conversation
+   * that is never searched never pays for it or holds the second copy.
+   */
+  const haystack = useMemo(
+    () => (searchOpen ? messages.map((m) => ({ id: m.id, text: messageText(m).toLowerCase() })) : null),
+    [searchOpen, messages],
+  );
+
   const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return [];
-    return messages.filter((m) => messageText(m).toLowerCase().includes(q)).map((m) => m.id);
-  }, [messages, query]);
+    const q = settledQuery.trim().toLowerCase();
+    if (!q || !haystack) return [];
+    return haystack.filter((h) => h.text.includes(q)).map((h) => h.id);
+  }, [haystack, settledQuery]);
 
   /**
    * The same ids as a set. Every row asks "am I a match" on every render, and
@@ -123,10 +152,11 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
   const matchSet = useMemo(() => new Set(matches), [matches]);
 
   // A new query starts from the top rather than keeping a position that meant
-  // something about the previous set of hits.
+  // something about the previous set of hits. Keyed on the settled value, so
+  // the reset lands with the match set it belongs to.
   useEffect(() => {
     setMatchIdx(0);
-  }, [query]);
+  }, [settledQuery]);
 
   const currentMatch = matches[matchIdx] ?? null;
 
@@ -298,7 +328,7 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
 
   // Searching hides everything that doesn't match: on a phone a filtered list
   // beats hunting for highlighted bubbles in a wall of text.
-  const filtering = searchOpen && query.trim().length > 0;
+  const filtering = searchOpen && settledQuery.trim().length > 0;
 
   const isNearBottom = () => {
     const el = ref.current;
@@ -438,7 +468,7 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
         )}
 
         {filtering && matches.length === 0 && (
-          <div className="chat-search__none">No messages match “{query.trim()}”.</div>
+          <div className="chat-search__none">No messages match “{settledQuery.trim()}”.</div>
         )}
 
         {visible.map((m) => (
@@ -535,9 +565,21 @@ interface RowProps {
  * block in the conversation.
  */
 const MessageRow = memo(function MessageRow(p: RowProps) {
-  const { m, selecting, isSelected } = p;
+  const { m, selecting, isSelected, register } = p;
 
   const { handlers, consumed } = useLongPress(() => p.onBeginSelection(m.id));
+
+  /**
+   * Stable per row. As an inline arrow this was a new identity on every
+   * render, so React tore the node out of the lookup map and put it back each
+   * time the row re-rendered — for a ref whose target never actually changed.
+   */
+  const setNode = useCallback(
+    (el: HTMLDivElement | null) => {
+      register(m.id, el);
+    },
+    [register, m.id],
+  );
 
   const cls = [
     'msg',
@@ -700,7 +742,7 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
       )}
       <div
         className={cls}
-        ref={(el) => p.register(m.id, el)}
+        ref={setNode}
         // Non-user rows get the press handlers here; the user bubble puts them
         // on its own button so the press target matches the visible bubble.
         {...(m.kind === 'user' ? {} : handlers)}

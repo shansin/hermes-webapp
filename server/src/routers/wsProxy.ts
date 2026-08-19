@@ -107,6 +107,12 @@ async function bridge(client: WebSocket, pathname: string, search: string): Prom
     },
     // Session history replays and file attachments can be large.
     maxPayload: MAX_PAYLOAD,
+    // `ws` defaults this *on* for clients, unlike the `WebSocketServer` above
+    // which defaults it off. So without this the two legs disagreed: frames
+    // crossed the browser hop uncompressed, then got deflated to travel
+    // 127.0.0.1 and inflated again at the other end — CPU spent compressing
+    // for the one hop with no bandwidth to save, on every token of every turn.
+    perMessageDeflate: false,
   });
 
   // Frames produced before the upstream socket finishes opening would be lost,

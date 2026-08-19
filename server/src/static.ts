@@ -15,9 +15,9 @@
  *  - A manifest of `web/dist` is built once at boot, so the request path does
  *    no `existsSync`/`statSync`. Those are synchronous syscalls, and this is a
  *    single-threaded event loop serving a streaming chat UI.
- *  - Text assets are compressed on first request and the result is kept in
- *    memory. The bundle is ~1.2 MB raw and ~300 KB compressed, and it is the
- *    single largest cost of a cold load.
+ *  - Text assets are compressed once, in the background at boot, and the result
+ *    is kept in memory. The bundle is ~1.2 MB raw and ~300 KB compressed, and
+ *    it is the single largest cost of a cold load.
  *  - Everything carries an ETag, so a reload of the shell costs a 304 instead
  *    of re-streaming index.html.
  */
@@ -27,7 +27,13 @@ import { stat, readdir, readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join, extname, normalize } from 'node:path';
-import { gzipSync, brotliCompressSync, constants as zlib } from 'node:zlib';
+import { gzip, brotliCompress, constants as zlib } from 'node:zlib';
+import { promisify } from 'node:util';
+
+// The async forms run on libuv's threadpool, so compressing an asset no longer
+// stalls the event loop this process also relays the chat WebSocket on.
+const gzipAsync = promisify(gzip);
+const brotliAsync = promisify(brotliCompress);
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const webDist = resolve(here, '../../web/dist');
@@ -78,8 +84,15 @@ interface Entry {
   mtimeMs: number;
   type: string;
   compressible: boolean;
-  /** Compressed representations, built on first use and kept. */
-  enc: Map<Encoding, Buffer>;
+  /**
+   * Compressed representations, built on first use and kept.
+   *
+   * Keyed to the *promise* rather than the buffer so that concurrent requests
+   * for the same asset — which is what a cold page load is — share one
+   * compression instead of each starting their own and discarding all but the
+   * last. A resolved promise costs a microtask to await.
+   */
+  enc: Map<Encoding, Promise<Buffer>>;
 }
 
 /** urlPath (`/assets/index-abc.js`) -> entry. Built once at boot. */
@@ -133,6 +146,8 @@ export async function initStatic(): Promise<void> {
   manifest.clear();
   await walk(webDist, '');
   builtWeb = manifest.has('/index.html');
+  // Fire and forget: see `warm()`. Boot must not wait on it.
+  void warm();
 }
 
 /** Hashed assets never change under a fixed name; everything else might. */
@@ -183,23 +198,59 @@ function negotiate(accept: string | undefined, e: Entry): Encoding | null {
   return null;
 }
 
-async function encoded(e: Entry, enc: Encoding): Promise<Buffer> {
+function encoded(e: Entry, enc: Encoding): Promise<Buffer> {
   const cached = e.enc.get(enc);
   if (cached) return cached;
-  const raw = await readFile(e.abs);
-  // Quality 5 rather than 11: this runs on the first request for an asset, and
-  // 11 would stall it for ~a second on a 470 KB bundle for a few percent.
-  const out =
-    enc === 'br'
-      ? brotliCompressSync(raw, {
+
+  const job = (async () => {
+    const raw = await readFile(e.abs);
+    // Quality 5 rather than 11: 11 would spend ~a second on a 470 KB bundle
+    // for a few percent, and `warm()` below is racing the first request.
+    return enc === 'br'
+      ? brotliAsync(raw, {
           params: {
             [zlib.BROTLI_PARAM_QUALITY]: 5,
             [zlib.BROTLI_PARAM_SIZE_HINT]: raw.length,
           },
         })
-      : gzipSync(raw, { level: 6 });
-  e.enc.set(enc, out);
-  return out;
+      : gzipAsync(raw, { level: 6 });
+  })().catch((err: unknown) => {
+    // Never cache a failure: a transient read error would otherwise wedge this
+    // representation for the life of the process.
+    if (e.enc.get(enc) === job) e.enc.delete(enc);
+    throw err;
+  });
+
+  e.enc.set(enc, job);
+  return job;
+}
+
+/**
+ * Compress everything up front, in the background.
+ *
+ * Compression used to happen on the first request for each asset, which put it
+ * squarely in the path of a cold page load — and synchronously, on the event
+ * loop, while this same process relays a streaming chat socket. Measured over
+ * the current `web/dist`: 164 ms across 71 files (4.67 MB → 1.25 MB), and a
+ * cold load asks for several chunks at once, so that time serialized.
+ *
+ * Deliberately not awaited by `initStatic`: the server should start listening
+ * immediately, and a request that arrives mid-warm simply joins the in-flight
+ * promise above rather than duplicating the work.
+ *
+ * Brotli only. `negotiate` prefers it and every phone that can install a PWA
+ * accepts it, so precompressing gzip as well would double the work to serve a
+ * client we essentially never see; that path stays lazy.
+ */
+async function warm(): Promise<void> {
+  for (const entry of manifest.values()) {
+    if (!entry.compressible) continue;
+    // Sequential on purpose — this is background work, and firing 70 threadpool
+    // jobs at once would contend with the requests it exists to speed up.
+    await encoded(entry, 'br').catch(() => {
+      // A file that can't be read now will be retried on request.
+    });
+  }
 }
 
 /**

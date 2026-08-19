@@ -78,6 +78,9 @@ async function connect(): Promise<void> {
     // We only read small notification frames here — a history replay is never
     // requested on this socket, so the proxy's 512 MiB ceiling is unnecessary.
     maxPayload: 8 * 1024 * 1024,
+    // Loopback: compressing these frames buys no bandwidth and costs CPU on
+    // every delta the firehose carries. See the same note in wsProxy.ts.
+    perMessageDeflate: false,
   });
   socket = ws;
 
@@ -143,6 +146,14 @@ function scheduleReconnect(): void {
 }
 
 function handleFrame(line: string): void {
+  // Cheap early-out: composing a message and signing a payload is wasted work
+  // on a machine nobody has ever installed the app from — and so is parsing
+  // the frame that would have fed it. This socket sees the full gateway
+  // firehose, token deltas included, so before this sat above the parse the
+  // proxy was running `JSON.parse` 30–60×/second through every turn only to
+  // discard the result here.
+  if (!listSubscriptions().length) return;
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -155,10 +166,6 @@ function handleFrame(line: string): void {
 
   const params = frame.params as { type?: unknown; session_id?: unknown; payload?: unknown };
   if (typeof params.type !== 'string') return;
-
-  // Cheap early-out: composing a message and signing a payload is wasted work
-  // on a machine nobody has ever installed the app from.
-  if (!listSubscriptions().length) return;
 
   const message = toMessage(
     params.type,
