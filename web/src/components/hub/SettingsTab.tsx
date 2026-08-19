@@ -100,9 +100,8 @@ function NotificationsSection() {
           <Switch
             checked={state === 'on'}
             onChange={(next) => {
-              if (busy || state === 'denied' || state === 'server-off' || state === 'unsupported') {
-                return;
-              }
+              const dead: PushState[] = ['denied', 'server-off', 'server-unsupported', 'unsupported'];
+              if (busy || dead.includes(state)) return;
               void toggle(next);
             }}
             label="Push notifications"
@@ -127,6 +126,13 @@ function NotificationsSection() {
         {state === 'server-off' && (
           <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginTop: 10 }}>
             The proxy has push switched off (<code>PUSH_ENABLED=0</code>).
+          </div>
+        )}
+
+        {state === 'server-unsupported' && (
+          <div style={{ fontSize: 12.5, color: 'var(--warn)', marginTop: 10 }}>
+            This proxy is running a build without push. Restart it on the host —{' '}
+            <code>bash start.sh</code> — and reload.
           </div>
         )}
 

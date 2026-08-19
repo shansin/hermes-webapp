@@ -16,8 +16,15 @@
 export type PushState =
   /** No service worker or no Push API — almost always plain HTTP. */
   | 'unsupported'
-  /** The proxy has push switched off, or no VAPID identity. */
+  /** The proxy has push switched off (`PUSH_ENABLED=0`) or no VAPID identity. */
   | 'server-off'
+  /**
+   * `/push/config` isn't there. Almost always a proxy that predates push and
+   * hasn't been restarted — the request falls through to the SPA fallback and
+   * comes back as index.html with a 200, which is why this is detected by the
+   * shape of the response rather than by its status.
+   */
+  | 'server-unsupported'
   /** Available, not yet asked for. */
   | 'off'
   /** The user said no. Only they can undo this, in browser settings. */
@@ -64,13 +71,28 @@ export function pushSupported(): boolean {
   );
 }
 
-async function fetchConfig(): Promise<PushConfig | null> {
+/**
+ * Read `/push/config`, distinguishing "switched off" from "not there".
+ *
+ * Conflating the two produced the worst possible message: a proxy that simply
+ * hadn't been restarted since push was added told the user push was disabled,
+ * pointing at a setting that wasn't set. The SPA fallback answers unknown
+ * paths with index.html and a 200, so neither the status code nor a thrown
+ * `res.json()` distinguishes them — the payload shape is what does.
+ */
+async function fetchConfig(): Promise<PushConfig | 'missing'> {
   try {
     const res = await fetch('/push/config');
-    if (!res.ok) return null;
-    return (await res.json()) as PushConfig;
+    if (!res.ok) return 'missing';
+
+    const body: unknown = await res.json();
+    if (!body || typeof body !== 'object' || typeof (body as PushConfig).enabled !== 'boolean') {
+      return 'missing';
+    }
+    return body as PushConfig;
   } catch {
-    return null;
+    // Offline, or index.html parsed as JSON. Either way there is no config.
+    return 'missing';
   }
 }
 
@@ -106,7 +128,8 @@ export async function pushStatus(): Promise<PushStatus> {
   if (!pushSupported()) return { state: 'unsupported', endpoint: null };
 
   const config = await fetchConfig();
-  if (!config?.enabled || !config.publicKey) return { state: 'server-off', endpoint: null };
+  if (config === 'missing') return { state: 'server-unsupported', endpoint: null };
+  if (!config.enabled || !config.publicKey) return { state: 'server-off', endpoint: null };
 
   if (Notification.permission === 'denied') return { state: 'denied', endpoint: null };
 
@@ -132,7 +155,8 @@ export async function enablePush(): Promise<PushStatus> {
   if (!pushSupported()) return { state: 'unsupported', endpoint: null };
 
   const config = await fetchConfig();
-  if (!config?.enabled || !config.publicKey) return { state: 'server-off', endpoint: null };
+  if (config === 'missing') return { state: 'server-unsupported', endpoint: null };
+  if (!config.enabled || !config.publicKey) return { state: 'server-off', endpoint: null };
 
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') {
