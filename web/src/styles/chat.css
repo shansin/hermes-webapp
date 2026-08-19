@@ -96,28 +96,6 @@
   font-weight: 650;
 }
 
-/* --- long replies --------------------------------------------------------- */
-
-.msg__body--clamped {
-  overflow: hidden;
-  position: relative;
-  /* Fade the cut rather than slicing a line of text in half. */
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
-}
-
-.msg__more {
-  align-self: flex-start;
-  margin-top: 4px;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--accent);
-  padding: 3px 8px;
-  border-radius: 5px;
-}
-
-.msg__more:active { background: var(--bg-elev); }
-
 /* --- history boundary ----------------------------------------------------- */
 
 /* Replayed history carries no timestamps, so without this marker the run of

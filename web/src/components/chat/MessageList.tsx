@@ -8,8 +8,10 @@
  * This renders messages directly rather than virtualizing: entries have wildly
  * variable height (code blocks, tool output), and measuring them costs more
  * than it saves at realistic transcript lengths. The tool/reasoning bodies are
- * individually capped and scrollable, and long assistant replies are clamped
- * by `CollapsibleBody`, which is what actually bounds the DOM.
+ * individually capped and scrollable, which is what actually bounds the DOM.
+ * Assistant replies are deliberately not clamped: the newest answer is the
+ * thing you opened the app to read, and putting a "Show more" in front of it
+ * charged a tap on every single turn to see what you already asked for.
  *
  * Three modes share this list, and they are mutually exclusive by design:
  * reading, searching (a query bar filters and steps between matches), and
@@ -23,7 +25,6 @@ import { ThinkingBlock } from './ThinkingBlock';
 import { SubagentCard } from './SubagentCard';
 import { EditTurnSheet } from './EditTurnSheet';
 import { MessageActions } from './MessageActions';
-import { CollapsibleBody } from './CollapsibleBody';
 import { ChatSearchBar } from './ChatSearchBar';
 import {
   IconChevron,
@@ -632,9 +633,9 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
     return (
       <>
         {m.reasoning && <ThinkingBlock text={m.reasoning} />}
-        <CollapsibleBody>
+        <div className="msg__body">
           <Markdown>{m.text}</Markdown>
-        </CollapsibleBody>
+        </div>
         <div className="msg__meta">
           <Stamp at={m.at} />
           {m.interrupted && <span className="msg__interrupted">Interrupted</span>}
@@ -745,8 +746,6 @@ const StreamingTail = memo(function StreamingTail({ onGrow }: { onGrow: () => vo
   return (
     <div className="msg msg--assistant">
       {reasoning && <ThinkingBlock text={reasoning} streaming />}
-      {/* Not clamped: the turn is still being written, and collapsing text
-          that is actively growing would fight the reader. */}
       {text ? (
         <div className="msg__body">
           <Markdown>{text}</Markdown>
