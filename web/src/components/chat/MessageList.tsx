@@ -788,7 +788,11 @@ function RecentSessions() {
             className="card recents__row"
             onClick={() => {
               buzz('tap');
-              navigate(`/chat?resume=${encodeURIComponent(r.id)}`);
+              // Replace: this list is *on* /chat, so pushing another /chat
+              // entry left back landing on the same route without remounting
+              // — a press that visibly did nothing, and a second one that left
+              // the app.
+              navigate(`/chat?resume=${encodeURIComponent(r.id)}`, { replace: true });
             }}
           >
             <span className="recents__text">

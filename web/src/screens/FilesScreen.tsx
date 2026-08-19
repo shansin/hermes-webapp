@@ -5,8 +5,13 @@
  * targets and the indentation eats a phone's width. This is a drill-down
  * instead: one directory at a time, tap to descend, a back row to ascend, and
  * the current path shown as a scrollable crumb trail.
+ *
+ * The current directory lives in the URL (`?dir=`), not in component state.
+ * Descending is a navigation, so the system back button has to ascend — it
+ * previously left the screen outright and threw away however deep you had
+ * drilled.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { FileViewer } from '../components/files/FileViewer';
@@ -37,7 +42,21 @@ export function FilesScreen() {
   const [params, setParams] = useSearchParams();
   const requested = params.get('path');
 
-  const [dir, setDir] = useState<string | null>(null);
+  /**
+   * The directory on screen. Held in the URL so each descent is a history
+   * entry the back button can walk back up.
+   */
+  const dir = params.get('dir');
+  /**
+   * Descend or ascend. A push, not a replace — the whole point is that back
+   * retraces the drill-down. `setParams` writes the whole query, so `path=`
+   * drops away here, which is what should happen once it has been consumed.
+   */
+  const setDir = useCallback(
+    (next: string) => setParams({ dir: next }),
+    [setParams],
+  );
+
   const [viewing, setViewing] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<FsEntry | null>(null);
   const [newFolder, setNewFolder] = useState<string | null>(null);
@@ -57,10 +76,14 @@ export function FilesScreen() {
   const mkdir = useMakeDirectory();
   const del = useDeletePath();
 
-  // Open on the agent's working directory until told otherwise.
+  // Open on the agent's working directory until told otherwise. Replaces
+  // rather than pushes: the default landing spot is not somewhere the user
+  // navigated to, so back should leave Files, not return to a blank screen.
   useEffect(() => {
-    if (dir === null && defaultCwd.data?.cwd) setDir(defaultCwd.data.cwd);
-  }, [dir, defaultCwd.data]);
+    if (dir === null && !requested && defaultCwd.data?.cwd) {
+      setParams({ dir: defaultCwd.data.cwd }, { replace: true });
+    }
+  }, [dir, requested, defaultCwd.data, setParams]);
 
   /**
    * A requested path may be a file or a directory, and the caller doesn't know
@@ -69,9 +92,10 @@ export function FilesScreen() {
    */
   useEffect(() => {
     if (!requested) return;
-    setDir(parentOf(requested) ?? requested);
+    // One entry, not two: `?path=` is swapped for the `?dir=` it resolves to,
+    // so arriving from the transcript leaves a single step to go back over.
+    setParams({ dir: parentOf(requested) ?? requested }, { replace: true });
     setViewing(requested);
-    setParams({}, { replace: true });
   }, [requested, setParams]);
 
   const { dirs, files, hiddenCount } = useMemo(() => {

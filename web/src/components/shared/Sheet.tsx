@@ -1,12 +1,14 @@
 /**
  * Bottom sheet — the primary modal idiom on a phone.
  *
- * Dismissable by backdrop tap, a downward drag on the grip, or Escape. Body
- * scroll is locked while open so the page behind doesn't move under the sheet.
+ * Dismissable by backdrop tap, a downward drag on the grip, Escape, or the
+ * system back button. Body scroll is locked while open so the page behind
+ * doesn't move under the sheet.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { IconClose } from './Icons';
 import { buzz } from '../../lib/haptics';
+import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
 
 interface Props {
   open: boolean;
@@ -21,6 +23,11 @@ interface Props {
 export function Sheet({ open, title, onClose, children, actions, dismissible = true }: Props) {
   const [dragY, setDragY] = useState(0);
   const startY = useRef<number | null>(null);
+
+  // Back closes the sheet rather than the screen underneath it. A sheet that
+  // demands an explicit choice opts out — the same reason it has no close
+  // button — so back can't be used to duck the question.
+  useHistoryDismiss(open && dismissible, onClose);
 
   useEffect(() => {
     if (!open) return;

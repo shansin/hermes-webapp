@@ -9,8 +9,9 @@
  * phone, so the result scrolls horizontally and can be opened full-screen
  * rather than being scaled down to illegibility.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useUi } from '../../store/ui';
+import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
 
 type MermaidApi = {
   initialize: (config: Record<string, unknown>) => void;
@@ -92,11 +93,35 @@ export function MermaidBlock({ source }: { source: string }) {
         // Mermaid sanitizes its own output under securityLevel: strict.
         dangerouslySetInnerHTML={{ __html: svg }}
       />
-      {zoomed && (
-        <div className="mermaid__zoom" onClick={() => setZoomed(false)} role="dialog" aria-modal="true">
-          <div className="mermaid__zoom-inner" dangerouslySetInnerHTML={{ __html: svg }} />
-        </div>
-      )}
+      {zoomed && <ZoomedDiagram svg={svg} onClose={() => setZoomed(false)} />}
     </>
+  );
+}
+
+/**
+ * The full-screen diagram.
+ *
+ * Split out so its hooks are unconditional — the parent returns early while
+ * mermaid is still loading, and hooks cannot live behind that.
+ *
+ * It was previously dismissable by tap alone: no Escape on a desktop, and on a
+ * phone the back button closed the whole screen behind it.
+ */
+function ZoomedDiagram({ svg, onClose }: { svg: string; onClose: () => void }) {
+  const close = useCallback(onClose, [onClose]);
+  useHistoryDismiss(true, close);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [close]);
+
+  return (
+    <div className="mermaid__zoom" onClick={close} role="dialog" aria-modal="true">
+      <div className="mermaid__zoom-inner" dangerouslySetInnerHTML={{ __html: svg }} />
+    </div>
   );
 }

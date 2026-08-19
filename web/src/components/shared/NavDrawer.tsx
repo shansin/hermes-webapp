@@ -8,7 +8,7 @@
  * that height back and leaves room to grow.
  *
  * `NavLink` handles the active state; the drawer closes on navigate, backdrop
- * tap, Escape, or a leftward drag on the panel itself.
+ * tap, Escape, a leftward drag on the panel itself, or the system back button.
  */
 import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { NavLink } from 'react-router-dom';
@@ -27,6 +27,7 @@ import {
 } from './Icons';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
+import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
 
 /**
  * The Hub's six tabs used to hide behind a single "Hub" entry, which cost two
@@ -63,6 +64,8 @@ export function NavDrawer() {
 
   const [dragX, setDragX] = useState(0);
   const startX = useRef<number | null>(null);
+
+  useHistoryDismiss(open, () => setOpen(false));
 
   useEffect(() => {
     if (!open) return;
@@ -159,6 +162,10 @@ function Item({
   return (
     <NavLink
       to={to}
+      // `replace` lands the new route *on* the drawer's sentinel entry rather
+      // than after it. Pushing would strand the sentinel mid-stack, costing an
+      // extra, invisible back press to get out of wherever you just went.
+      replace
       className={({ isActive }) =>
         `drawer__item${compact ? ' drawer__item--compact' : ''}${
           isActive ? ' drawer__item--active' : ''
