@@ -18,3 +18,5 @@ certs/
 .hermes-cron-feed.json.tmp
 .vscode/
 .idea/
+# Test coverage reports.
+coverage/

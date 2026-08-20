@@ -4,15 +4,26 @@
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
-  "description": "Hermes Control — phone-first web app / PWA for the Hermes Agent",
+  "description": "Hermes Control \u2014 phone-first web app / PWA for the Hermes Agent",
   "scripts": {
     "dev:server": "pnpm --filter @hermes-webapp/server dev",
     "dev:web": "pnpm --filter @hermes-webapp/web dev",
     "build": "pnpm --filter @hermes-webapp/web build",
     "start": "pnpm --filter @hermes-webapp/server start",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@vitest/coverage-v8": "^3.2.7",
+    "jsdom": "^26.1.0",
+    "vitest": "^3.2.7"
   }
 }
