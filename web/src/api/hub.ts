@@ -63,15 +63,42 @@ export function useInstallSkill() {
 
 // --- cron --------------------------------------------------------------------
 
+/**
+ * A scheduled job, as Hermes actually reports it.
+ *
+ * `schedule` is an *object* on current builds (`{kind, run_at, display}`),
+ * not the string this used to claim — and since the declared type said string,
+ * rendering it straight into JSX type-checked fine and then threw "Objects are
+ * not valid as a React child" at runtime, taking the whole app down with it.
+ * Both shapes are allowed here so an older gateway still works; read it through
+ * `scheduleText` rather than touching it directly.
+ *
+ * The timestamps are the same story: `*_at` ISO strings now, bare epoch
+ * numbers on older builds, and the `next_run`/`last_run` spellings this file
+ * previously used exist on neither.
+ */
+export interface CronSchedule {
+  kind?: string;
+  display?: string;
+  run_at?: string;
+  [k: string]: unknown;
+}
+
 export interface CronJob {
   id: string;
   name?: string;
   prompt?: string;
-  schedule?: string;
+  schedule?: string | CronSchedule;
+  /** Pre-rendered by the backend — the thing to show when it is there. */
+  schedule_display?: string;
   enabled?: boolean;
   paused?: boolean;
-  next_run?: number | null;
-  last_run?: number | null;
+  paused_at?: string | null;
+  /** e.g. "completed" for a one-shot that has already run. */
+  state?: string;
+  next_run_at?: string | number | null;
+  last_run_at?: string | number | null;
+  last_status?: string | null;
   [k: string]: unknown;
 }
 

@@ -20,9 +20,44 @@ function jobName(j: CronJob): string {
   return j.name ?? j.id;
 }
 
+/**
+ * The schedule as one line of text.
+ *
+ * Current Hermes sends `schedule` as an object and a pre-rendered
+ * `schedule_display` beside it; older builds sent a bare cron string. Putting
+ * the object into JSX is what blanked this tab, so nothing renders `schedule`
+ * directly any more.
+ */
+function scheduleText(j: CronJob): string {
+  if (j.schedule_display) return j.schedule_display;
+  const s = j.schedule;
+  if (typeof s === 'string') return s;
+  if (s && typeof s === 'object') return s.display ?? s.kind ?? '';
+  return '';
+}
+
+/**
+ * Epoch seconds from whatever the backend used for a timestamp: an ISO string
+ * now, a number on older builds. `relTime` counts in seconds, so a
+ * millisecond value has to be scaled or every job reads as decades away.
+ */
+function epochSeconds(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v > 1e11 ? v / 1000 : v;
+  if (typeof v === 'string') {
+    const ms = Date.parse(v);
+    return Number.isNaN(ms) ? null : ms / 1000;
+  }
+  return null;
+}
+
 function isPaused(j: CronJob): boolean {
   // Different Hermes versions express this as `paused` or `enabled`.
   if (typeof j.paused === 'boolean') return j.paused;
+  if (j.paused_at) return true;
+  // A one-shot that has already run reports `enabled: false` because it is
+  // finished, not because anyone paused it — so check that before falling
+  // back to `enabled` and mislabelling every completed job as "paused".
+  if (j.state === 'completed') return false;
   if (typeof j.enabled === 'boolean') return !j.enabled;
   return false;
 }
@@ -83,14 +118,17 @@ export function CronTab() {
       ) : (
         data.map((j) => {
           const paused = isPaused(j);
+          const schedule = scheduleText(j);
+          const lastRun = epochSeconds(j.last_run_at);
+          const done = j.state === 'completed';
           return (
             <div className="card" key={j.id} style={{ marginBottom: 9 }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, fontSize: 14.5 }}>{jobName(j)}</div>
-                  {j.schedule && (
+                  {schedule && (
                     <div style={{ fontSize: 12, color: 'var(--text-faint)', fontFamily: 'var(--mono)', marginTop: 2 }}>
-                      {j.schedule}
+                      {schedule}
                     </div>
                   )}
                   {j.prompt && (
@@ -111,10 +149,12 @@ export function CronTab() {
                   <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginTop: 6, display: 'flex', gap: 10 }}>
                     {paused ? (
                       <span style={{ color: 'var(--warn)' }}>paused</span>
+                    ) : done ? (
+                      <span style={{ color: 'var(--text-faint)' }}>completed</span>
                     ) : (
                       <span style={{ color: 'var(--ok)' }}>active</span>
                     )}
-                    {j.last_run ? <span>last {relTime(j.last_run)}</span> : null}
+                    {lastRun ? <span>last {relTime(lastRun)}</span> : null}
                   </div>
                 </div>
 
@@ -168,7 +208,7 @@ export function CronTab() {
                 {String(row.status ?? row.outcome ?? 'run')}
               </div>
               <div style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>
-                {relTime(Number(row.started_at ?? row.created_at ?? 0))}
+                {relTime(epochSeconds(row.started_at ?? row.created_at) ?? 0)}
               </div>
               {typeof row.error === 'string' && row.error && (
                 <div style={{ fontSize: 12, color: 'var(--error)', marginTop: 3 }}>{row.error}</div>
