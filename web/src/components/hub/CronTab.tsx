@@ -157,6 +157,8 @@ export function CronTab() {
   };
 
   const runList = Array.isArray(runs.data) ? runs.data : (runs.data?.runs ?? []);
+  const openJob = openRuns ? data?.find((j) => j.id === openRuns) : undefined;
+  const lastAttempt = epochSeconds(openJob?.last_run_at);
 
   return (
     <div style={{ padding: 12 }}>
@@ -176,6 +178,12 @@ export function CronTab() {
           const schedule = scheduleText(j);
           const lastRun = epochSeconds(j.last_run_at);
           const done = j.state === 'completed';
+          // A drift-guard refusal leaves a one-shot at `state: completed,
+          // enabled: false` — indistinguishable from a clean finish by
+          // lifecycle alone, so the job that most needs attention was the one
+          // rendering as a calm grey "completed". `last_status` is the only
+          // field that knows, so it outranks the lifecycle label.
+          const failed = j.last_status === 'error';
           return (
             <div className="card" key={j.id} style={{ marginBottom: 9 }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
@@ -202,7 +210,9 @@ export function CronTab() {
                     </div>
                   )}
                   <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginTop: 6, display: 'flex', gap: 10 }}>
-                    {paused ? (
+                    {failed ? (
+                      <span style={{ color: 'var(--error)' }}>failed</span>
+                    ) : paused ? (
                       <span style={{ color: 'var(--warn)' }}>paused</span>
                     ) : done ? (
                       <span style={{ color: 'var(--text-faint)' }}>completed</span>
@@ -257,8 +267,26 @@ export function CronTab() {
 
       <Sheet open={Boolean(openRuns)} onClose={() => setOpenRuns(null)} title="Run history">
         {runs.isLoading && <div style={{ color: 'var(--text-faint)' }}>Loading…</div>}
+        {/* An empty history is not always "nothing happened": a job refused
+            before it started never gets a run row, and `last_error` is then the
+            only record that it was refused at all. Saying "no runs" and
+            stopping there hid the reason the job needs attention. */}
         {runList.length === 0 && !runs.isLoading && (
-          <div style={{ color: 'var(--text-faint)' }}>No runs recorded yet.</div>
+          typeof openJob?.last_error === 'string' && openJob.last_error ? (
+            <div>
+              <div style={{ fontSize: 13.5, color: 'var(--error)' }}>
+                Did not run
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>
+                {lastAttempt ? relTime(lastAttempt) : 'last attempt'}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--error)', marginTop: 5, lineHeight: 1.45, overflowWrap: 'anywhere' }}>
+                {openJob.last_error}
+              </div>
+            </div>
+          ) : (
+            <div style={{ color: 'var(--text-faint)' }}>No runs recorded yet.</div>
+          )
         )}
         {runList.map((r, i) => {
           const row = r as Record<string, unknown>;

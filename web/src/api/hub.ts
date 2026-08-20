@@ -106,6 +106,13 @@ export interface CronJob {
    */
   model?: string | null;
   provider?: string | null;
+  /**
+   * Why the last run failed, when it failed before producing a run row at all
+   * — a drift-guard refusal aborts ahead of one, so this is the only account
+   * of it anywhere. `CronTab` falls back to it when the history comes back
+   * empty.
+   */
+  last_error?: string | null;
   [k: string]: unknown;
 }
 
