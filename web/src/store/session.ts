@@ -319,8 +319,33 @@ export const useSession = create<SessionState>((set, get) => ({
     set({ messages: out, queued: opts?.resync ? get().queued : null });
   },
 
-  applyEvent: ({ type, payload }) => {
+  applyEvent: ({ type, session_id, payload }) => {
     const s = get();
+
+    /**
+     * Only this conversation's events.
+     *
+     * There is one socket for the whole app and the gateway broadcasts every
+     * session over it. Without this check, a turn still streaming in the
+     * session you just left goes on writing into the session you just opened —
+     * its deltas, its tool cards, its `message.complete` — because the store
+     * only ever looked at `type`. That is the reported symptom: start a turn,
+     * switch conversations, and watch the other agent's reply appear in front
+     * of you.
+     *
+     * Events without a `session_id` are the global ones — `gateway.ready`,
+     * `sessions.changed`, `cron.changed` — and must still pass. Only those two
+     * shapes exist on the wire; every conversation-scoped event observed
+     * carries the gateway session handle that `adoptSession` stores.
+     *
+     * A null `sessionId` fails this too, which is deliberate. `reset()` clears
+     * it and the resume round trip that follows is a window during which the
+     * outgoing session is still streaming; anything arriving then belongs to a
+     * conversation that is no longer on screen. Nothing is lost by dropping
+     * it: `adoptSession` supplies `info` from the RPC result, and the title is
+     * restored explicitly on resume.
+     */
+    if (session_id && session_id !== s.sessionId) return;
 
     switch (type) {
       case 'message.start':
