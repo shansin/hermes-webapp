@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useDefaultModel, useHealth, useSetDefaultModel } from '../../api/hub';
-import { useUi, type Theme } from '../../store/ui';
+import { ACCENTS, useUi, type Accent, type Theme } from '../../store/ui';
 import { Switch } from '../shared/misc';
 import { Sheet } from '../shared/Sheet';
 import { ModelPicker } from '../shared/ModelPicker';
@@ -298,6 +298,95 @@ const THEMES: { id: Theme; label: string; swatch: string }[] = [
   { id: 'light', label: 'Light', swatch: '#f7f7fa' },
 ];
 
+/**
+ * Swatch colours for the accent buttons.
+ *
+ * A copy of the two hexes each accent carries in `global.css`, because the
+ * swatch has to paint a colour the page is *not* currently using — CSS could
+ * only hand back `var(--accent)`, which is the same for all six. Which of the
+ * pair is shown follows the resolved theme, so the dot matches what tapping it
+ * would actually do.
+ */
+const ACCENT_SWATCH: Record<Accent, { dark: string; light: string; label: string }> = {
+  amber: { dark: '#ffbf00', light: '#b8860b', label: 'Amber' },
+  blue: { dark: '#6cb2ff', light: '#1565c0', label: 'Blue' },
+  violet: { dark: '#b79cff', light: '#6a41d1', label: 'Violet' },
+  green: { dark: '#5ed68a', light: '#157a46', label: 'Green' },
+  rose: { dark: '#ff8fa8', light: '#be2d55', label: 'Rose' },
+  teal: { dark: '#4fd6d0', light: '#0f7a75', label: 'Teal' },
+};
+
+/**
+ * The accent picker.
+ *
+ * Dots rather than the labelled tiles used for the theme: the colour *is* the
+ * label here, and six tiles would push the backend section off a phone screen.
+ * The name still appears underneath the selected one so the choice is
+ * announceable and not colour-only.
+ */
+function AccentSection() {
+  const accent = useUi((s) => s.accent);
+  const setAccent = useUi((s) => s.setAccent);
+  const resolvedTheme = useUi((s) => s.resolvedTheme);
+
+  return (
+    <>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+        {ACCENTS.map((id) => {
+          const swatch = ACCENT_SWATCH[id];
+          const color = resolvedTheme === 'light' ? swatch.light : swatch.dark;
+          const selected = accent === id;
+          return (
+            <button
+              key={id}
+              onClick={() => {
+                buzz('tap');
+                setAccent(id);
+              }}
+              aria-pressed={selected}
+              aria-label={swatch.label}
+              title={swatch.label}
+              style={{
+                // Painted at 30px but padded out to Material's 48dp target.
+                width: 30,
+                height: 30,
+                padding: 0,
+                margin: 9,
+                borderRadius: '50%',
+                background: color,
+                border: 'none',
+                position: 'relative',
+                // A ring rather than a border, so the dot itself never shrinks
+                // and the row stays visually even.
+                boxShadow: selected ? `0 0 0 2px var(--bg), 0 0 0 4px ${color}` : 'none',
+              }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  inset: -9,
+                }}
+              />
+            </button>
+          );
+        })}
+      </div>
+      <div
+        style={{
+          fontSize: 'var(--type-body-sm)',
+          color: 'var(--text-faint)',
+          margin: '0 2px 16px',
+          minHeight: 16,
+        }}
+      >
+        Accent — {ACCENT_SWATCH[accent].label}. Used for buttons, links and
+        highlights across every theme.
+      </div>
+    </>
+  );
+}
+
 function DevPanel() {
   const [frames, setFrames] = useState<{ dir: 'in' | 'out'; raw: string; at: number }[]>([]);
   const [paused, setPaused] = useState(false);
@@ -449,6 +538,8 @@ export function SettingsTab() {
           ? `Following your device — currently ${resolvedTheme}. AMOLED stays a manual choice.`
           : ''}
       </div>
+
+      <AccentSection />
 
       <div
         className="card"

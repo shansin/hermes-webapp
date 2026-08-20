@@ -19,6 +19,15 @@ export type ResolvedTheme = 'dark' | 'amoled' | 'light';
  */
 export type Theme = ResolvedTheme | 'system';
 
+/**
+ * The accent hue, an axis independent of the theme: every accent has both a
+ * dark and a light pair in the stylesheet, so switching palettes never
+ * silently changes which one is selected.
+ */
+export type Accent = 'amber' | 'blue' | 'violet' | 'green' | 'rose' | 'teal';
+
+export const ACCENTS: Accent[] = ['amber', 'blue', 'violet', 'green', 'rose', 'teal'];
+
 const darkQuery = '(prefers-color-scheme: dark)';
 
 /**
@@ -42,6 +51,7 @@ export interface Toast {
 
 const KEYS = {
   theme: 'hermes.theme',
+  accent: 'hermes.accent',
   haptics: 'hermes.haptics',
   token: 'hermes.token',
   devPanel: 'hermes.devPanel',
@@ -68,6 +78,8 @@ interface UiState {
   theme: Theme;
   /** What that currently resolves to — the palette actually on screen. */
   resolvedTheme: ResolvedTheme;
+  /** The accent hue, applied on top of whichever palette is resolved. */
+  accent: Accent;
   haptics: boolean;
   /** Optional explicit token, only needed when bypassing the proxy. */
   token: string;
@@ -82,6 +94,7 @@ interface UiState {
   navOpen: boolean;
 
   setTheme: (t: Theme) => void;
+  setAccent: (a: Accent) => void;
   setHaptics: (on: boolean) => void;
   setToken: (t: string) => void;
   setDevPanel: (on: boolean) => void;
@@ -97,12 +110,17 @@ let toastSeq = 0;
 // Settings has no stored preference, and quietly repainting their app white
 // because their phone is in light mode is not an improvement they asked for.
 const initialTheme = read(KEYS.theme, 'dark') as Theme;
+// Amber is the accent the app shipped with, so an install that predates this
+// setting keeps exactly the colour it had.
+const stored = read(KEYS.accent, 'amber') as Accent;
+const initialAccent: Accent = ACCENTS.includes(stored) ? stored : 'amber';
 const initialHaptics = read(KEYS.haptics, 'on') === 'on';
 setHapticsEnabled(initialHaptics);
 
 export const useUi = create<UiState>((set, get) => ({
   theme: initialTheme,
   resolvedTheme: resolveTheme(initialTheme),
+  accent: initialAccent,
   haptics: initialHaptics,
   token: read(KEYS.token, ''),
   devPanel: read(KEYS.devPanel, 'off') === 'on',
@@ -116,6 +134,12 @@ export const useUi = create<UiState>((set, get) => ({
     write(KEYS.theme, theme);
     applyTheme(theme);
     set({ theme, resolvedTheme: resolveTheme(theme) });
+  },
+
+  setAccent: (accent) => {
+    write(KEYS.accent, accent);
+    applyAccent(accent);
+    set({ accent });
   },
 
   setHaptics: (on) => {
@@ -160,7 +184,19 @@ export function applyTheme(theme: Theme): void {
   meta?.setAttribute('content', color);
 }
 
+/**
+ * Reflect the accent on <html>, alongside `data-theme`.
+ *
+ * Two attributes rather than one combined value: the stylesheet needs to
+ * match on the theme alone (surfaces, text) and on the accent alone (the dark
+ * pair), and only the light overrides look at both.
+ */
+export function applyAccent(accent: Accent): void {
+  document.documentElement.dataset.accent = accent;
+}
+
 applyTheme(initialTheme);
+applyAccent(initialAccent);
 
 /**
  * Follow the device while `system` is selected.

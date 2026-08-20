@@ -135,6 +135,89 @@
   --shadow: 0 8px 28px rgba(20, 20, 40, 0.14);
 }
 
+/* --- Accent palettes ------------------------------------------------------
+   The accent is a separate axis from the theme: any of these six sit on any
+   of the four palettes, so a choice made in dark mode survives the phone
+   switching to light at sunrise.
+
+   Each accent therefore ships twice. The dark pair is tuned to carry against
+   a near-black surface — bright hue, deeply desaturated `--accent-soft` for
+   the tinted chip backgrounds — and the light pair is the same hue darkened
+   until it clears 4.5:1 on white, with a pale wash standing in for the soft
+   tone. `--accent-text` is whatever reads on top of `--accent` when it is
+   used as a fill (the send button, primary buttons).
+
+   Ordering matters: these blocks must stay *after* `[data-theme='light']`,
+   which sets the same three properties at equal specificity. The dark values
+   below win on source order; the light ones re-qualify with the theme
+   attribute to outrank both. */
+
+[data-accent='amber'] {
+  --accent: #ffbf00;
+  --accent-soft: #4a3a00;
+  --accent-text: #1a1400;
+}
+[data-theme='light'][data-accent='amber'] {
+  --accent: #b8860b;
+  --accent-soft: #fdf3d6;
+  --accent-text: #ffffff;
+}
+
+[data-accent='blue'] {
+  --accent: #6cb2ff;
+  --accent-soft: #10304f;
+  --accent-text: #04121f;
+}
+[data-theme='light'][data-accent='blue'] {
+  --accent: #1565c0;
+  --accent-soft: #e0ebfa;
+  --accent-text: #ffffff;
+}
+
+[data-accent='violet'] {
+  --accent: #b79cff;
+  --accent-soft: #2c2350;
+  --accent-text: #150d2b;
+}
+[data-theme='light'][data-accent='violet'] {
+  --accent: #6a41d1;
+  --accent-soft: #ece5fd;
+  --accent-text: #ffffff;
+}
+
+[data-accent='green'] {
+  --accent: #5ed68a;
+  --accent-soft: #103a24;
+  --accent-text: #04180d;
+}
+[data-theme='light'][data-accent='green'] {
+  --accent: #157a46;
+  --accent-soft: #dcf3e6;
+  --accent-text: #ffffff;
+}
+
+[data-accent='rose'] {
+  --accent: #ff8fa8;
+  --accent-soft: #481c27;
+  --accent-text: #2a0710;
+}
+[data-theme='light'][data-accent='rose'] {
+  --accent: #be2d55;
+  --accent-soft: #fde2e9;
+  --accent-text: #ffffff;
+}
+
+[data-accent='teal'] {
+  --accent: #4fd6d0;
+  --accent-soft: #0c3a38;
+  --accent-text: #041918;
+}
+[data-theme='light'][data-accent='teal'] {
+  --accent: #0f7a75;
+  --accent-soft: #d8f2f0;
+  --accent-text: #ffffff;
+}
+
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
