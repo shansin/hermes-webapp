@@ -36,7 +36,15 @@ const gzipAsync = promisify(gzip);
 const brotliAsync = promisify(brotliCompress);
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const webDist = resolve(here, '../../web/dist');
+/**
+ * `WEB_DIST` overrides where the built app is read from. Defaults to the
+ * sibling `web/dist`, which is where `pnpm build` puts it; the override exists
+ * so the proxy can front a dist built elsewhere, and so the tests can point it
+ * at a fixture instead of requiring a real build.
+ */
+export const webDist = process.env.WEB_DIST
+  ? resolve(process.env.WEB_DIST)
+  : resolve(here, '../../web/dist');
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -161,28 +169,55 @@ const isImmutable = (urlPath: string) => urlPath.startsWith('/assets/');
  * copies so an update actually reaches an installed phone.
  */
 async function fresh(urlPath: string): Promise<Entry | null> {
-  const hit = manifest.get(urlPath);
-  if (hit && isImmutable(urlPath)) return hit;
-
-  const abs = hit?.abs ?? safeJoin(urlPath);
+  // The manifest is keyed by the decoded name, since that is what `readdir`
+  // reported; the request arrives encoded. `safeJoin` is the one decoder.
+  const abs = safeJoin(urlPath);
   if (!abs) return null;
+  const key = relKey(abs);
+
+  const hit = manifest.get(key);
+  if (hit && isImmutable(key)) return hit;
 
   try {
     const st = await stat(abs);
     if (!st.isFile()) return null;
     if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit;
     const next = entryOf(abs, st.size, st.mtimeMs);
-    manifest.set(urlPath, next);
+    manifest.set(key, next);
     return next;
   } catch {
-    if (hit) manifest.delete(urlPath);
+    if (hit) manifest.delete(key);
     return null;
   }
 }
 
-/** Resolve inside webDist and verify containment — blocks `../` traversal. */
+/** An absolute path inside webDist, back as the `/`-prefixed manifest key. */
+function relKey(abs: string): string {
+  return abs === webDist ? '/' : abs.slice(webDist.length);
+}
+
+/**
+ * Resolve inside webDist and verify containment — blocks `../` traversal.
+ *
+ * The path arrives percent-encoded, because that is what a browser puts on the
+ * wire: anything copied out of `web/public/` with a space or a non-ASCII
+ * character in its name is requested as `/my%20icon.png`, and matching that
+ * against the decoded name on disk requires decoding first. Decoding *before*
+ * the containment check is what makes it safe to do — `%2e%2e` becomes `..`,
+ * `normalize` collapses it, and the check below still has the last word.
+ */
 function safeJoin(urlPath: string): string | null {
-  const candidate = resolve(webDist, '.' + normalize(urlPath));
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(urlPath);
+  } catch {
+    // A malformed escape is not a path we have; let it fall through to the SPA.
+    return null;
+  }
+  // A NUL would truncate the path inside libc; nothing legitimate contains one.
+  if (decoded.includes('\0')) return null;
+
+  const candidate = resolve(webDist, '.' + normalize(decoded));
   if (candidate !== webDist && !candidate.startsWith(webDist + '/')) return null;
   return candidate;
 }
@@ -274,6 +309,13 @@ async function send(e: Entry, urlPath: string, accept: string | undefined, inm: 
         'no-cache',
   });
   if (e.compressible) headers.set('Vary', 'Accept-Encoding');
+  /**
+   * The app ships user-supplied-ish content nowhere, but `web/public/` is a
+   * drop directory and MIME is guessed from the extension — so a file whose
+   * extension does not match its bytes would otherwise be sniffed and executed
+   * as whatever the browser decided it was.
+   */
+  headers.set('X-Content-Type-Options', 'nosniff');
 
   if (inm && inm.split(',').some((t) => t.trim() === etag)) {
     return new Response(null, { status: 304, headers });
