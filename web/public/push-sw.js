@@ -110,33 +110,57 @@ self.addEventListener('notificationclick', (event) => {
  * Browsers rotate push endpoints — after a long idle period, or when the push
  * service rekeys. Without this the app stays subscribed as far as the UI is
  * concerned while every send 410s.
+ *
+ * Every step of this can fail, and all of it runs with the app closed: the
+ * proxy is on a laptop that may be asleep, the network is whatever it is, and
+ * the browser can refuse to re-subscribe outright. An unhandled rejection
+ * inside `waitUntil` is a worker error in a context nobody will ever open a
+ * console on, so the whole thing is wrapped.
+ *
+ * Failing quietly is the right outcome rather than a missed one: the old
+ * subscription is left registered, the server drops it on the next 410, and
+ * `lib/push.ts` re-registers this device the next time the app is opened.
  */
 self.addEventListener('pushsubscriptionchange', (event) => {
   event.waitUntil(
     (async () => {
       const oldEndpoint = event.oldSubscription && event.oldSubscription.endpoint;
 
-      const res = await fetch('/push/config');
-      const { enabled, publicKey } = await res.json();
-      if (!enabled || !publicKey) return;
+      let subscription;
+      try {
+        const res = await fetch('/push/config');
+        if (!res.ok) return;
+        const { enabled, publicKey } = await res.json();
+        if (!enabled || !publicKey) return;
 
-      const subscription = await self.registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: vapidKeyToBytes(publicKey),
-      });
+        subscription = await self.registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: vapidKeyToBytes(publicKey),
+        });
 
-      await fetch('/push/subscribe', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ subscription }),
-      });
-
-      if (oldEndpoint && oldEndpoint !== subscription.endpoint) {
-        await fetch('/push/unsubscribe', {
+        await fetch('/push/subscribe', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ endpoint: oldEndpoint }),
+          body: JSON.stringify({ subscription }),
         });
+      } catch {
+        // Nothing to retry against here — see the note above.
+        return;
+      }
+
+      // Retiring the old endpoint is best-effort and deliberately separate:
+      // the new subscription is already registered by this point, and failing
+      // to forget the old one only costs the server one wasted send.
+      if (oldEndpoint && oldEndpoint !== subscription.endpoint) {
+        try {
+          await fetch('/push/unsubscribe', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ endpoint: oldEndpoint }),
+          });
+        } catch {
+          // The server prunes it on the next 410.
+        }
       }
     })(),
   );
