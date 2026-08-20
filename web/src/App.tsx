@@ -28,6 +28,9 @@ const KanbanScreen = lazy(() =>
 const FilesScreen = lazy(() =>
   import('./screens/FilesScreen').then((m) => ({ default: m.FilesScreen })),
 );
+const NotificationsScreen = lazy(() =>
+  import('./screens/NotificationsScreen').then((m) => ({ default: m.NotificationsScreen })),
+);
 const MemoryTab = lazy(() =>
   import('./components/hub/MemoryTab').then((m) => ({ default: m.MemoryTab })),
 );
@@ -49,7 +52,7 @@ import { Toasts } from './components/shared/misc';
 import { useUi } from './store/ui';
 import { preloadMarkdown } from './components/chat/MarkdownAsync';
 import { hermes, defaultWsUrl } from './ws/client';
-import { useEventToasts } from './lib/useEventToasts';
+import { useCronFeedToasts, useEventToasts } from './lib/useEventToasts';
 
 export function App() {
   const connection = useUi((s) => s.connection);
@@ -87,6 +90,7 @@ export function App() {
   }, []);
 
   useEventToasts();
+  useCronFeedToasts();
 
   return (
     <div className="app">
@@ -112,6 +116,7 @@ export function App() {
             <Route path="/sessions" element={<SessionsScreen />} />
             <Route path="/kanban" element={<KanbanScreen />} />
             <Route path="/files" element={<FilesScreen />} />
+            <Route path="/notifications" element={<NotificationsScreen />} />
             <Route path="/memory" element={<HubPage title="Memory"><MemoryTab /></HubPage>} />
             <Route path="/skills" element={<HubPage title="Skills"><SkillsTab /></HubPage>} />
             <Route path="/cron" element={<HubPage title="Cron"><CronTab /></HubPage>} />

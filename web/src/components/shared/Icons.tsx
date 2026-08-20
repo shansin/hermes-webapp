@@ -218,6 +218,14 @@ export const IconSkills = (p: P) => (
 );
 
 /** Scheduled jobs. */
+/** Cron notifications. A bell — the feed of runs that happened while away. */
+export const IconBell = (p: P) => (
+  <Svg {...p}>
+    <path d="M12 3.4a5.6 5.6 0 0 0-5.6 5.6c0 4-1.4 5.4-1.4 5.4h14s-1.4-1.4-1.4-5.4A5.6 5.6 0 0 0 12 3.4Z" />
+    <path d="M10.4 18a1.8 1.8 0 0 0 3.2 0" />
+  </Svg>
+);
+
 export const IconCron = (p: P) => (
   <Svg {...p}>
     <circle cx="12" cy="12.4" r="7.6" />

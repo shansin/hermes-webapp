@@ -13,5 +13,8 @@ certs/
 # Push subscriptions and the generated VAPID keypair.
 .hermes-push.json
 .hermes-push.json.tmp
+# The cron notification feed.
+.hermes-cron-feed.json
+.hermes-cron-feed.json.tmp
 .vscode/
 .idea/

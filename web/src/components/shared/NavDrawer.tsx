@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
+  IconBell,
   IconChat,
   IconClose,
   IconCron,
@@ -32,17 +33,28 @@ import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
 /**
  * The Hub's six tabs used to hide behind a single "Hub" entry, which cost two
  * taps and a segmented control to reach any of them. They are top-level
- * destinations now — the drawer is the one surface with room for ten.
+ * destinations now — the drawer is the one surface with room for eleven.
  *
  * Split into two groups so the configuration destinations read as a set rather
- * than as four more peers of Chat. Both groups carry a hint — ten of them run
+ * than as more peers of Chat. Both groups carry a hint — eleven of them run
  * past the fold on a short phone, which the list scrolls for.
+ *
+ * Cron Notifications sits in the working group rather than under SYSTEM, next
+ * to Files: what a scheduled job reported is something you read, like a
+ * transcript, not something you configure. Its job list stays under SYSTEM,
+ * which is where the schedules are actually managed.
  */
 const WORK = [
   { to: '/chat', label: 'Chat', hint: 'Talk to the agent', Icon: IconChat },
   { to: '/sessions', label: 'Sessions', hint: 'History and search', Icon: IconSessions },
   { to: '/kanban', label: 'Kanban', hint: 'The task board', Icon: IconKanban },
   { to: '/files', label: 'Files', hint: 'Browse the workspace', Icon: IconFolder },
+  {
+    to: '/notifications',
+    label: 'Cron Notifications',
+    hint: 'What ran while you were away',
+    Icon: IconBell,
+  },
 ];
 
 const SYSTEM = [

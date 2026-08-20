@@ -68,6 +68,9 @@ export function useSlashRunner(handlers: SlashHandlers) {
         case 'kanban':
           navigate('/kanban');
           return;
+        case 'notifications':
+          navigate('/notifications');
+          return;
         case 'help':
           h.onOpenPalette();
           return;

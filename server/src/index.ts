@@ -7,11 +7,13 @@
  *                          ├─ /api/ws ──> 127.0.0.1:9119  (JSON-RPC, Origin rewritten)
  *                          ├─ /healthz                    (proxy's own status)
  *                          ├─ /push/*                     (web-push subscriptions)
+ *                          ├─ /push/feed                  (the cron notification feed)
  *                          └─ /*      ──> web/dist        (the React PWA)
  *
- * The one piece of state the proxy owns is the push subscription list, plus a
- * gateway socket of its own to drive it — see `push/events.ts` for why that
- * cannot ride on the per-client proxy socket.
+ * The state the proxy owns is the push subscription list and the cron
+ * notification feed, plus a gateway socket of its own to drive both — see
+ * `push/events.ts` for why that cannot ride on the per-client proxy socket,
+ * and `push/feed.ts` for why the feed cannot be assembled in the browser.
  *
  * We deliberately do not implement any agent logic — Hermes already has all of
  * it, including the kanban board (`/api/plugins/kanban/*`, proxied like the
@@ -27,6 +29,7 @@ import { config, getToken, resolveToken, upstreamHttp, upstreamHost } from './co
 import { log } from './log.js';
 import { apiProxy } from './routers/apiProxy.js';
 import { pushRouter } from './routers/push.js';
+import { notificationsRouter } from './routers/notifications.js';
 import { startPushListener, stopPushListener } from './push/events.js';
 import { pushPublicKey } from './push/send.js';
 import { attachWsProxy } from './routers/wsProxy.js';
@@ -102,6 +105,7 @@ app.get('/healthz', async (c) => {
 });
 
 app.route('/', pushRouter);
+app.route('/', notificationsRouter);
 app.route('/', apiProxy);
 app.route('/', staticRouter);
 

@@ -36,6 +36,7 @@ export type LocalActionId =
   | 'model'
   | 'context'
   | 'kanban'
+  | 'notifications'
   | 'help'
   | 'hub-memory'
   | 'hub-skills'
@@ -121,6 +122,11 @@ const SPECS: readonly CommandSpec[] = [
   { name: '/memory', description: 'Edit agent memory', surface: local('hub-memory') },
   { name: '/skills', description: 'Browse and toggle skills', surface: local('hub-skills') },
   { name: '/cron', description: 'Manage scheduled jobs', surface: local('hub-cron') },
+  {
+    name: '/notifications',
+    description: 'What scheduled jobs did while you were away',
+    surface: local('notifications'),
+  },
   { name: '/models', description: 'Manage providers and API keys', surface: local('hub-models') },
   { name: '/settings', description: 'App settings', surface: local('hub-settings') },
   { name: '/help', description: 'Show every command', aliases: ['/commands'], surface: local('help') },

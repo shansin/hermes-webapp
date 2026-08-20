@@ -16,6 +16,7 @@ import { WebSocket } from 'ws';
 import { getToken, resolveToken, upstreamWs, upstreamHost } from '../config.js';
 import { log } from '../log.js';
 import { sendPush, pushEnabled, type PushMessage } from './send.js';
+import { scheduleCronReconcile } from './cron.js';
 import { listSubscriptions } from './store.js';
 
 const RECONNECT_BASE_MS = 1000;
@@ -146,13 +147,22 @@ function scheduleReconnect(): void {
 }
 
 function handleFrame(line: string): void {
-  // Cheap early-out: composing a message and signing a payload is wasted work
-  // on a machine nobody has ever installed the app from — and so is parsing
-  // the frame that would have fed it. This socket sees the full gateway
-  // firehose, token deltas included, so before this sat above the parse the
-  // proxy was running `JSON.parse` 30–60×/second through every turn only to
-  // discard the result here.
-  if (!listSubscriptions().length) return;
+  /**
+   * Cheap early-out: composing a message and signing a payload is wasted work
+   * on a machine nobody has ever installed the app from — and so is parsing
+   * the frame that would have fed it. This socket sees the full gateway
+   * firehose, token deltas included, so before this sat above the parse the
+   * proxy was running `JSON.parse` 30–60×/second through every turn only to
+   * discard the result here.
+   *
+   * The cron feed has to survive that shortcut: it is the record of runs that
+   * happened while nobody was watching, and on a setup with no push devices at
+   * all it would otherwise never be written. A substring scan is the
+   * compromise — orders of magnitude cheaper than `JSON.parse`, and it fails
+   * on the first few bytes of the token deltas that make up the firehose.
+   */
+  const subscribed = listSubscriptions().length > 0;
+  if (!subscribed && !line.includes('cron.changed')) return;
 
   let parsed: unknown;
   try {
@@ -167,11 +177,20 @@ function handleFrame(line: string): void {
   const params = frame.params as { type?: unknown; session_id?: unknown; payload?: unknown };
   if (typeof params.type !== 'string') return;
 
-  const message = toMessage(
-    params.type,
-    (params.payload ?? {}) as Record<string, unknown>,
-    typeof params.session_id === 'string' ? params.session_id : null,
-  );
+  const payload = (params.payload ?? {}) as Record<string, unknown>;
+  const sessionId = typeof params.session_id === 'string' ? params.session_id : null;
+
+  if (params.type === 'cron.changed') {
+    // Nothing in the frame to read — see the note on the `cron.changed` case
+    // in `toMessage`. Ask for a look at the run history instead. Deliberately
+    // ahead of the `subscribed` check: the feed is written whether or not any
+    // phone is registered to be told about it.
+    scheduleCronReconcile();
+  }
+
+  if (!subscribed) return;
+
+  const message = toMessage(params.type, payload, sessionId);
   if (!message) return;
 
   void sendPush(message).catch((err) => log.warn({ err }, 'Push fan-out failed'));
@@ -255,14 +274,17 @@ export function toMessage(
       return { title: 'Hermes', body: text, url: chatUrl, tag: sessionTag, kind: type };
     }
 
+    /**
+     * Handled entirely by `push/cron.ts`, not here.
+     *
+     * The event is empty — `{"type":"cron.changed","session_id":"","payload":{}}`
+     * on the wire, every time — so there is nothing to map. The reconcile pass
+     * fetches the run that actually changed and sends its own notification
+     * from the run record, which is the only place the job name, the outcome
+     * and the agent's reply exist.
+     */
     case 'cron.changed':
-      return {
-        title: 'Hermes',
-        body: 'A scheduled job ran',
-        url: '/cron',
-        tag: 'cron',
-        kind: type,
-      };
+      return null;
 
     case 'message.complete': {
       /**

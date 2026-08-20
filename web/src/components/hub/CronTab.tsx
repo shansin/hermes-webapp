@@ -1,7 +1,8 @@
 /**
  * Scheduled jobs: pause/resume/trigger, inspect runs, create new ones.
  */
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Sheet } from '../shared/Sheet';
 import { Empty, ErrorNote, SkeletonList, relTime } from '../shared/misc';
 import { IconPlay, IconPause, IconPlus, IconTrash } from '../shared/Icons';
@@ -69,7 +70,37 @@ export function CronTab() {
   const create = useCreateCronJob();
   const toast = useUi((s) => s.toast);
 
-  const [openRuns, setOpenRuns] = useState<string | null>(null);
+  /**
+   * Which job's run history is open lives in the URL, not in local state, so
+   * `/cron?job=<id>` opens straight onto it — that is where a cron push
+   * notification points when it has no session to link to.
+   *
+   * It has to be the URL rather than an initial `useState` value: a push tap
+   * is handled by `useEventToasts`, which routes in place with `navigate()`.
+   * Arriving at `/cron?job=b` while already sitting on `/cron?job=a` changes
+   * the search params without remounting this component, and a seeded
+   * `useState` would ignore the second one.
+   *
+   * `replace` keeps opening and closing the sheet from stacking history
+   * entries behind the back button in `HubPage`.
+   */
+  const [search, setSearch] = useSearchParams();
+  const openRuns = search.get('job');
+  const setOpenRuns = useCallback(
+    (id: string | null) => {
+      setSearch(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (id) next.set('job', id);
+          else next.delete('job');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearch],
+  );
+
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ name: '', prompt: '', schedule: '0 9 * * *' });
 

@@ -110,6 +110,10 @@ switch, swipe a card right to advance a stage or left to delete, a detail sheet
 with comments and run history, and a create sheet. Polls every 10s so cards the
 agent moves show up on their own.
 
+**Cron Notifications** — a read-only transcript of what your scheduled jobs
+reported, in the working group of the drawer beside Files. See the section
+below.
+
 **Memory, Skills, Cron, Models, Profiles, Settings** — six destinations in the
 navigation drawer, under a SYSTEM divider below the working surfaces. Editable
 memory files; skill toggles plus hub search/install; cron job control with run
@@ -187,7 +191,7 @@ Notifications → Push**. Banners arrive with the app closed for:
 | `background.complete` | "Nightly index finished" |
 | `subagent.complete` | "Researcher finished" |
 | `notification.show` | whatever the agent asked to say |
-| `cron.changed` | "A scheduled job ran" |
+| `cron.changed` | the job's name, plus the agent's own reply — see below |
 | `approval.request` | "Approval needed: Bash — rm -rf …" |
 
 The first and last are the reasons to bother: send a prompt, put the phone
@@ -197,6 +201,36 @@ until it is answered, which is not something to discover an hour later.
 A reply that was interrupted, errored, or produced no prose stays silent
 rather than announcing an answer that isn't there. Markdown is flattened for
 the lock screen and code fences collapse to `[code]`.
+
+### Cron Notifications
+
+Scheduled runs land in a **Cron Notifications** feed, reachable from the drawer
+or `/notifications`. It reads like a conversation and deliberately isn't one:
+there is no composer, because there is no session behind it. Tapping an entry
+opens the run's actual conversation.
+
+The banner says what the job *did* — "Feed smoke test / OK" — rather than that
+it ran, because the reply is the thing worth waking a phone for.
+
+Getting there takes a fetch. The `cron.changed` event is empty on the wire:
+
+    {"type":"cron.changed","session_id":"","payload":{}}
+
+— no job, no status, no session, and four of them fire per run (create,
+trigger, start, finish). So `push/cron.ts` treats it as a "go and look" signal:
+it debounces the burst, then reconciles the gateway's run history against what
+the feed already knows, keyed on run id. A cron run record doubles as a session
+record, which is where the job name, the `end_reason` and — via
+`/api/sessions/<runId>/messages` — the agent's reply come from.
+
+Consequences worth knowing:
+
+* Job edits (creating, pausing, deleting) fire the same empty event, but
+  reconcile finds no new *finished run*, so they produce no banner.
+* The first pass on a fresh install adopts existing history silently rather
+  than announcing months of past runs.
+* Clearing the feed does not re-announce anything: the seen-run ids outlive
+  the entries in `.hermes-cron-feed.json` (last 300 kept).
 
 Notifications are tagged per conversation, so a second event in the same
 session replaces the first rather than stacking — one row per chat, however

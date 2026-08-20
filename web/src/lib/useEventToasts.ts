@@ -10,8 +10,10 @@
  * service worker suppresses its banner while the app is visible and forwards
  * the text here instead, so the two channels never both fire on screen.
  */
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import { notificationKeys, useNotifications } from '../api/notifications';
 import { hermes } from '../ws/client';
 import { useUi } from '../store/ui';
 import { buzz } from './haptics';
@@ -19,6 +21,7 @@ import { buzz } from './haptics';
 export function useEventToasts(): void {
   const toast = useUi.getState().toast;
   const navigate = useNavigate();
+  const qc = useQueryClient();
 
   useEffect(
     () =>
@@ -52,7 +55,17 @@ export function useEventToasts(): void {
           }
 
           case 'cron.changed': {
-            toast('A scheduled job ran', 'info');
+            /**
+             * The event is empty — no job, no status, no session (see
+             * `server/src/push/cron.ts`). There is nothing to toast from it,
+             * and it fires several times per run, so toasting would be both
+             * uninformative and repetitive.
+             *
+             * The proxy is meanwhile fetching what actually happened and
+             * appending it to the feed. Pull that forward; `useCronFeedToasts`
+             * announces whatever turns up, once per run.
+             */
+            void qc.invalidateQueries({ queryKey: notificationKeys.all });
             return;
           }
 
@@ -60,7 +73,7 @@ export function useEventToasts(): void {
             return;
         }
       }),
-    [toast],
+    [toast, qc],
   );
 
   /**
@@ -95,4 +108,37 @@ export function useEventToasts(): void {
     navigator.serviceWorker.addEventListener('message', onMessage);
     return () => navigator.serviceWorker.removeEventListener('message', onMessage);
   }, [toast, navigate]);
+}
+
+/**
+ * Announce cron runs in-app, from the feed rather than from the event.
+ *
+ * `cron.changed` carries nothing and fires several times per run, so the toast
+ * has to come from the reconciled feed instead — one entry per run, carrying
+ * the agent's actual reply. Mounted once, at the app shell.
+ *
+ * The first load is adopted silently: arriving at the app with ten runs
+ * recorded since yesterday should not stack ten toasts.
+ */
+export function useCronFeedToasts(): void {
+  const toast = useUi.getState().toast;
+  const { data } = useNotifications();
+  const seen = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    if (!data) return;
+
+    if (seen.current === null) {
+      seen.current = new Set(data.map((e) => e.id));
+      return;
+    }
+
+    // Oldest first, so a batch reads in the order it happened.
+    for (const entry of [...data].reverse()) {
+      if (seen.current.has(entry.id)) continue;
+      seen.current.add(entry.id);
+      buzz(entry.failed ? 'warn' : 'done');
+      toast(`${entry.title}: ${entry.body}`, entry.failed ? 'error' : 'success');
+    }
+  }, [data, toast]);
 }
