@@ -76,9 +76,16 @@ export default defineConfig({
           { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
           { src: 'icon-512-maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
+        /**
+         * Every parameter here has to be one a screen actually reads. `Voice`
+         * used to sit in this list pointing at `/chat?new=1&voice=1`; nothing
+         * consumed `voice`, so the shortcut opened an ordinary new chat and
+         * the mic stayed exactly where it always was. A menu entry that
+         * quietly does something other than what it says is worse than no
+         * entry — `test/deepLinks.test.ts` now fails if one is added back.
+         */
         shortcuts: [
           { name: 'New Chat', short_name: 'Chat', url: '/chat?new=1' },
-          { name: 'Voice', short_name: 'Voice', url: '/chat?new=1&voice=1' },
           { name: 'Kanban', short_name: 'Board', url: '/kanban' },
         ],
         // Android share sheet → straight into a new chat.
