@@ -4,6 +4,7 @@
 import { useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Sheet } from '../shared/Sheet';
+import { ModelPicker } from '../shared/ModelPicker';
 import { Empty, ErrorNote, SkeletonList, relTime } from '../shared/misc';
 import { IconPlay, IconPause, IconPlus, IconTrash } from '../shared/Icons';
 import {
@@ -63,6 +64,21 @@ function isPaused(j: CronJob): boolean {
   return false;
 }
 
+/**
+ * A job with no `model`/`provider` of its own runs on whatever the global
+ * default happens to be *at fire time*. Hermes notices that drift and, unless
+ * `cron.model_drift_guard` is off, refuses to run the job at all rather than
+ * silently spending on a model the job was never tested against. Pinning here
+ * is what takes a job out of that class.
+ */
+const BLANK_FORM = {
+  name: '',
+  prompt: '',
+  schedule: '0 9 * * *',
+  model: '' as string,
+  provider: '' as string,
+};
+
 export function CronTab() {
   const { data, isLoading, error } = useCronJobs();
   const action = useCronAction();
@@ -102,7 +118,8 @@ export function CronTab() {
   );
 
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ name: '', prompt: '', schedule: '0 9 * * *' });
+  const [form, setForm] = useState(BLANK_FORM);
+  const [pickingModel, setPickingModel] = useState(false);
 
   const runs = useCronRuns(openRuns);
 
@@ -123,9 +140,16 @@ export function CronTab() {
         name: form.name.trim(),
         prompt: form.prompt.trim(),
         schedule: form.schedule.trim(),
+        // Only sent when the user actually chose one: omitting the keys
+        // leaves the job unpinned, which is the "follow the global default"
+        // behaviour and what every job created before this existed does.
+        ...(form.model && form.provider
+          ? { model: form.model, provider: form.provider }
+          : {}),
       });
       toast('Job created', 'success');
-      setForm({ name: '', prompt: '', schedule: '0 9 * * *' });
+      setForm(BLANK_FORM);
+      setPickingModel(false);
       setCreating(false);
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Create failed', 'error');
@@ -186,6 +210,11 @@ export function CronTab() {
                       <span style={{ color: 'var(--ok)' }}>active</span>
                     )}
                     {lastRun ? <span>last {relTime(lastRun)}</span> : null}
+                    {typeof j.model === 'string' && j.model ? (
+                      <span style={{ fontFamily: 'var(--mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {j.model}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
 
@@ -249,7 +278,14 @@ export function CronTab() {
         })}
       </Sheet>
 
-      <Sheet open={creating} onClose={() => setCreating(false)} title="New scheduled job">
+      <Sheet
+        open={creating}
+        onClose={() => {
+          setCreating(false);
+          setPickingModel(false);
+        }}
+        title="New scheduled job"
+      >
         <input
           className="field"
           placeholder="Job name"
@@ -272,6 +308,51 @@ export function CronTab() {
           onChange={(e) => setForm({ ...form, prompt: e.target.value })}
           style={{ resize: 'vertical', marginBottom: 12 }}
         />
+        {pickingModel ? (
+          <div style={{ marginBottom: 12 }}>
+            <ModelPicker
+              selected={form.model || undefined}
+              onPick={(model, provider) => {
+                setForm((f) => ({ ...f, model, provider }));
+                setPickingModel(false);
+              }}
+            />
+          </div>
+        ) : (
+          <div style={{ marginBottom: 12 }}>
+            <button
+              className="btn btn--sm"
+              style={{ width: '100%', justifyContent: 'space-between' }}
+              onClick={() => setPickingModel(true)}
+            >
+              <span style={{ color: 'var(--text-dim)' }}>Model</span>
+              <span
+                style={{
+                  fontFamily: form.model ? 'var(--mono)' : undefined,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  marginLeft: 8,
+                }}
+              >
+                {form.model || 'Follows global default'}
+              </span>
+            </button>
+            {form.model ? (
+              <button
+                className="btn btn--sm btn--ghost"
+                style={{ marginTop: 6, color: 'var(--text-faint)' }}
+                onClick={() => setForm((f) => ({ ...f, model: '', provider: '' }))}
+              >
+                Unpin
+              </button>
+            ) : (
+              <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginTop: 6, lineHeight: 1.45 }}>
+                An unpinned job may be skipped after the global model changes.
+              </div>
+            )}
+          </div>
+        )}
         <button
           className="btn btn--primary"
           style={{ width: '100%' }}

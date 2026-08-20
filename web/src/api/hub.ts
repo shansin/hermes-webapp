@@ -99,6 +99,13 @@ export interface CronJob {
   next_run_at?: string | number | null;
   last_run_at?: string | number | null;
   last_status?: string | null;
+  /**
+   * Set only on a *pinned* job. Null means the job follows the global default
+   * at fire time — see the note in `CronTab`, and `model_snapshot`, which is
+   * what the gateway compares against to detect drift.
+   */
+  model?: string | null;
+  provider?: string | null;
   [k: string]: unknown;
 }
 
