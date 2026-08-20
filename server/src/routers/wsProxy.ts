@@ -80,50 +80,46 @@ export function attachWsProxy(server: {
     }
 
     wss.handleUpgrade(req, socket, head, (client) => {
-      void bridge(client, pathname, search);
+      bridge(client, pathname, search);
     });
   });
 
   log.info({ paths: [...WS_PATHS] }, 'websocket proxy attached');
 }
 
-async function bridge(client: WebSocket, pathname: string, search: string): Promise<void> {
-  const token = getToken() || (await resolveToken());
-
-  // Force our own token onto the upstream URL: the browser may send a stale one
-  // (or none at all), and the proxy is the component that actually knows it.
-  const params = new URLSearchParams(search);
-  if (token) params.set('token', token);
-  else params.delete('token');
-  const query = params.toString();
-  const target = `${upstreamWs}${pathname}${query ? '?' + query : ''}`;
-
-  const upstream = new WebSocket(target, {
-    headers: {
-      // Both of these must look like loopback or the upgrade is refused with
-      // close code 4403. This is the whole reason the proxy exists.
-      host: upstreamHost,
-      origin: `http://${upstreamHost}`,
-    },
-    // Session history replays and file attachments can be large.
-    maxPayload: MAX_PAYLOAD,
-    // `ws` defaults this *on* for clients, unlike the `WebSocketServer` above
-    // which defaults it off. So without this the two legs disagreed: frames
-    // crossed the browser hop uncompressed, then got deflated to travel
-    // 127.0.0.1 and inflated again at the other end — CPU spent compressing
-    // for the one hop with no bandwidth to save, on every token of every turn.
-    perMessageDeflate: false,
-  });
-
+/**
+ * Bridge one client socket to a fresh upstream one.
+ *
+ * Deliberately synchronous, even though opening the upstream leg needs a token
+ * that may still have to be discovered. The browser sends its first RPC the
+ * instant `onopen` fires — that is what the app's `connect()` does — so any
+ * `await` before the client's `message` handler is attached is a window in
+ * which those frames arrive at a socket nobody is listening to and are dropped
+ * on the floor. On a cold boot, where the token is scraped out of the Hermes
+ * SPA over a real HTTP round trip, that window is the whole handshake, and the
+ * app sits on a spinner until its own request timeout fires.
+ *
+ * So the client's handlers go on first and the pre-open buffer below covers
+ * the gap, which is what it was there for in the first place.
+ */
+function bridge(client: WebSocket, pathname: string, search: string): void {
   // Frames produced before the upstream socket finishes opening would be lost,
   // so hold them until it is ready.
   const pending: RawData[] = [];
   let upstreamOpen = false;
+  let upstream: WebSocket | null = null;
+  /** Set when the bridge is torn down before the upstream leg ever opened. */
+  let abandoned = false;
 
   const closeBoth = (code: number, reason: string) => {
-    // 1005/1006 are "no status" sentinels and are illegal on the wire.
-    const safeCode = code === 1005 || code === 1006 || code < 1000 ? 1011 : code;
+    // 1005/1006 are "no status" sentinels and are illegal on the wire; so are
+    // 1004 and 1015, which are reserved and never sent by an endpoint.
+    const safeCode =
+      code === 1004 || code === 1005 || code === 1006 || code === 1015 || code < 1000 ? 1011 : code;
+    abandoned = true;
+    pending.length = 0;
     for (const sock of [client, upstream]) {
+      if (!sock) continue;
       if (sock.readyState === WebSocket.OPEN || sock.readyState === WebSocket.CONNECTING) {
         try {
           sock.close(safeCode, reason.slice(0, 120));
@@ -134,15 +130,8 @@ async function bridge(client: WebSocket, pathname: string, search: string): Prom
     }
   };
 
-  upstream.on('open', () => {
-    upstreamOpen = true;
-    for (const frame of pending) upstream.send(frame);
-    pending.length = 0;
-    log.debug({ pathname }, 'ws bridge established');
-  });
-
   client.on('message', (data, isBinary) => {
-    if (!upstreamOpen) {
+    if (!upstream || !upstreamOpen) {
       if (pending.length >= MAX_PENDING_FRAMES) {
         log.warn({ pathname }, 'ws pre-open buffer overflow — dropping bridge');
         closeBoth(1013, 'upstream not ready');
@@ -159,28 +148,77 @@ async function bridge(client: WebSocket, pathname: string, search: string): Prom
     upstream.send(data, { binary: isBinary });
   });
 
-  upstream.on('message', (data, isBinary) => {
-    if (client.readyState !== WebSocket.OPEN) return;
-    // A phone that has stopped reading — backgrounded, or on a stalled radio —
-    // must not be allowed to queue the whole stream in this process.
-    if (client.bufferedAmount > MAX_BUFFERED_BYTES) {
-      log.warn({ pathname, buffered: client.bufferedAmount }, 'client backpressure');
-      closeBoth(1011, 'client backpressure');
-      return;
-    }
-    client.send(data, { binary: isBinary });
-  });
-
   client.on('close', (code, reason) => closeBoth(code, reason.toString()));
-  upstream.on('close', (code, reason) => closeBoth(code, reason.toString()));
 
   client.on('error', (err) => {
     log.debug({ err: err.message, pathname }, 'client ws error');
     closeBoth(1011, 'client error');
   });
 
-  upstream.on('error', (err) => {
-    log.warn({ err: err.message, pathname, target }, 'upstream ws error');
-    closeBoth(1011, 'upstream error');
-  });
+  void openUpstream();
+
+  async function openUpstream(): Promise<void> {
+    const token = getToken() || (await resolveToken());
+    // The phone may have hung up while the token was being discovered.
+    if (abandoned || client.readyState === WebSocket.CLOSED) return;
+
+    // Force our own token onto the upstream URL: the browser may send a stale
+    // one (or none at all), and the proxy is the component that actually knows
+    // it.
+    const params = new URLSearchParams(search);
+    if (token) params.set('token', token);
+    else params.delete('token');
+    const query = params.toString();
+    const target = `${upstreamWs}${pathname}${query ? '?' + query : ''}`;
+
+    upstream = connectUpstream(target);
+  }
+
+  function connectUpstream(target: string): WebSocket {
+    const sock = new WebSocket(target, {
+      headers: {
+        // Both of these must look like loopback or the upgrade is refused with
+        // close code 4403. This is the whole reason the proxy exists.
+        host: upstreamHost,
+        origin: `http://${upstreamHost}`,
+      },
+      // Session history replays and file attachments can be large.
+      maxPayload: MAX_PAYLOAD,
+      // `ws` defaults this *on* for clients, unlike the `WebSocketServer`
+      // above which defaults it off. So without this the two legs disagreed:
+      // frames crossed the browser hop uncompressed, then got deflated to
+      // travel 127.0.0.1 and inflated again at the other end — CPU spent
+      // compressing for the one hop with no bandwidth to save, on every token
+      // of every turn.
+      perMessageDeflate: false,
+    });
+
+    sock.on('open', () => {
+      upstreamOpen = true;
+      for (const frame of pending) sock.send(frame);
+      pending.length = 0;
+      log.debug({ pathname }, 'ws bridge established');
+    });
+
+    sock.on('message', (data, isBinary) => {
+      if (client.readyState !== WebSocket.OPEN) return;
+      // A phone that has stopped reading — backgrounded, or on a stalled radio
+      // — must not be allowed to queue the whole stream in this process.
+      if (client.bufferedAmount > MAX_BUFFERED_BYTES) {
+        log.warn({ pathname, buffered: client.bufferedAmount }, 'client backpressure');
+        closeBoth(1011, 'client backpressure');
+        return;
+      }
+      client.send(data, { binary: isBinary });
+    });
+
+    sock.on('close', (code, reason) => closeBoth(code, reason.toString()));
+
+    sock.on('error', (err) => {
+      log.warn({ err: err.message, pathname, target }, 'upstream ws error');
+      closeBoth(1011, 'upstream error');
+    });
+
+    return sock;
+  }
 }
