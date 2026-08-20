@@ -793,12 +793,15 @@ const StreamingTail = memo(function StreamingTail({ onGrow }: { onGrow: () => vo
           <Markdown>{text}</Markdown>
         </div>
       ) : (
-        !reasoning && (
-          <div className="status-line">
-            {statusLine || thinkingHint || 'Working…'}
-            <span className="caret" />
-          </div>
-        )
+        // Shown for the whole pre-answer phase now, reasoning or not. It used
+        // to be suppressed while reasoning was streaming, because the expanded
+        // thinking block was the thing to watch — but that block is collapsed
+        // by default now, so without this the wait before the first token had
+        // nothing moving in it at all.
+        <div className="status-line">
+          {statusLine || thinkingHint || 'Working…'}
+          <span className="caret" />
+        </div>
       )}
       {text && statusLine && <div className="status-line">{statusLine}</div>}
     </div>

@@ -1,8 +1,22 @@
 /**
  * Collapsible reasoning ("chain of thought") block.
  *
- * Collapsed by default for finished messages, but auto-expanded while a turn
- * is streaming so there is something to watch before the answer starts.
+ * Always collapsed by default, streaming or not. Reasoning is the model's
+ * working, not its answer, and most of the time nobody opened the app to read
+ * it — so it announces itself and stays out of the way until asked for.
+ *
+ * The live turn used to auto-expand this so there was something to watch
+ * before the answer started. That job now belongs to the status line, which
+ * `StreamingTail` shows for the whole pre-answer phase: it says what the agent
+ * is actually doing in one line, rather than unrolling a wall of thinking the
+ * reader then has to scroll past to reach the reply.
+ *
+ * A block the user opens stays open for as long as it lives: nothing collapses
+ * it back, since opening it was a deliberate act. Note that the live turn's
+ * block and the finished message's are separate instances — `StreamingTail`
+ * renders one, `MessageRow` the other — so expanding mid-turn does not carry
+ * over when the reply lands. The finished message starts collapsed like the
+ * rest of the transcript.
  */
 import { memo, useEffect, useRef, useState } from 'react';
 import { IconChevron } from '../shared/Icons';
@@ -14,7 +28,7 @@ interface Props {
 }
 
 export const ThinkingBlock = memo(function ThinkingBlock({ text, streaming = false }: Props) {
-  const [open, setOpen] = useState(streaming);
+  const [open, setOpen] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // Follow the tail of the reasoning as it streams in.
@@ -23,13 +37,6 @@ export const ThinkingBlock = memo(function ThinkingBlock({ text, streaming = fal
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
     }
   }, [text, open, streaming]);
-
-  // Collapse once the turn finishes, so the transcript stays readable.
-  const wasStreaming = useRef(streaming);
-  useEffect(() => {
-    if (wasStreaming.current && !streaming) setOpen(false);
-    wasStreaming.current = streaming;
-  }, [streaming]);
 
   if (!text.trim()) return null;
 
