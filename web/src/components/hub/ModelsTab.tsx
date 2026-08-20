@@ -19,6 +19,7 @@ import {
 } from 'recharts';
 import { ErrorNote, SkeletonList, formatTokens, relTime } from '../shared/misc';
 import { useModelAnalytics, useUsageAnalytics } from '../../api/hub';
+import { DefaultModelSection } from './DefaultModelSection';
 import { useSession } from '../../store/session';
 
 /**
@@ -97,7 +98,7 @@ export function ModelsTab() {
       {info?.model && (
         <div className="card" style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 5 }}>
-            ACTIVE MODEL
+            ACTIVE MODEL · THIS CHAT
           </div>
           <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'var(--mono)' }}>{info.model}</div>
           <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginTop: 3 }}>
@@ -106,6 +107,8 @@ export function ModelsTab() {
           </div>
         </div>
       )}
+
+      <DefaultModelSection />
 
       {/* --- daily tokens --- */}
       <div className="card" style={{ marginBottom: 12 }}>

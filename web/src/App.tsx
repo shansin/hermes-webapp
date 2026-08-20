@@ -122,7 +122,7 @@ export function App() {
             <Route path="/cron" element={<HubPage title="Cron"><CronTab /></HubPage>} />
             <Route path="/models" element={<HubPage title="Models"><ModelsTab /></HubPage>} />
             <Route path="/profiles" element={<HubPage title="Profiles"><ProfilesTab /></HubPage>} />
-            <Route path="/settings" element={<HubPage title="Settings"><SettingsTab /></HubPage>} />
+            <Route path="/settings" element={<HubPage title="App settings"><SettingsTab /></HubPage>} />
             <Route path="/hub" element={<HubRedirect />} />
             <Route path="*" element={<Navigate to="/chat" replace />} />
           </Routes>

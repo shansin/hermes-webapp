@@ -2,7 +2,7 @@
  * Per-session model, reasoning-effort and approval-mode picker.
  *
  * Everything here is scoped to the running chat — switching the model does not
- * touch the default new sessions start with, which lives in Settings.
+ * touch the default new sessions start with, which lives on the Models screen.
  */
 import { useState } from 'react';
 import { Sheet } from '../shared/Sheet';

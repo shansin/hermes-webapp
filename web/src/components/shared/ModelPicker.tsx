@@ -2,9 +2,9 @@
  * Provider-grouped, filterable model list.
  *
  * Shared by the two places a model gets chosen, which differ only in what they
- * do with the answer: the chat sheet switches the running session, Settings
- * writes the default for new ones. A stock install exposes hundreds of models,
- * so the grouping and the filter are what make this usable on a phone.
+ * do with the answer: the chat sheet switches the running session, the Models
+ * screen writes the default for new ones. A stock install exposes hundreds of
+ * models, so the grouping and the filter are what make this usable on a phone.
  */
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';

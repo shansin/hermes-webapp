@@ -61,9 +61,9 @@ const SYSTEM = [
   { to: '/memory', label: 'Memory', hint: 'What the agent remembers', Icon: IconMemory },
   { to: '/skills', label: 'Skills', hint: 'Toggle, search, install', Icon: IconSkills },
   { to: '/cron', label: 'Cron', hint: 'Scheduled jobs', Icon: IconCron },
-  { to: '/models', label: 'Models', hint: 'Active model and usage', Icon: IconModels },
+  { to: '/models', label: 'Models', hint: 'Default model and usage', Icon: IconModels },
   { to: '/profiles', label: 'Profiles', hint: 'Named configurations', Icon: IconProfiles },
-  { to: '/settings', label: 'Settings', hint: 'Default model, theme, status', Icon: IconSettings },
+  { to: '/settings', label: 'App settings', hint: 'Theme, notifications, status', Icon: IconSettings },
 ];
 
 /** How far the panel must be dragged left before it closes. */
