@@ -160,13 +160,23 @@ export class HermesClient {
     this.setState('closed');
   }
 
-  /** Point the client at a new URL (token change) and reconnect. */
+  /**
+   * Point the client at a new URL (token change) and reconnect.
+   *
+   * The outgoing socket is `discard`ed rather than merely closed. `close()` is
+   * asynchronous — the handshake completes a tick or more later — so a socket
+   * closed here still has its handlers attached when `connect()` below has
+   * already put a replacement in `this.ws`. That stale `onclose` then nulls
+   * out the *new* socket and schedules a reconnect against it: the app sits on
+   * "Reconnecting…" with a perfectly good open socket it no longer knows
+   * about, and every call rejects with "not connected" until something else
+   * nudges it. Detaching first is what makes the replacement safe.
+   */
   setUrl(url: string): void {
     if (url === this.url) return;
     this.url = url;
     this.attempt = 0;
-    this.ws?.close(1000, 'url changed');
-    this.ws = null;
+    this.discard(this.ws);
     this.connect();
   }
 
