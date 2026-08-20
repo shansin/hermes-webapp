@@ -33,7 +33,7 @@
  */
 import { clearToken, getToken, resolveToken, upstreamHttp, upstreamHost } from '../config.js';
 import { log } from '../log.js';
-import { appendEntry, hasRun, knowsAnyRun, markRunSeen } from './feed.js';
+import { appendEntry, hasRun, hasSeeded, markSeeded, markRunSeen } from './feed.js';
 import { sendPush } from './send.js';
 import { listSubscriptions } from './store.js';
 
@@ -268,7 +268,11 @@ export function scheduleCronReconcile(): void {
   timer.unref?.();
 }
 
-async function reconcile(): Promise<void> {
+/**
+ * One reconcile pass. Exported so it can be driven directly — the scheduler
+ * above wraps it in a settle delay that a test would otherwise have to fake.
+ */
+export async function reconcile(): Promise<void> {
   running = true;
   try {
     const jobsBody = await gatewayGet<{ jobs?: unknown[] } | unknown[]>('/api/cron/jobs');
@@ -281,8 +285,13 @@ async function reconcile(): Promise<void> {
      * Without this, installing the app on a machine with months of cron
      * history would fire a notification for every run ever recorded. The feed
      * is meant to start from the moment it exists.
+     *
+     * Keyed to "has a pass ever completed", not "have we ever seen a run".
+     * The latter never became true on an install whose jobs had no history
+     * yet, so every pass stayed a seeding pass and the first run to actually
+     * happen was adopted in silence.
      */
-    const seeding = !knowsAnyRun();
+    const seeding = !hasSeeded();
 
     for (const raw of jobs) {
       const job = raw as GatewayJob;
@@ -354,6 +363,11 @@ async function reconcile(): Promise<void> {
         }
       }
     }
+
+    // Only after a pass that actually reached the gateway: recording it while
+    // Hermes was down would burn the seeding pass on nothing, and the first
+    // real run once it came back would be adopted silently.
+    if (seeding) markSeeded();
   } catch (err) {
     log.warn({ err }, 'Cron reconcile failed');
   } finally {

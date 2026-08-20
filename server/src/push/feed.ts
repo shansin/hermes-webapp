@@ -66,6 +66,17 @@ export type FeedEntry = z.infer<typeof EntrySchema>;
 const FileSchema = z.object({
   entries: z.array(EntrySchema).default([]),
   /**
+   * Whether a reconcile pass has ever completed against this gateway.
+   *
+   * This, not `seenRuns`, is what decides whether history gets adopted
+   * silently. Inferring it from "have we ever recorded a run" was wrong in the
+   * one case that matters most: a fresh install whose jobs have no runs yet
+   * has nothing to adopt, so it stayed in seeding mode — and swallowed the
+   * first run that actually happened. Which is to say, you would create your
+   * first scheduled job and never hear about it running.
+   */
+  seeded: z.boolean().default(false),
+  /**
    * Run ids already accounted for, including those adopted silently on the
    * first pass and those whose entries have since aged out of `entries` or
    * been cleared. Kept separately so clearing the feed does not cause every
@@ -77,7 +88,7 @@ type FileShape = z.infer<typeof FileSchema>;
 
 const FILE = resolve(stateDir, '.hermes-cron-feed.json');
 
-let state: FileShape = { entries: [], seenRuns: [] };
+let state: FileShape = { entries: [], seenRuns: [], seeded: false };
 let loaded = false;
 
 function load(): FileShape {
@@ -139,13 +150,24 @@ export function hasRun(runId: string): boolean {
 }
 
 /**
- * Whether anything has ever been recorded.
+ * Whether a reconcile pass has ever completed.
  *
- * Distinguishes a fresh install — which adopts the gateway's existing history
- * without announcing it — from a feed the user has simply cleared.
+ * A fresh install adopts the gateway's existing history without announcing it;
+ * everything after that first pass is news. The `seenRuns` fallback is for
+ * feeds written before `seeded` existed — those have already adopted their
+ * history, and re-seeding them would swallow a run.
  */
-export function knowsAnyRun(): boolean {
-  return load().seenRuns.length > 0;
+export function hasSeeded(): boolean {
+  const s = load();
+  return s.seeded || s.seenRuns.length > 0;
+}
+
+/** Record that the first pass finished, so the next one announces. */
+export function markSeeded(): void {
+  const s = load();
+  if (s.seeded) return;
+  s.seeded = true;
+  persist();
 }
 
 export function markRunSeen(runId: string, write = true): void {
