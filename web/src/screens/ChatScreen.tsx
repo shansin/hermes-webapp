@@ -3,6 +3,8 @@
  *
  * Session lifecycle:
  *  - `?resume=<storedId>` reopens a stored conversation and replays history
+ *  - `?session=<id>` is the same intent under the name every *notification*
+ *    uses — see the note on `resumeId` below
  *  - `?new=1` (or no session yet) creates a fresh one
  *  - the gateway session handle is kept in the store; it is *not* the same as
  *    the stored session id used by the REST endpoints
@@ -78,7 +80,22 @@ export function ChatScreen() {
   // re-running session setup for a session we already hold.
   const bootingRef = useRef(false);
 
-  const resumeId = params.get('resume');
+  /**
+   * `session=` is an alias for `resume=`, and it is not optional.
+   *
+   * Every notification the proxy sends points here under that name: the push
+   * payloads built in `server/src/push/events.ts` use `/chat?session=<id>`,
+   * and so does every row of the cron feed (`server/src/push/cron.ts`). Only
+   * `resume` was ever read, so tapping any of them opened the chat screen and
+   * ignored which conversation it was about — landing the user in whatever
+   * happened to be open, or in a brand new session. For an approval banner
+   * that is precisely backwards: the turn waiting to be unblocked is the one
+   * conversation you cannot reach.
+   *
+   * Aliasing here rather than renaming the parameter server-side keeps every
+   * banner already sitting on a lock screen working.
+   */
+  const resumeId = params.get('resume') ?? params.get('session');
   const wantNew = params.get('new') === '1';
   // Android share-sheet target: /chat?text=…&title=…&url=…
   const shared = [params.get('title'), params.get('text'), params.get('url')]
@@ -178,6 +195,17 @@ export function ChatScreen() {
     if (connection !== 'open') return;
 
     if (resumeId) {
+      /**
+       * Already here. A push banner for the conversation on screen — the
+       * common case, since the phone was backgrounded mid-turn — names the
+       * gateway handle we are already holding, and resuming it would tear a
+       * live session down to rebuild the same one.
+       */
+      if (resumeId === sessionId || resumeId === storedSessionId) {
+        setParams({}, { replace: true });
+        return;
+      }
+
       void doResume(resumeId).then((ok) => {
         // Clear the intent so a reconnect doesn't resume all over again —
         // but only on success, or a resume that failed for want of a network
@@ -192,7 +220,10 @@ export function ChatScreen() {
         if (wantNew) setParams({}, { replace: true });
       });
     }
-    // Deliberately keyed on the connection + URL intent only.
+    // Deliberately keyed on the connection + URL intent only. The two session
+    // ids are read for the already-here short-circuit above, not as triggers:
+    // adopting a session sets them, and re-running on that would undo the
+    // boot that just happened.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection, resumeId, wantNew]);
 
