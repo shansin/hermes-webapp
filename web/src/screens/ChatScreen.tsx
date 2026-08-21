@@ -14,10 +14,9 @@ import { useSearchParams } from 'react-router-dom';
 import { MessageList } from '../components/chat/MessageList';
 import { Composer } from '../components/composer/Composer';
 import { CommandPalette } from '../components/composer/CommandPalette';
-import { ApprovalSheet } from '../components/chat/ApprovalSheet';
 import { ModelSheet } from '../components/chat/ModelSheet';
 import { ContextSheet } from '../components/chat/ContextSheet';
-import { IconPlus, IconChevron, IconSearch } from '../components/shared/Icons';
+import { IconPlus, IconChevron, IconSearch, IconClose } from '../components/shared/Icons';
 import { Empty, Loader } from '../components/shared/misc';
 import { useSession } from '../store/session';
 import { MenuButton } from '../components/shared/MenuButton';
@@ -353,9 +352,19 @@ export function ChatScreen() {
       </div>
 
       {error && (
-        <div className="conn-banner conn-banner--closed" onClick={() => useSession.setState({ error: null })}>
-          {error}
-        </div>
+        /* A button, not a div with a handler: it was already tap-to-dismiss,
+           but nothing said so and a keyboard could not reach it. `alert` so it
+           is announced — this is where a failed send surfaces. */
+        <button
+          type="button"
+          className="conn-banner conn-banner--closed conn-banner--dismiss"
+          role="alert"
+          onClick={() => useSession.setState({ error: null })}
+          aria-label={`${error}. Dismiss`}
+        >
+          <span>{error}</span>
+          <IconClose size={15} />
+        </button>
       )}
 
       {offlineView && (
@@ -407,7 +416,6 @@ export function ChatScreen() {
         onSeed={setCommandSeed}
       />
 
-      <ApprovalSheet />
       <ModelSheet open={modelSheet} onClose={() => setModelSheet(false)} />
       <ContextSheet open={contextSheet} onClose={() => setContextSheet(false)} />
     </div>

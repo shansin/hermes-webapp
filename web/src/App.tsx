@@ -2,7 +2,7 @@
  * App shell: routes, the navigation drawer, the connection banner, and the
  * single place the gateway socket is opened.
  */
-import { Suspense, lazy, useEffect } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { ChatScreen } from './screens/ChatScreen';
 import { HubPage, HubRedirect } from './screens/HubPage';
@@ -48,16 +48,31 @@ const SettingsTab = lazy(() =>
   import('./components/hub/SettingsTab').then((m) => ({ default: m.SettingsTab })),
 );
 import { NavDrawer } from './components/shared/NavDrawer';
+import { ApprovalSheet } from './components/chat/ApprovalSheet';
 import { Toasts } from './components/shared/misc';
 import { useUi } from './store/ui';
 import { preloadMarkdown } from './components/chat/MarkdownAsync';
 import { hermes, defaultWsUrl } from './ws/client';
 import { useCronFeedToasts, useEventToasts } from './lib/useEventToasts';
+import { flushUndoables } from './lib/undo';
+
+/**
+ * How long a connection may be down before the banner says so.
+ *
+ * Every cold start passes through `connecting`, and reconnects after a
+ * backgrounded phone wakes are usually over in well under a second — so
+ * showing the banner the instant state leaves `open` meant a red bar flashing
+ * on launch and on every return to the app. The delay costs nothing: a drop
+ * that matters lasts longer than this, and one that doesn't never needed
+ * reporting.
+ */
+const BANNER_DELAY_MS = 700;
 
 export function App() {
   const connection = useUi((s) => s.connection);
   const setConnection = useUi((s) => s.setConnection);
   const token = useUi((s) => s.token);
+  const [showBanner, setShowBanner] = useState(false);
 
   // Warm the markdown chunk while the socket is still connecting, so the first
   // assistant message doesn't wait on it.
@@ -89,13 +104,40 @@ export function App() {
     };
   }, []);
 
+  // Hold the banner back until a drop has lasted long enough to be worth
+  // reporting. Restoring the connection clears it immediately — good news does
+  // not need a delay.
+  useEffect(() => {
+    if (connection === 'open') {
+      setShowBanner(false);
+      return;
+    }
+    const t = setTimeout(() => setShowBanner(true), BANNER_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [connection]);
+
+  /**
+   * Commit anything still inside its undo window before the page goes away.
+   *
+   * A delete the user has already watched happen should not be quietly
+   * cancelled by them closing the tab or switching apps. `pagehide` is the
+   * event that actually fires on iOS, where `beforeunload` does not.
+   */
+  useEffect(() => {
+    const flush = () => flushUndoables();
+    window.addEventListener('pagehide', flush);
+    return () => window.removeEventListener('pagehide', flush);
+  }, []);
+
   useEventToasts();
   useCronFeedToasts();
 
   return (
     <div className="app">
-      {connection !== 'open' && (
+      {connection !== 'open' && showBanner && (
         <div
+          role="status"
+          aria-live="polite"
           className={`conn-banner conn-banner--${
             connection === 'reconnecting' || connection === 'connecting' ? 'reconnecting' : 'closed'
           }`}
@@ -130,6 +172,20 @@ export function App() {
       </div>
 
       <NavDrawer />
+      {/**
+       * Deliberately here rather than on the chat screen.
+       *
+       * An approval blocks the agent's turn until it is answered, and it was
+       * only rendered inside `ChatScreen` — so one raised while you were on
+       * Kanban, Files or Settings produced nothing at all. The turn sat
+       * stopped and the app said nothing, because `useEventToasts` does not
+       * handle `approval.request` either. Push covers it only when the app is
+       * backgrounded and only over HTTPS, which is dormant on plain HTTP.
+       *
+       * At the shell it can be answered from wherever you happen to be, which
+       * is the whole point of a prompt that blocks.
+       */}
+      <ApprovalSheet />
       <Toasts />
     </div>
   );
