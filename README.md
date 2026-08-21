@@ -114,13 +114,28 @@ agent moves show up on their own.
 reported, in the working group of the drawer beside Files. See the section
 below.
 
-**Memory, Skills, Cron, Models, Profiles, Settings** — six destinations in the
-navigation drawer, under a SYSTEM divider below the working surfaces. Editable
-memory files; skill toggles plus hub search/install; cron job control with run
-history; an active-model card with usage charts; and settings (the default model
-for new chats, three themes, haptics, a QR code to open the app on another
-phone, and a hidden raw-frame dev panel behind a triple-tap on the "Appearance"
-heading).
+**Usage** — where the tokens went, over 24h / 7d / 30d / 90d. Tokens,
+conversations and API calls up top, then a chart, then ranked breakdowns:
+*Machinery* (what naming sessions, judging approvals and compacting transcripts
+cost you — visible nowhere else), by model, by tool, by skill, and, for the day
+view, by surface and the heaviest conversations.
+
+Two things about it are deliberate. It leads with **tokens, not money**: a
+locally served model has no rate card, so Hermes writes `estimated_cost_usd = 0`
+on every session and a cost-led page would be a column of `$0.00`. The cost
+tiles appear only when there is a price to show. And the **24h view is hourly**,
+which the analytics endpoint cannot do — it groups by date — so those bars are
+built here from session rows, bucketed by the hour each conversation started.
+That leaves out sub-agent runs and compaction continuations, which the session
+list hides; the screen reports the resulting gap rather than drawing a chart
+that is quietly short.
+
+**Memory, Skills, Cron, Models, Usage, Profiles, Settings** — seven destinations
+in the navigation drawer, under a SYSTEM divider below the working surfaces.
+Editable memory files; skill toggles plus hub search/install; cron job control
+with run history; the default model for new chats; and settings (three themes,
+haptics, a QR code to open the app on another phone, and a hidden raw-frame dev
+panel behind a triple-tap on the "Appearance" heading).
 
 These were one "Hub" screen behind a segmented control, which cost two taps to
 reach any of them. `/hub?tab=<id>` still redirects to the matching page, since

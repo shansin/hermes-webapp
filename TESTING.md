@@ -67,6 +67,14 @@ TypeScript and the app reads them in TSX with no shared type between them, which
 is how `/chat?session=…` came to be sent by every push payload and read by
 nothing.
 
+**`web/test/usage.test.ts`** — the Usage screen's arithmetic, which is all time
+boundaries and attribution rules: hourly bucketing against a rolling 24-hour
+window, zero-filling idle days, whether cost means anything on this install,
+what the hourly bars leave out, folding the duplicate model rows the analytics
+endpoint emits, and the window fetch's paging (stop at the boundary, give up at
+the page ceiling and say so). Pure functions plus a structural check that the
+charts did not reappear on Models.
+
 **`web/test/sheet.test.tsx`** — the bottom sheet's modal contract: focus moves
 in, wraps at both ends, returns to whatever opened it, and a sheet that demands
 an explicit choice cannot be escaped. Driven with `user-event`, since a focus

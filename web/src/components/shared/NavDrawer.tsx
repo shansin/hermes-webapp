@@ -25,6 +25,7 @@ import {
   IconSessions,
   IconSettings,
   IconSkills,
+  IconUsage,
 } from './Icons';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
@@ -33,10 +34,10 @@ import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
 /**
  * The Hub's six tabs used to hide behind a single "Hub" entry, which cost two
  * taps and a segmented control to reach any of them. They are top-level
- * destinations now — the drawer is the one surface with room for eleven.
+ * destinations now — the drawer is the one surface with room for twelve.
  *
  * Split into two groups so the configuration destinations read as a set rather
- * than as more peers of Chat. Both groups carry a hint — eleven of them run
+ * than as more peers of Chat. Both groups carry a hint — twelve of them run
  * past the fold on a short phone, which the list scrolls for.
  *
  * Cron Notifications sits in the working group rather than under SYSTEM, next
@@ -61,7 +62,8 @@ const SYSTEM = [
   { to: '/memory', label: 'Memory', hint: 'What the agent remembers', Icon: IconMemory },
   { to: '/skills', label: 'Skills', hint: 'Toggle, search, install', Icon: IconSkills },
   { to: '/cron', label: 'Cron', hint: 'Scheduled jobs', Icon: IconCron },
-  { to: '/models', label: 'Models', hint: 'Default model and usage', Icon: IconModels },
+  { to: '/models', label: 'Models', hint: 'What new sessions start on', Icon: IconModels },
+  { to: '/usage', label: 'Usage', hint: 'Where the tokens went', Icon: IconUsage },
   { to: '/profiles', label: 'Profiles', hint: 'Named configurations', Icon: IconProfiles },
   { to: '/settings', label: 'App settings', hint: 'Theme, notifications, status', Icon: IconSettings },
 ];

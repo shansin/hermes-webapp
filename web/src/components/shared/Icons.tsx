@@ -242,6 +242,17 @@ export const IconModels = (p: P) => (
   </Svg>
 );
 
+/** Usage — bars of unequal height, which is the one shape that reads as
+ *  "measurements over time" at 21px and does not collide with Models. */
+export const IconUsage = (p: P) => (
+  <Svg {...p}>
+    <path d="M4 20h16" />
+    <path d="M7 20v-5.5" />
+    <path d="M12 20V6" />
+    <path d="M17 20v-9" />
+  </Svg>
+);
+
 /** Config profiles — an ID card rather than a person: these name setups, not people. */
 export const IconProfiles = (p: P) => (
   <Svg {...p}>

@@ -198,20 +198,104 @@ export function useMemoryProviders() {
 
 // --- analytics ---------------------------------------------------------------
 
+/**
+ * The window every analytics call takes, in days. The backend clamps to 1-365
+ * and the UI offers 1/7/30/90, where 1 is a rolling 24 hours (the cutoff is
+ * `now - 86400`, not midnight).
+ */
+export type UsageDays = 1 | 7 | 30 | 90;
+
 export interface UsageDay {
   day: string;
   input_tokens: number;
   output_tokens: number;
+  /** Zero on providers that do not report caching — which is every local one. */
+  cache_read_tokens: number;
   reasoning_tokens: number;
   estimated_cost: number;
+  actual_cost: number;
   sessions: number;
   api_calls: number;
 }
 
-export function useUsageAnalytics() {
+/** Per-model rollup as it appears inside the *usage* payload (thinner than
+ *  `/api/analytics/models`), carrying the auxiliary calls billed to it. */
+export interface UsageModel {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost: number;
+  sessions: number;
+  api_calls: number;
+  aux_tasks?: { task: string; input_tokens: number; output_tokens: number; api_calls: number }[];
+}
+
+/**
+ * Auxiliary work, aggregated across models: `title_generation`, `approval`,
+ * `compression`, and whatever else Hermes bills to a task slot.
+ *
+ * This is the one breakdown nothing else in the app surfaces, and the only
+ * place the machinery tax is visible — every new session pays for a title, and
+ * approvals can run to hundreds of calls, none of it attributable to a
+ * conversation you remember having.
+ */
+export interface TaskUsage {
+  task: string;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost: number;
+  api_calls: number;
+  models: string[];
+}
+
+export interface ToolUsage {
+  tool: string;
+  count: number;
+  percentage: number;
+}
+
+export interface SkillUsage {
+  skill: string;
+  view_count: number;
+  manage_count: number;
+  total_count: number;
+  percentage: number;
+  last_used_at: number | null;
+}
+
+export interface UsageTotals {
+  total_input: number;
+  total_output: number;
+  total_cache_read: number;
+  total_reasoning: number;
+  total_estimated_cost: number;
+  total_actual_cost: number;
+  total_sessions: number;
+  total_api_calls: number;
+}
+
+export interface UsagePayload {
+  daily: UsageDay[];
+  by_model: UsageModel[];
+  by_task: TaskUsage[];
+  totals: UsageTotals;
+  period_days: number;
+  skills: {
+    summary: {
+      total_skill_loads: number;
+      total_skill_edits: number;
+      total_skill_actions: number;
+      distinct_skills_used: number;
+    };
+    top_skills: SkillUsage[];
+  };
+  tools: ToolUsage[];
+}
+
+export function useUsageAnalytics(days: UsageDays = 30) {
   return useQuery({
-    queryKey: ['analytics', 'usage'],
-    queryFn: () => api.get<{ daily: UsageDay[] }>('/api/analytics/usage'),
+    queryKey: ['analytics', 'usage', days],
+    queryFn: () => api.get<UsagePayload>(`/api/analytics/usage?days=${days}`),
     staleTime: 60_000,
   });
 }
@@ -221,17 +305,33 @@ export interface ModelUsage {
   provider: string;
   input_tokens: number;
   output_tokens: number;
+  cache_read_tokens: number;
+  reasoning_tokens: number;
   sessions: number;
   api_calls: number;
   tool_calls: number;
   last_used_at: number | null;
   estimated_cost: number;
+  actual_cost: number;
+  avg_tokens_per_session: number;
+  /** From models.dev, absent for a model it does not know (every local one). */
+  capabilities?: {
+    supports_tools?: boolean;
+    supports_vision?: boolean;
+    supports_reasoning?: boolean;
+    context_window?: number;
+    max_output_tokens?: number;
+    model_family?: string;
+  };
 }
 
-export function useModelAnalytics() {
+export function useModelAnalytics(days: UsageDays = 30) {
   return useQuery({
-    queryKey: ['analytics', 'models'],
-    queryFn: () => api.get<{ models: ModelUsage[] }>('/api/analytics/models'),
+    queryKey: ['analytics', 'models', days],
+    queryFn: () =>
+      api.get<{ models: ModelUsage[]; totals: Record<string, number> }>(
+        `/api/analytics/models?days=${days}`,
+      ),
     staleTime: 60_000,
   });
 }

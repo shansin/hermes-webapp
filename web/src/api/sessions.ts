@@ -13,6 +13,17 @@ export interface SessionRow {
   input_tokens: number;
   output_tokens: number;
   estimated_cost_usd: number | null;
+  /**
+   * Present on every list row despite not being in the endpoint's docstring:
+   * `compact_rows` drops only the prompt blobs, so the rest of the `sessions`
+   * table comes through. Optional here because an older backend may not have
+   * the column, and the Usage screen sums these.
+   */
+  api_call_count?: number | null;
+  cache_read_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  /** Why the session ended — `ws_orphan_reap`, `agent_close`, `cron_complete`. */
+  end_reason?: string | null;
   cwd: string | null;
   parent_session_id: string | null;
   /**
@@ -76,6 +87,74 @@ export function useSessions(limit = MAX_SESSION_LIMIT, archived: ArchivedFilter 
     queryKey: sessionKeys.list(capped, archived),
     queryFn: () => api.get<SessionList>(`/api/sessions?limit=${capped}&archived=${archived}`),
     staleTime: 15_000,
+  });
+}
+
+/**
+ * How many pages of 100 the window fetch will walk before it gives up.
+ *
+ * A busy install can open more sessions in a day than any single page holds,
+ * and the endpoint caps `limit` at 100 — so the window has to be paged. The
+ * ceiling exists because this runs on a phone: five round trips is already
+ * more than a chart is worth, and the screen says when it stopped early rather
+ * than quietly drawing a partial day.
+ */
+export const MAX_WINDOW_PAGES = 5;
+
+export interface SessionWindow {
+  rows: SessionRow[];
+  /** True when the page ceiling was hit before reaching `since`. */
+  truncated: boolean;
+}
+
+/**
+ * Every session started since `since` (epoch seconds), newest first.
+ *
+ * Ordered by creation, not activity, because the window is defined by
+ * `started_at` and `order=recent` would page by a different clock and walk past
+ * the boundary in the wrong order. Archived sessions are included: the
+ * auto-archive sweep is about what clutters a list, and hiding them here would
+ * quietly delete usage from the chart.
+ *
+ * The rows are conversations — sub-agent runs and compression continuations are
+ * filtered out upstream and cannot be asked for. See `unattributedShare`, which
+ * is how the screen reports what that leaves out.
+ */
+/**
+ * The paging itself, separated from the hook so it can be driven directly.
+ *
+ * `get` is injectable for that reason alone — everything in the app passes the
+ * default.
+ */
+export async function fetchSessionsSince(
+  since: number,
+  get: (path: string) => Promise<SessionList> = (path) => api.get<SessionList>(path),
+): Promise<SessionWindow> {
+  const rows: SessionRow[] = [];
+
+  for (let page = 0; page < MAX_WINDOW_PAGES; page++) {
+    const res = await get(
+      `/api/sessions?limit=${MAX_SESSION_LIMIT}&offset=${page * MAX_SESSION_LIMIT}&archived=include`,
+    );
+    const batch = res.sessions ?? [];
+    rows.push(...batch.filter((s) => s.started_at >= since));
+
+    // Stop as soon as a page runs past the boundary, or the list ends.
+    if (batch.length < MAX_SESSION_LIMIT || batch.some((s) => s.started_at < since)) {
+      return { rows, truncated: false };
+    }
+  }
+
+  // Fell out of the loop: every page was full and still inside the window.
+  return { rows, truncated: true };
+}
+
+export function useSessionsSince(since: number, enabled = true) {
+  return useQuery({
+    queryKey: ['sessions', 'since', since],
+    enabled,
+    staleTime: 30_000,
+    queryFn: () => fetchSessionsSince(since),
   });
 }
 

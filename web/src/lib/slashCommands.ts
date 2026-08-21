@@ -42,6 +42,7 @@ export type LocalActionId =
   | 'hub-skills'
   | 'hub-cron'
   | 'hub-models'
+  | 'hub-usage'
   | 'hub-settings';
 
 /** Why a known Hermes command has no phone surface. */
@@ -128,6 +129,12 @@ const SPECS: readonly CommandSpec[] = [
     surface: local('notifications'),
   },
   { name: '/models', description: 'Manage providers and API keys', surface: local('hub-models') },
+  {
+    name: '/usage',
+    description: 'Tokens, models and machinery over time',
+    aliases: ['/analytics', '/cost'],
+    surface: local('hub-usage'),
+  },
   { name: '/settings', description: 'App settings', surface: local('hub-settings') },
   { name: '/help', description: 'Show every command', aliases: ['/commands'], surface: local('help') },
 

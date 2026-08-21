@@ -41,6 +41,9 @@ const CronTab = lazy(() => import('./components/hub/CronTab').then((m) => ({ def
 const ModelsTab = lazy(() =>
   import('./components/hub/ModelsTab').then((m) => ({ default: m.ModelsTab })),
 );
+const UsageTab = lazy(() =>
+  import('./components/hub/UsageTab').then((m) => ({ default: m.UsageTab })),
+);
 const ProfilesTab = lazy(() =>
   import('./components/hub/ProfilesTab').then((m) => ({ default: m.ProfilesTab })),
 );
@@ -163,6 +166,7 @@ export function App() {
             <Route path="/skills" element={<HubPage title="Skills"><SkillsTab /></HubPage>} />
             <Route path="/cron" element={<HubPage title="Cron"><CronTab /></HubPage>} />
             <Route path="/models" element={<HubPage title="Models"><ModelsTab /></HubPage>} />
+            <Route path="/usage" element={<HubPage title="Usage"><UsageTab /></HubPage>} />
             <Route path="/profiles" element={<HubPage title="Profiles"><ProfilesTab /></HubPage>} />
             <Route path="/settings" element={<HubPage title="App settings"><SettingsTab /></HubPage>} />
             <Route path="/hub" element={<HubRedirect />} />

@@ -57,6 +57,6 @@ export function HubPage({ title, children }: { title: string; children: ReactNod
 export function HubRedirect() {
   const [params] = useSearchParams();
   const tab = params.get('tab');
-  const known = ['memory', 'skills', 'cron', 'models', 'profiles', 'settings'];
+  const known = ['memory', 'skills', 'cron', 'models', 'usage', 'profiles', 'settings'];
   return <Navigate to={tab && known.includes(tab) ? `/${tab}` : '/memory'} replace />;
 }
