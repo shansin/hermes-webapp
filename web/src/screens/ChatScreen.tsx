@@ -133,33 +133,68 @@ export function ChatScreen() {
     setBooting(true);
     reset();
     try {
+      /**
+       * Only this call decides whether the resume succeeded.
+       *
+       * Everything below it is decoration on a conversation that already
+       * exists, and it all used to sit inside this same `try` — so a slow
+       * history fetch, or a payload that failed its schema, fell into the
+       * `catch` and was handled as "this session could not be opened". The
+       * catch starts a *fresh* session, which is how tapping a cron
+       * notification could load the right conversation and then replace it
+       * with an empty one. From the outside that is indistinguishable from
+       * being taken to a random session.
+       *
+       * `fetchHistory` is the realistic trigger: it parses strictly and
+       * carries the 15s control timeout, and a cron run with a long transcript
+       * on a phone's radio is exactly the shape that hits it.
+       */
       const res = await resumeSession(storedId);
       adopt({
         sessionId: res.session_id,
         storedSessionId: res.stored_session_id ?? storedId,
         info: res.info,
       });
-      const history = await fetchHistory(res.session_id);
-      loadHistory(history);
+
+      // Past this point the conversation is open and must stay open. Each of
+      // these degrades on its own rather than costing the session.
+      const storedIdForRest = res.stored_session_id ?? storedId;
+
+      try {
+        loadHistory(await fetchHistory(res.session_id));
+      } catch {
+        // The transcript is the one thing genuinely worth reporting: the
+        // conversation is live, it just has nothing on screen yet. Anything
+        // streaming from here still lands, and the resync on the next
+        // reconnect fills the rest in.
+        toast('Opened the conversation, but its history did not load.', 'warn');
+      }
+
       void refreshUsage();
 
       // Warm the offline copy. The live transcript comes over the socket, so
       // without this the REST mirror the service worker caches would never be
       // requested while online — and would therefore never be there when it
       // is the only thing that can answer.
-      void fetchStoredMessages(res.stored_session_id ?? storedId).catch(() => {});
+      void fetchStoredMessages(storedIdForRest).catch(() => {});
 
       // Restore the stored title: `session.title` only fires when the agent
       // names a conversation, so a resumed one would keep the placeholder.
       // Prefer a title the resume result already carried (schema passes
       // unknown fields through) over a second round trip.
-      const carried = (res as { title?: unknown }).title;
-      if (typeof carried === 'string' && carried) {
-        setTitle(carried);
-      } else {
-        const stored = await fetchSessionTitle(res.stored_session_id ?? storedId);
-        if (stored) setTitle(stored);
+      try {
+        const carried = (res as { title?: unknown }).title;
+        if (typeof carried === 'string' && carried) {
+          setTitle(carried);
+        } else {
+          const stored = await fetchSessionTitle(storedIdForRest);
+          if (stored) setTitle(stored);
+        }
+      } catch {
+        // A conversation with a placeholder title is fine; one that vanished
+        // because its name could not be looked up is not.
       }
+
       return true;
     } catch (err) {
       // Offline is not a failed resume, it is a missing network: falling back
