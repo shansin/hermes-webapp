@@ -140,6 +140,17 @@ interface SessionState {
    * over from an earlier prompt cannot answer a newer one.
    */
   clarify: (ClarifyPrompt & { id: number }) | null;
+  /**
+   * Clarify answers, by question text.
+   *
+   * A cache with a specific job: `session.history` keeps what a tool was
+   * called with and drops what it returned, and every reconnect rebuilds the
+   * transcript from exactly that projection. Without somewhere to keep them,
+   * an answer recovered on resume — or watched live — survives until the
+   * first blip and then reverts to "Not answered", which on a phone is
+   * seconds.
+   */
+  clarifyAnswers: Record<string, unknown>;
   error: string | null;
 
   /**
@@ -184,6 +195,39 @@ const nextId = () => `m${++seq}`;
 /** Approval sheets are keyed so a stale sheet can't answer a newer request. */
 let approvalSeq = 0;
 let clarifySeq = 0;
+
+/**
+ * Fill in clarify results from the remembered answers.
+ *
+ * Applied on every history load, because every history load comes from the
+ * projection that dropped them. Matching is by question text — never by
+ * position — so a transcript that gained or lost a row cannot slide a real
+ * answer under a question it does not belong to.
+ */
+function withClarifyAnswers(
+  messages: ChatMessage[],
+  answers: Record<string, unknown>,
+): ChatMessage[] {
+  if (!Object.keys(answers).length) return messages;
+
+  return messages.map((m) => {
+    if (m.kind !== 'tool' || m.name !== 'clarify' || m.result !== undefined) return m;
+    for (const question of clarifyQuestionsOf(m.args)) {
+      const result = answers[question];
+      if (result !== undefined) return { ...m, result };
+    }
+    return m;
+  });
+}
+
+/** The remembered-answer entries a clarify result is worth filing under. */
+function answersFrom(result: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [question, value] of indexClarifyResults([{ role: 'tool', content: result }])) {
+    out[question] = value;
+  }
+  return out;
+}
 
 function lastIndexOf<T>(items: T[], pred: (item: T) => boolean): number {
   for (let i = items.length - 1; i >= 0; i--) if (pred(items[i]!)) return i;
@@ -251,6 +295,7 @@ export const useSession = create<SessionState>((set, get) => ({
   contextBreakdown: null,
   approval: null,
   clarify: null,
+  clarifyAnswers: {},
   error: null,
   queued: null,
   rewinding: false,
@@ -271,6 +316,7 @@ export const useSession = create<SessionState>((set, get) => ({
       contextBreakdown: null,
       approval: null,
       clarify: null,
+      clarifyAnswers: {},
       error: null,
       queued: null,
       rewinding: false,
@@ -346,7 +392,10 @@ export const useSession = create<SessionState>((set, get) => ({
       }
     }
 
-    set({ messages: out, queued: opts?.resync ? get().queued : null });
+    set({
+      messages: withClarifyAnswers(out, get().clarifyAnswers),
+      queued: opts?.resync ? get().queued : null,
+    });
   },
 
   applyEvent: ({ type, session_id, payload }) => {
@@ -445,6 +494,18 @@ export const useSession = create<SessionState>((set, get) => ({
       case 'tool.complete': {
         const p = ToolCompleteSchema.safeParse(payload);
         if (!p.success) return;
+
+        /**
+         * Remember a clarify's answer the moment it lands. The row itself
+         * already carries it, but the next reconnect rebuilds this transcript
+         * from `session.history`, which does not — so watching a question get
+         * answered and then losing that answer to a passing blip is the same
+         * bug as never recovering it on resume.
+         */
+        if (p.data.name === 'clarify' && p.data.result !== undefined) {
+          set({ clarifyAnswers: { ...s.clarifyAnswers, ...answersFrom(p.data.result) } });
+        }
+
         set({
           messages: s.messages.map((m) =>
             m.kind === 'tool' && m.toolId === p.data.tool_id
@@ -847,20 +908,11 @@ export const useSession = create<SessionState>((set, get) => ({
     const byQuestion = indexClarifyResults(stored);
     if (!byQuestion.size) return;
 
-    let changed = false;
-    const messages = get().messages.map((m) => {
-      if (m.kind !== 'tool' || m.name !== 'clarify' || m.result !== undefined) return m;
-
-      for (const question of clarifyQuestionsOf(m.args)) {
-        const result = byQuestion.get(question);
-        if (result === undefined) continue;
-        changed = true;
-        return { ...m, result };
-      }
-      return m;
-    });
-
-    if (changed) set({ messages });
+    // Kept as well as applied. Every reconnect reloads the transcript from the
+    // projection that dropped these, so applying them once would hold only
+    // until the first blip.
+    const answers = { ...get().clarifyAnswers, ...Object.fromEntries(byQuestion) };
+    set({ clarifyAnswers: answers, messages: withClarifyAnswers(get().messages, answers) });
   },
 
   refreshUsage: async () => {

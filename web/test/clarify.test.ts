@@ -342,3 +342,103 @@ describe('the record it leaves in the transcript', () => {
     expect(row.result).toBe(JSON.stringify(asked));
   });
 });
+
+describe('answers that survive a reconnect', () => {
+  const asked = {
+    question: 'Which data source?',
+    choices_offered: ['RSS', 'Playwright'],
+    user_response: 'Playwright',
+  };
+  const replayed = [
+    { role: 'assistant', text: 'Let me ask.' },
+    { role: 'tool' as const, name: 'clarify', args: { question: 'Which data source?' } },
+  ];
+  const resultOf = (i = -1) => (store().messages.at(i) as { result?: unknown }).result;
+
+  /**
+   * The bug this whole cache exists for, and it was invisible in the unit
+   * tests that came before it: the answers came back on resume and then the
+   * first reconnect threw them away.
+   *
+   * `applyResync` rebuilds the transcript from `session.history` on every
+   * reconnect, and that projection is exactly the one with no results in it.
+   * On a phone — backgrounding, a lift door, a lock screen — that is seconds
+   * after opening the conversation, so the card reverted to "Not answered"
+   * almost immediately and looked like the recovery had never worked.
+   */
+  it('keeps a recovered answer through a resync', () => {
+    store().loadHistory(replayed);
+    store().restoreClarifyAnswers([{ role: 'tool', content: JSON.stringify(asked) }]);
+    expect(resultOf()).toBeDefined();
+
+    // The gateway's projection again, as a reconnect delivers it: same rows,
+    // still no results.
+    store().applyResync([...replayed, { role: 'assistant', text: 'Done.' }]);
+
+    expect(resultOf(-2)).toMatchObject({ user_response: 'Playwright' });
+  });
+
+  it('survives repeated reconnects, not just the first', () => {
+    store().loadHistory(replayed);
+    store().restoreClarifyAnswers([{ role: 'tool', content: JSON.stringify(asked) }]);
+
+    for (let i = 0; i < 3; i++) {
+      store().applyResync([...replayed, ...Array.from({ length: i + 1 }, () => ({ role: 'assistant', text: 'x' }))]);
+    }
+
+    const row = store().messages.find((m) => m.kind === 'tool') as { result?: unknown };
+    expect(row.result).toMatchObject({ user_response: 'Playwright' });
+  });
+
+  /**
+   * The same loss by the other route: an answer given in this session, with
+   * the result arriving live on `tool.complete`, and a reconnect a moment
+   * later rebuilding the transcript without it.
+   */
+  it('keeps an answer watched live through a resync', () => {
+    emit('tool.start', { tool_id: 't1', name: 'clarify' });
+    emit('tool.complete', {
+      tool_id: 't1',
+      name: 'clarify',
+      args: { question: 'Which data source?' },
+      result: JSON.stringify(asked),
+    });
+
+    store().applyResync([...replayed, { role: 'assistant', text: 'Done.' }]);
+
+    expect(resultOf(-2)).toMatchObject({ user_response: 'Playwright' });
+  });
+
+  it('remembers every question of a batch', () => {
+    emit('tool.start', { tool_id: 't2', name: 'clarify' });
+    emit('tool.complete', {
+      tool_id: 't2',
+      name: 'clarify',
+      args: { questions: [{ question: 'One?' }, { question: 'Two?' }] },
+      result: JSON.stringify({
+        responses: [
+          { question: 'One?', choices_offered: [], user_response: 'a' },
+          { question: 'Two?', choices_offered: [], user_response: 'b' },
+        ],
+      }),
+    });
+
+    store().applyResync([
+      { role: 'assistant', text: 'asked' },
+      { role: 'tool', name: 'clarify', args: { questions: [{ question: 'One?' }, { question: 'Two?' }] } },
+      { role: 'assistant', text: 'done' },
+    ]);
+
+    const row = store().messages.find((m) => m.kind === 'tool') as { result?: unknown };
+    expect(row.result).toBeDefined();
+  });
+
+  it('does not carry answers into a different conversation', () => {
+    store().loadHistory(replayed);
+    store().restoreClarifyAnswers([{ role: 'tool', content: JSON.stringify(asked) }]);
+    store().reset();
+    store().loadHistory(replayed);
+
+    expect(resultOf()).toBeUndefined();
+  });
+});
