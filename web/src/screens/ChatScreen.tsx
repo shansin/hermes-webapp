@@ -6,6 +6,8 @@
  *  - `?session=<id>` is the same intent under the name every *notification*
  *    uses — see the note on `resumeId` below
  *  - `?new=1` (or no session yet) creates a fresh one
+ *  - `?share=<id>` claims a payload the share-target service worker filed for
+ *    us — see `lib/sharedIntake.ts`
  *  - the gateway session handle is kept in the store; it is *not* the same as
  *    the stored session id used by the REST endpoints
  */
@@ -25,6 +27,7 @@ import { hermes } from '../ws/client';
 import { createSession, fetchHistory, resumeSession } from '../api/gateway';
 import { fetchSessionTitle, fetchStoredMessages } from '../api/sessions';
 import { useSlashRunner } from '../lib/useSlashRunner';
+import { takeShared } from '../lib/sharedIntake';
 
 export function ChatScreen() {
   const [params, setParams] = useSearchParams();
@@ -96,10 +99,19 @@ export function ChatScreen() {
    */
   const resumeId = params.get('resume') ?? params.get('session');
   const wantNew = params.get('new') === '1';
-  // Android share-sheet target: /chat?text=…&title=…&url=…
+  /**
+   * Android share-sheet target, which reaches us in two shapes.
+   *
+   * The share itself is a POST — the only kind that can carry files — so it
+   * never lands here directly. `share-sw.js` receives it in the service worker
+   * and redirects to `?share=<id>`, pointing at bytes filed in Cache Storage.
+   * The `?title=&text=&url=` form is what the *server* fallback produces when
+   * no worker was there to catch the POST: the text survives, the files don't.
+   */
   const shared = [params.get('title'), params.get('text'), params.get('url')]
     .filter(Boolean)
     .join('\n');
+  const shareId = params.get('share') ?? '';
 
   const startNew = async () => {
     if (bootingRef.current) return;
@@ -349,6 +361,7 @@ export function ChatScreen() {
   // seed is handed to the composer and then cleared from the URL so a reload
   // doesn't re-insert it.
   const [seed, setSeed] = useState('');
+  const [seedFiles, setSeedFiles] = useState<File[]>([]);
   const sharedRef = useRef(false);
   useEffect(() => {
     if (shared && sessionId && !sharedRef.current) {
@@ -357,6 +370,36 @@ export function ChatScreen() {
       toast('Shared content added to the composer', 'info');
     }
   }, [shared, sessionId, toast]);
+
+  /**
+   * The file-carrying share. Claimed once — the worker deletes the payload as
+   * it hands it over — and only once a session exists, since `image.attach_bytes`
+   * needs one and there is nowhere to put the bytes until then.
+   *
+   * A claim that comes back empty is reported rather than ignored. The person
+   * chose this app from the share sheet and is now looking at a blank new
+   * chat; saying nothing would read as the photo having been silently dropped,
+   * which is exactly what happened.
+   */
+  const claimedRef = useRef(false);
+  useEffect(() => {
+    if (!shareId || !sessionId || claimedRef.current) return;
+    claimedRef.current = true;
+    let alive = true;
+    void takeShared(shareId).then((payload) => {
+      if (!alive) return;
+      if (!payload) {
+        toast("That share didn't come through — try the paperclip", 'warn');
+        setParams({}, { replace: true });
+        return;
+      }
+      if (payload.text) setSeed(payload.text);
+      if (payload.files.length) setSeedFiles(payload.files);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [shareId, sessionId, toast, setParams]);
 
   return (
     <div className="screen">
@@ -435,6 +478,13 @@ export function ChatScreen() {
         seedText={seed}
         onSeedConsumed={() => {
           setSeed('');
+          // Hold the URL until the files have gone up too, or clearing it here
+          // would strip `?share=` out from under a claim still in flight.
+          if (!seedFiles.length) setParams({}, { replace: true });
+        }}
+        seedFiles={seedFiles}
+        onSeedFilesConsumed={() => {
+          setSeedFiles([]);
           setParams({}, { replace: true });
         }}
         onRunCommand={runCommand}

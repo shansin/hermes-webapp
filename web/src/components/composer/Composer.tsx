@@ -54,6 +54,13 @@ interface ComposerProps {
    */
   seedText?: string;
   onSeedConsumed?: () => void;
+  /**
+   * Files to attach without the paperclip — the share sheet's half of the same
+   * intent. They run through `onPickFiles`, so a shared photo reaches the
+   * gateway by exactly the path a picked one does.
+   */
+  seedFiles?: File[];
+  onSeedFilesConsumed?: () => void;
   /** Run a slash command instead of sending it to the model. */
   onRunCommand: (text: string) => void | Promise<void>;
   /** Command currently executing, shown in place of the quick actions. */
@@ -68,6 +75,8 @@ export function Composer({
   onOpenContext,
   seedText,
   onSeedConsumed,
+  seedFiles,
+  onSeedFilesConsumed,
   onRunCommand,
   commandBusy,
   commandSeed,
@@ -241,7 +250,7 @@ export function Composer({
     }
   };
 
-  const onPickFiles = async (files: FileList | null) => {
+  const onPickFiles = async (files: FileList | File[] | null) => {
     if (!files?.length || !sessionId) return;
     for (const file of Array.from(files)) {
       setAttachments((a) => [...a, { name: file.name, attached: false }]);
@@ -289,6 +298,25 @@ export function Composer({
       }
     }
   };
+
+  /**
+   * Attach what the share sheet sent, once there is a session to attach it to.
+   *
+   * Guarded on identity rather than on emptiness: attaching is not idempotent
+   * — every run uploads the bytes again and adds a second pill — and this
+   * effect can re-run for reasons that have nothing to do with new files
+   * arriving (a session id landing, a StrictMode double-mount in development).
+   */
+  const seededRef = useRef<File[] | null>(null);
+  useEffect(() => {
+    if (!seedFiles?.length || !sessionId) return;
+    if (seededRef.current === seedFiles) return;
+    seededRef.current = seedFiles;
+    void onPickFiles(seedFiles).then(() => onSeedFilesConsumed?.());
+    // `onPickFiles` is redefined every render and would re-trigger this on each
+    // one; the identity guard above is what actually keeps it to a single run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedFiles, sessionId, onSeedFilesConsumed]);
 
   return (
     <div className="composer">

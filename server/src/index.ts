@@ -29,6 +29,7 @@ import { config, getToken, resolveToken, upstreamHttp, upstreamHost } from './co
 import { log } from './log.js';
 import { apiProxy } from './routers/apiProxy.js';
 import { pushRouter } from './routers/push.js';
+import { shareRouter } from './routers/share.js';
 import { notificationsRouter } from './routers/notifications.js';
 import { startPushListener, stopPushListener } from './push/events.js';
 import { pushPublicKey } from './push/send.js';
@@ -104,6 +105,7 @@ app.get('/healthz', async (c) => {
   });
 });
 
+app.route('/', shareRouter);
 app.route('/', pushRouter);
 app.route('/', notificationsRouter);
 app.route('/', apiProxy);

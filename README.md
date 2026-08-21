@@ -119,7 +119,8 @@ pnpm build        # production build into web/dist
 collapsible reasoning blocks; animated tool cards showing arguments and output;
 a blocking approval sheet for risky tools; interrupt button; model / reasoning /
 approval-mode pickers; a context-fill ring that opens a token breakdown and can
-compact the conversation; voice input and per-reply playback; file attachments.
+compact the conversation; voice input and per-reply playback; file attachments,
+from the paperclip or from the Android share sheet.
 
 **Slash commands** — typing `/` completes against the live registry (the gateway
 ranks names *and* descriptions, and orders skills by how much you use them), and
@@ -222,6 +223,38 @@ mkcert -cert-file certs/lan.pem -key-file certs/lan-key.pem <LAN-IP> localhost
 The phone must trust the mkcert root for that to count as a secure context,
 which is the reason Tailscale is the recommended path.
 
+### Share to Hermes
+
+Once the app is installed, it appears in the Android share sheet. Share a
+photo, a screenshot, a link or a selection to **Hermes**, and it opens on a new
+chat with the file already attached and the text in the composer — ready to
+send, or to type a question above first.
+
+Images go to the gateway as vision tiles, exactly as the paperclip's do;
+anything else lands in the session workspace and comes back as an `@file:` ref
+the agent's file tools can read.
+
+Two things about it are worth knowing.
+
+**It is Android only.** iOS does not implement Web Share Target at all — there
+is no "share to a web app" on iPhone, installed or otherwise. The composer's
+paperclip is the path there, and it already opens the photo library.
+
+**It needs the service worker**, so the same HTTPS prerequisite as everything
+else in this section applies. And the reason is structural rather than
+incidental: a share target that carries files must be `method: "POST"`, and a
+POST navigation is something a single-page app cannot receive — the browser
+posts a multipart body and expects a document back, with no JavaScript of ours
+running to intercept it. `web/public/share-sw.js` takes that POST inside the
+worker, files the parts in Cache Storage, and answers with a 303 to
+`/chat?new=1&share=<id>`; the page claims the payload from the worker, once,
+and the worker deletes it as it hands it over.
+
+If the worker isn't there to catch the POST — mid-update, most likely — the
+proxy answers instead and forwards the *text* to the same screen. The files
+cannot survive that path, since attaching one needs a gateway session, so the
+app says the share didn't come through rather than opening a blank chat.
+
 ### Push notifications
 
 Once the app is served over HTTPS and installed, turn on **Settings →
@@ -314,6 +347,7 @@ server/src/
   routers/apiProxy.ts  /api/* → loopback, Host + Bearer rewrite, streamed bodies
   routers/wsProxy.ts   WS upgrade forwarding with the Origin rewrite
   routers/push.ts      /push/* — subscribe, unsubscribe, send a test
+  routers/share.ts     POST /share, for when the worker didn't catch it
   push/events.ts       the proxy's own gateway socket: events → notifications
   push/send.ts         VAPID identity and the web-push fan-out
   push/store.ts        subscriptions + generated keypair, atomically on disk
@@ -325,9 +359,11 @@ web/src/
   api/                 TanStack Query hooks per domain
   screens/             Chat, Sessions, Kanban, Files, and the Hub pages
   lib/push.ts          permission, subscription, and what to say when it fails
+  lib/sharedIntake.ts  claiming a shared photo back off the service worker
   components/          chat, composer, sessions, kanban, hub, shared
 web/public/
   push-sw.js           push + notificationclick, imported by the Workbox worker
+  share-sw.js          the share-target POST, filed for the page to claim
 ```
 
 ### A note on the protocol

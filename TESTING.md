@@ -93,6 +93,25 @@ restore endpoint, so Undo can only mean "the request has not gone out yet";
 these cover that the window closes, survives the screen that opened it going
 away, and commits rather than cancels when the app is closed.
 
+**`server/test/share.test.ts`** — the share target's server-side fallback, which
+only runs when the service worker didn't. Rare and invisible, which is the
+shape of thing that rots: that it answers 303 rather than 302, carries the text
+across, flags a share whose files it had to drop, and never buffers a photo it
+is only going to discard.
+
+**`web/test/shareServiceWorker.test.ts`** — `public/share-sw.js`, evaluated in
+a fake worker global like its push counterpart, and the only thing standing
+between a share-sheet POST and a browser error page. That a share is filed
+under an id, handed over exactly once, and deleted as it goes; and that the
+`fetch` listener — which runs ahead of every Workbox route — claims the share
+POST and nothing else.
+
+**`web/test/sharedIntake.test.ts`** — the page's half of that exchange. Almost
+all failure cases, because the success is two `postMessage`s and the failures
+are what a person hits: a reload of a spent `?share=`, a page no worker
+controls, a worker that never answers. Each must end in "no share" rather than
+a promise the chat screen waits on forever.
+
 **`web/test/push.test.ts` / `apiClient.test.ts` / `uiStore.test.ts` /
 `sessionTags.test.ts`** — browser-side push state, REST error shaping, theme
 resolution and persistence, tag parsing.

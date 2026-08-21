@@ -19,6 +19,8 @@ const cronTab = read('src/components/hub/CronTab.tsx');
 const pushEvents = read('../server/src/push/events.ts');
 const pushCron = read('../server/src/push/cron.ts');
 const manifest = read('vite.config.ts');
+const shareWorker = read('public/share-sw.js');
+const shareRouter = read('../server/src/routers/share.ts');
 
 /** Every `/path?param=` literal a source file hands to a client. */
 function linkParams(source: string, path: string): Set<string> {
@@ -78,11 +80,78 @@ describe('what the app reads', () => {
     expect(chatParams).toContain('new');
   });
 
-  /** The Android share sheet targets `/chat` with these three. */
-  it('reads the share-target parameters the manifest declares', () => {
-    const share = /share_target:[\s\S]*?params:\s*\{([^}]*)\}/.exec(manifest);
-    expect(share).not.toBeNull();
-    for (const [, name] of share![1]!.matchAll(/(\w+):\s*'(\w+)'/g)) {
+});
+
+/**
+ * The share target, which is the same kind of contract spread even thinner:
+ * the manifest declares field names, the service worker reads them out of a
+ * multipart body, the server writes a different set into a query string, and
+ * the chat screen reads that. Four files, three languages, no shared type —
+ * and the whole path only runs on a phone, from a share sheet, in an installed
+ * PWA, which is the worst possible place to discover a typo.
+ */
+describe('the share target', () => {
+  const chatParams = readParams(chatScreen);
+  const block = /share_target:\s*\{([\s\S]*?)\n        \},/.exec(manifest);
+
+  it('declares one at all', () => {
+    expect(block).not.toBeNull();
+  });
+
+  it('parses, so the assertions below are not vacuous', () => {
+    expect(action).toBeTruthy();
+    expect(textFields.length).toBeGreaterThan(0);
+  });
+
+  const declared = block?.[1] ?? '';
+  const action = /action:\s*'([^']+)'/.exec(declared)?.[1] ?? '';
+  const fileField = /files:\s*\[\s*\{\s*name:\s*'(\w+)'/.exec(declared)?.[1] ?? '';
+  const textFields = [...declared.matchAll(/^\s+(title|text|url):\s*'(\w+)'/gm)].map((m) => m[2]!);
+
+  /**
+   * A GET share target cannot carry a file — the whole reason this stopped
+   * pointing at `/chat` and grew a service worker.
+   */
+  it('posts, so a photo can come with it', () => {
+    expect(/method:\s*'POST'/.test(declared)).toBe(true);
+    expect(/enctype:\s*'multipart\/form-data'/.test(declared)).toBe(true);
+    expect(fileField, 'share_target must declare a files field').toBeTruthy();
+  });
+
+  it('is intercepted by the worker at the path it declares', () => {
+    expect(shareWorker).toContain(`pathname !== '${action}'`);
+    expect(shareWorker).toContain("method !== 'POST'");
+  });
+
+  it('reads the file field out of the form under the name it declared', () => {
+    expect(shareWorker, `share-sw.js must read form.getAll('${fileField}')`).toContain(
+      `getAll('${fileField}')`,
+    );
+  });
+
+  /**
+   * The worker's own redirect. This is the link nothing else validates: it is
+   * written in a file that gets no type checking and read by a screen that
+   * would simply show an empty new chat if the name drifted.
+   */
+  it('redirects to a parameter the chat screen reads', () => {
+    const target = /const target = new URL\(`([^`]+)`/.exec(shareWorker)?.[1] ?? '';
+    expect(target).toContain('/chat');
+    for (const [, name] of target.matchAll(/[?&](\w+)=/g)) {
+      expect(chatParams, `ChatScreen must read ?${name}=`).toContain(name);
+    }
+  });
+
+  /**
+   * The no-worker fallback. It cannot carry the files, but dropping the text
+   * as well would turn a shared link into a blank chat with no explanation.
+   */
+  it('has a server fallback that forwards every text field to a route', () => {
+    expect(shareRouter, 'the server must answer the POST').toContain(
+      `shareRouter.post('${action}'`,
+    );
+    for (const name of textFields) {
+      expect(shareRouter, `the /share fallback must forward ${name}`).toContain(`'${name}'`);
       expect(chatParams, `ChatScreen must read ?${name}=`).toContain(name);
     }
   });

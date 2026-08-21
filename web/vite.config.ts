@@ -88,21 +88,50 @@ export default defineConfig({
           { name: 'New Chat', short_name: 'Chat', url: '/chat?new=1' },
           { name: 'Kanban', short_name: 'Board', url: '/kanban' },
         ],
-        // Android share sheet → straight into a new chat.
+        /**
+         * Android share sheet → straight into a new chat, photos included.
+         *
+         * `POST` + `multipart/form-data` is not a preference: it is the only
+         * form of share target that can carry files. The cost is that the
+         * browser posts a document request at `/share`, which a single-page
+         * app cannot receive — `public/share-sw.js` intercepts it in the
+         * service worker and redirects to `/chat?new=1&share=<id>`.
+         *
+         * Consequences worth knowing before changing this:
+         *  - It only works in an installed PWA over HTTPS, because it is the
+         *    service worker that answers. See the Tailscale section in README.
+         *  - iOS does not implement Web Share Target at all, so nothing here
+         *    reaches an iPhone. The composer's paperclip remains the path
+         *    there, and it already opens the photo library.
+         */
         share_target: {
-          action: '/chat',
-          method: 'GET',
-          params: { title: 'title', text: 'text', url: 'url' },
+          action: '/share',
+          method: 'POST',
+          enctype: 'multipart/form-data',
+          params: {
+            title: 'title',
+            text: 'text',
+            url: 'url',
+            files: [
+              {
+                name: 'files',
+                // Mirrors the composer's own file input: images go to the
+                // gateway as vision tiles, the rest land in the workspace.
+                accept: ['image/*', 'text/*', 'application/pdf'],
+              },
+            ],
+          },
         },
       },
       workbox: {
         /**
          * The `push` / `notificationclick` / `pushsubscriptionchange`
-         * listeners. `generateSW` builds the whole worker from this config and
-         * offers no hook to add code, so they are imported from a hand-written
-         * file in `public/` — see the comment at the top of `push-sw.js`.
+         * listeners, and the share-target `fetch` handler. `generateSW` builds
+         * the whole worker from this config and offers no hook to add code, so
+         * they are imported from hand-written files in `public/` — see the
+         * comments at the top of `push-sw.js` and `share-sw.js`.
          */
-        importScripts: ['push-sw.js'],
+        importScripts: ['push-sw.js', 'share-sw.js'],
         /**
          * Take control of the page that registered us, instead of waiting for
          * the next navigation. Without this the first load is uncontrolled, so
@@ -120,13 +149,18 @@ export default defineConfig({
          * offline. They stay network-loaded, and `runtimeCaching` below keeps
          * whichever ones actually get used.
          */
-        // `push-sw.js` is imported by the worker itself, so precaching it
-        // would have the worker cache a copy of its own source and serve a
-        // stale one after an update.
-        globIgnores: ['**/assets/diagrams/**', '**/push-sw.js'],
+        // The imported scripts are pulled in by the worker itself, so
+        // precaching them would have the worker cache a copy of its own source
+        // and serve a stale one after an update.
+        globIgnores: ['**/assets/diagrams/**', '**/push-sw.js', '**/share-sw.js'],
         navigateFallback: '/index.html',
-        // Never let the SW answer an API call from cache by accident.
-        navigateFallbackDenylist: [/^\/api/, /^\/healthz/, /^\/push/],
+        /**
+         * Never let the SW answer an API call from cache by accident. `/share`
+         * is here for a different reason: `share-sw.js` handles that POST
+         * itself, and Workbox must not race it with an index.html from
+         * precache.
+         */
+        navigateFallbackDenylist: [/^\/api/, /^\/healthz/, /^\/push/, /^\/share/],
         runtimeCaching: [
           {
             // Session history is the one thing worth reading offline.
