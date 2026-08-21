@@ -52,6 +52,7 @@ const SettingsTab = lazy(() =>
 );
 import { NavDrawer } from './components/shared/NavDrawer';
 import { ApprovalSheet } from './components/chat/ApprovalSheet';
+import { ClarifySheet } from './components/chat/ClarifySheet';
 import { Toasts } from './components/shared/misc';
 import { useUi } from './store/ui';
 import { preloadMarkdown } from './components/chat/MarkdownAsync';
@@ -190,6 +191,10 @@ export function App() {
        * is the whole point of a prompt that blocks.
        */}
       <ApprovalSheet />
+      {/* Same argument, same blocking semantics: a `clarify.request` parks the
+          agent thread until it is answered, so the question has to be reachable
+          from whatever screen you wandered off to. */}
+      <ClarifySheet />
       <Toasts />
     </div>
   );

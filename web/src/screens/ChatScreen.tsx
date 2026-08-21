@@ -166,6 +166,9 @@ export function ChatScreen() {
         sessionId: res.session_id,
         storedSessionId: res.stored_session_id ?? storedId,
         info: res.info,
+        // A question asked while we were away. Only a resume can surface it —
+        // `clarify.request` already fired, at a client that wasn't listening.
+        pendingClarify: res.pending_clarify,
       });
 
       // Past this point the conversation is open and must stay open. Each of

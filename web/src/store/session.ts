@@ -17,6 +17,8 @@
 import { create } from 'zustand';
 import {
   ApprovalRequestSchema,
+  ClarifyRequestSchema,
+  normalizeClarify,
   ContextBreakdownSchema,
   MessageCompleteSchema,
   SessionInfoSchema,
@@ -27,6 +29,8 @@ import {
   ToolStartSchema,
   UsageSchema,
   type ApprovalRequest,
+  type ClarifyPrompt,
+  type ClarifyRequest,
   type ContextBreakdown,
   type HistoryMessage,
   type SessionInfo,
@@ -130,6 +134,11 @@ interface SessionState {
   usage: Usage | null;
   contextBreakdown: ContextBreakdown | null;
   approval: (ApprovalRequest & { id: number }) | null;
+  /**
+   * The question the agent is parked on. Keyed like `approval` so a sheet left
+   * over from an earlier prompt cannot answer a newer one.
+   */
+  clarify: (ClarifyPrompt & { id: number }) | null;
   error: string | null;
 
   /**
@@ -143,7 +152,12 @@ interface SessionState {
 
   // --- actions
   reset: () => void;
-  adoptSession: (r: { sessionId: string; storedSessionId?: string; info?: SessionInfo }) => void;
+  adoptSession: (r: {
+    sessionId: string;
+    storedSessionId?: string;
+    info?: SessionInfo;
+    pendingClarify?: ClarifyRequest;
+  }) => void;
   loadHistory: (messages: HistoryMessage[], opts?: { resync?: boolean }) => void;
   applyEvent: (params: { type: string; session_id?: string; payload?: unknown }) => void;
   submitPrompt: (text: string, opts?: { display?: string }) => Promise<void>;
@@ -155,6 +169,8 @@ interface SessionState {
   editTurn: (messageId: string, newText: string) => Promise<void>;
   interrupt: () => Promise<void>;
   respondApproval: (choice: string, all?: boolean) => Promise<void>;
+  /** Answer the pending clarify. Keys are `qid`s; a lone question uses ''. */
+  respondClarify: (answers: Record<string, string>) => Promise<void>;
   refreshUsage: () => Promise<void>;
   setTitle: (t: string) => void;
 }
@@ -164,6 +180,7 @@ const nextId = () => `m${++seq}`;
 
 /** Approval sheets are keyed so a stale sheet can't answer a newer request. */
 let approvalSeq = 0;
+let clarifySeq = 0;
 
 function lastIndexOf<T>(items: T[], pred: (item: T) => boolean): number {
   for (let i = items.length - 1; i >= 0; i--) if (pred(items[i]!)) return i;
@@ -230,6 +247,7 @@ export const useSession = create<SessionState>((set, get) => ({
   usage: null,
   contextBreakdown: null,
   approval: null,
+  clarify: null,
   error: null,
   queued: null,
   rewinding: false,
@@ -249,17 +267,23 @@ export const useSession = create<SessionState>((set, get) => ({
       usage: null,
       contextBreakdown: null,
       approval: null,
+      clarify: null,
       error: null,
       queued: null,
       rewinding: false,
     }),
 
-  adoptSession: ({ sessionId, storedSessionId, info }) =>
+  adoptSession: ({ sessionId, storedSessionId, info, pendingClarify }) =>
     set({
       sessionId,
       storedSessionId: storedSessionId ?? null,
       info: info ?? null,
       error: null,
+      // Restored rather than merely noted: the agent is still blocked on it,
+      // and this client is now the only thing that can answer.
+      clarify: pendingClarify
+        ? { ...normalizeClarify(pendingClarify), id: ++clarifySeq }
+        : null,
     }),
 
   /**
@@ -441,6 +465,14 @@ export const useSession = create<SessionState>((set, get) => ({
         buzz('done');
         set({
           running: false,
+          /**
+           * The turn is over, so any question it was parked on is moot — it
+           * was answered, interrupted, or hit the gateway's clarify timeout
+           * and auto-proceeded. Leaving the sheet up would be worse than the
+           * bug it replaced: a modal that cannot be dismissed, over a turn
+           * that has already moved on.
+           */
+          clarify: null,
           streamingText: '',
           streamingReasoning: '',
           thinkingHint: '',
@@ -549,6 +581,14 @@ export const useSession = create<SessionState>((set, get) => ({
         if (!p.success) return;
         buzz('approval');
         set({ approval: { ...p.data, id: ++approvalSeq } });
+        return;
+      }
+
+      case 'clarify.request': {
+        const p = ClarifyRequestSchema.safeParse(payload);
+        if (!p.success) return;
+        buzz('approval');
+        set({ clarify: { ...normalizeClarify(p.data), id: ++clarifySeq } });
         return;
       }
 
@@ -740,6 +780,52 @@ export const useSession = create<SessionState>((set, get) => ({
       await hermes.call('approval.respond', { session_id: sessionId, choice, all });
     } catch (err) {
       set({ error: err instanceof Error ? err.message : 'approval failed' });
+    }
+  },
+
+  /**
+   * Answer the pending clarify and let the parked turn continue.
+   *
+   * A batch is sent one call per question because that is how the gateway
+   * locks them: it completes the request only once every `qid` has an answer,
+   * and a call without a `question_id` would resolve the whole batch with a
+   * single value. Sequential rather than parallel — the calls mutate one
+   * server-side entry under a lock, and the last one is what releases the
+   * agent thread.
+   *
+   * The sheet is cleared first. The turn resumes the moment the final call
+   * lands, so holding a modal over the reply while awaiting the round trip
+   * would cover the thing the person just asked for.
+   */
+  respondClarify: async (answers) => {
+    const { sessionId, clarify } = get();
+    if (!sessionId || !clarify) return;
+    set({ clarify: null });
+
+    try {
+      for (const question of clarify.questions) {
+        const answer = answers[question.qid ?? ''] ?? '';
+        const params: Record<string, unknown> = {
+          session_id: sessionId,
+          request_id: clarify.requestId,
+          answer,
+        };
+        if (question.qid) params.question_id = question.qid;
+
+        const res = await hermes.call<{ status?: string }>('clarify.respond', params);
+        /**
+         * `expired` rather than an error: the gateway keeps answering a
+         * request whose wait already timed out, so the agent moved on without
+         * this. Saying so beats a silent no-op, since the person just made a
+         * choice and would otherwise watch it change nothing.
+         */
+        if (res?.status === 'expired') {
+          get().addNotice('That question timed out — the agent moved on without an answer.', 'info');
+          return;
+        }
+      }
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : 'Could not send that answer' });
     }
   },
 

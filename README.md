@@ -117,7 +117,8 @@ pnpm build        # production build into web/dist
 
 **Chat** — streaming replies with markdown and syntax-highlighted, copyable code;
 collapsible reasoning blocks; animated tool cards showing arguments and output;
-a blocking approval sheet for risky tools; interrupt button; model / reasoning /
+a blocking approval sheet for risky tools; a clarify sheet for when the agent
+asks you a question mid-turn; interrupt button; model / reasoning /
 approval-mode pickers; a context-fill ring that opens a token breakdown and can
 compact the conversation; voice input and per-reply playback; file attachments,
 from the paperclip or from the Android share sheet.
@@ -268,10 +269,13 @@ Notifications → Push**. Banners arrive with the app closed for:
 | `notification.show` | whatever the agent asked to say |
 | `cron.changed` | the job's name, plus the agent's own reply — see below |
 | `approval.request` | "Approval needed: Bash — rm -rf …" |
+| `clarify.request` | "Question from Hermes: Which data source?" |
 
-The first and last are the reasons to bother: send a prompt, put the phone
-away, and the answer arrives as a banner — and an approval blocks the turn
-until it is answered, which is not something to discover an hour later.
+The first and last two are the reasons to bother: send a prompt, put the phone
+away, and the answer arrives as a banner — and an approval or a clarify blocks
+the turn until it is answered, which is not something to discover an hour
+later. (An hour is literal for a clarify: the gateway gives up at
+`agent.clarify_timeout`, 3600s by default, and the agent proceeds without you.)
 
 A reply that was interrupted, errored, or produced no prose stays silent
 rather than announcing an answer that isn't there. Markdown is flattened for
@@ -361,6 +365,7 @@ web/src/
   lib/push.ts          permission, subscription, and what to say when it fails
   lib/sharedIntake.ts  claiming a shared photo back off the service worker
   components/          chat, composer, sessions, kanban, hub, shared
+    chat/ClarifySheet.tsx  the agent's own question, asked mid-turn
 web/public/
   push-sw.js           push + notificationclick, imported by the Workbox worker
   share-sw.js          the share-target POST, filed for the page to claim
@@ -376,6 +381,12 @@ something looks wrong.
 
 Two things worth knowing if you extend it:
 
+- `clarify.request` parks the agent thread on an Event until `clarify.respond`
+  carries an answer back with the same `request_id` — it is not an approval and
+  has no safe default, so only an answer or `session.interrupt` releases it. A
+  batch (`questions: [{qid, …}]`) needs one `clarify.respond` per `qid`; the
+  gateway completes the request on the last one. Multi-select answers go out as
+  a JSON array, since a choice is prose and may contain a comma.
 - `reasoning.delta` carries the model's actual chain of thought.
   `thinking.delta` is only a decorative "pondering…" placeholder and should
   never be appended to the transcript.

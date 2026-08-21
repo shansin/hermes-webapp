@@ -65,6 +65,7 @@ The proxy holds a **second, separate** gateway socket for push (`server/src/push
 
 The gateway's JSON-RPC shapes are undocumented; `web/src/ws/types.ts` was captured from live frames and validated with permissive zod (unknown fields tolerated, unknown event types ignored). The hidden dev panel (triple-tap "Appearance" in Settings) shows raw frames.
 
+- `clarify.request` is the agent asking *you* a question and blocking its turn on the answer — not an approval, no safe default, released only by `clarify.respond` with the same `request_id` or by `session.interrupt`. A batch needs one respond per `qid`. It reaches the shell via `ClarifySheet` (mounted in `App.tsx`, like `ApprovalSheet`, so it's answerable from any screen) and is cleared on `message.complete` so a server-side timeout can't strand a non-dismissible modal.
 - `reasoning.delta` is the real chain of thought. `thinking.delta` is a decorative "pondering…" placeholder and must **never** be appended to the transcript.
 - The gateway session handle from `session.create` (8 hex chars) is **not** the stored session id used by REST. Both are tracked separately.
 - `cron.changed` arrives empty (no job, no status, no session) and fires ~4× per run. `push/cron.ts` treats it as a "go and look" signal: debounce, then reconcile run history against the feed keyed on run id.

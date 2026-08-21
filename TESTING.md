@@ -93,6 +93,23 @@ restore endpoint, so Undo can only mean "the request has not gone out yet";
 these cover that the window closes, survives the screen that opened it going
 away, and commits rather than cancels when the app is closed.
 
+**`web/test/clarify.test.ts`** — `clarify.request` folded into the store. The
+bug it exists for was total and silent: the event fell through `applyEvent`,
+which ignores unknown types by design, so the question never reached the UI and
+the turn sat parked behind a tool card pulsing "running". Covers both wire
+shapes, the open-ended form whose `choices` are `null` rather than absent, the
+per-`qid` batch calls, a timed-out answer, and — the one a non-dismissible
+sheet makes critical — that a prompt never outlives the turn it belongs to.
+
+**`web/test/clarifySheet.test.tsx`** — the sheet, driven with `user-event`,
+because the encoding is what has to be right: the gateway parses whatever we
+send and resolves the block either way, so a malformed answer is invisible.
+One-tap for a single choice, JSON for multi-select (a choice can contain a
+comma), free text for open-ended and for "Something else…", and a batch that
+refuses to send half an answer. Plus the structural check that the shell mounts
+it, since moving it under one screen would make a question raised elsewhere
+unanswerable again.
+
 **`server/test/share.test.ts`** — the share target's server-side fallback, which
 only runs when the service worker didn't. Rare and invisible, which is the
 shape of thing that rots: that it answers 303 rather than 302, carries the text

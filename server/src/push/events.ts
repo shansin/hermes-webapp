@@ -229,8 +229,9 @@ function previewOf(text: string | null): string | null {
  * The four types `useEventToasts` handles, plus two the in-app path has no
  * need for:
  *
- *  - `approval.request`, because an approval blocks the agent until it is
- *    answered, and a phone in a pocket is where that answer has to come from.
+ *  - `approval.request` and `clarify.request`, because both block the agent
+ *    until they are answered, and a phone in a pocket is where that answer has
+ *    to come from.
  *  - `message.complete`, because "the agent replied while I was away" is the
  *    single most common reason to want a banner at all.
  *
@@ -304,6 +305,32 @@ export function toMessage(
       if (!preview) return null;
 
       return { title: 'Hermes', body: preview, url: chatUrl, tag: sessionTag, kind: type };
+    }
+
+    /**
+     * A question the agent asked and is now parked on. Worth waking a phone
+     * for the same reason an approval is: the turn does not advance until it
+     * is answered, and the gateway gives up after an hour — so an unnoticed
+     * one is a conversation that quietly decides for itself.
+     */
+    case 'clarify.request': {
+      const batch = Array.isArray(payload.questions) ? payload.questions : null;
+      const first = batch?.length
+        ? (batch[0] as Record<string, unknown>)
+        : (payload as Record<string, unknown>);
+      const question = previewOf(str(first.question)) ?? 'The agent needs an answer';
+      const more = batch && batch.length > 1 ? ` (+${batch.length - 1} more)` : '';
+
+      return {
+        title: 'Question from Hermes',
+        body: `${question}${more}`,
+        url: chatUrl,
+        // Kept off the per-session tag for the same reason approvals are: a
+        // later "task finished" banner replacing this one would bury the
+        // thing still holding the turn.
+        tag: `clarify:${sessionId ?? 'default'}`,
+        kind: type,
+      };
     }
 
     case 'approval.request': {

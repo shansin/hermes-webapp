@@ -140,6 +140,79 @@ export const ApprovalRequestSchema = z
   .passthrough();
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
 
+/**
+ * `clarify.request` — the agent asking the user a question and parking its
+ * turn on the answer.
+ *
+ * Not an approval, though it blocks just as hard: no tool is waiting to run,
+ * there is no allow/deny axis, and the choices are whatever the agent wrote.
+ * Before this was handled the event fell through the `applyEvent` switch and
+ * was dropped, which is what an ignored-by-default protocol costs when the
+ * event happens to be the one that needs an answer — the transcript showed a
+ * tool card pulsing "running" until the gateway's hour-long timeout expired.
+ *
+ * Two shapes on the wire. One question inline, or a `questions` batch that the
+ * gateway completes only once every `qid` has been answered. `normalizeClarify`
+ * folds them into one list so nothing downstream has to know which arrived.
+ */
+export const ClarifyQuestionSchema = z
+  .object({
+    qid: z.string().optional(),
+    question: z.string().default(''),
+    // Null, not merely absent, is how the gateway spells an open-ended
+    // question — one to be answered with free text rather than a choice.
+    choices: z.array(z.string()).nullish(),
+    multi_select: z.boolean().optional(),
+  })
+  .passthrough();
+
+export const ClarifyRequestSchema = z
+  .object({
+    request_id: z.string(),
+    question: z.string().optional(),
+    choices: z.array(z.string()).nullish(),
+    multi_select: z.boolean().optional(),
+    questions: z.array(ClarifyQuestionSchema).optional(),
+    /** Answers already locked in, replayed when a reconnect restores a batch. */
+    answers: z.record(z.string()).optional(),
+  })
+  .passthrough();
+export type ClarifyRequest = z.infer<typeof ClarifyRequestSchema>;
+
+export interface ClarifyQuestion {
+  /** Present only in a batch; a single question is answered without one. */
+  qid?: string;
+  question: string;
+  choices: string[];
+  multiSelect: boolean;
+}
+
+export interface ClarifyPrompt {
+  requestId: string;
+  questions: ClarifyQuestion[];
+  answered: Record<string, string>;
+}
+
+/** Fold either wire shape into the one the sheet renders. */
+export function normalizeClarify(data: ClarifyRequest): ClarifyPrompt {
+  const raw = data.questions?.length
+    ? data.questions
+    : [{ question: data.question ?? '', choices: data.choices, multi_select: data.multi_select }];
+
+  return {
+    requestId: data.request_id,
+    questions: raw.map((q) => ({
+      qid: q.qid,
+      question: q.question ?? '',
+      choices: q.choices ?? [],
+      // `multi_select` is meaningless without choices, and the gateway only
+      // sends it when true — an older one omits the field entirely.
+      multiSelect: Boolean(q.multi_select) && Boolean(q.choices?.length),
+    })),
+    answered: data.answers ?? {},
+  };
+}
+
 export const SessionInfoSchema = z
   .object({
     model: z.string().optional(),
@@ -172,6 +245,12 @@ export const SessionCreateResultSchema = z
     message_count: z.number().optional(),
     messages: z.array(z.unknown()).optional(),
     info: SessionInfoSchema.optional(),
+    /**
+     * A question the agent is already parked on. Resuming is the only way back
+     * to it: `clarify.request` fired while this client was detached, and the
+     * gateway replays the pending prompt here rather than re-emitting it.
+     */
+    pending_clarify: ClarifyRequestSchema.optional(),
   })
   .passthrough();
 export type SessionCreateResult = z.infer<typeof SessionCreateResultSchema>;

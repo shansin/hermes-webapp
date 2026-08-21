@@ -153,6 +153,46 @@ describe('approvals', () => {
   });
 
   /**
+   * A clarify blocks the turn exactly as hard as an approval, and the gateway
+   * gives up after an hour — so one nobody saw is a conversation that quietly
+   * decided for itself.
+   */
+  it('wakes a phone for a question the agent is parked on', () => {
+    const m = toMessage('clarify.request', { request_id: 'r1', question: 'Which source?' }, 's1')!;
+    expect(m.title).toBe('Question from Hermes');
+    expect(m.body).toBe('Which source?');
+  });
+
+  it('leads a batch with its first question and counts the rest', () => {
+    const m = toMessage(
+      'clarify.request',
+      {
+        request_id: 'r2',
+        questions: [
+          { qid: 'q1', question: 'Which source?' },
+          { qid: 'q2', question: 'How often?' },
+        ],
+      },
+      's1',
+    )!;
+    expect(m.body).toBe('Which source? (+1 more)');
+  });
+
+  it('still says something when the question text is missing', () => {
+    expect(toMessage('clarify.request', { request_id: 'r3' }, 's1')!.body).toBe(
+      'The agent needs an answer',
+    );
+  });
+
+  it('does not let a later banner bury a question still holding the turn', () => {
+    const clarify = toMessage('clarify.request', { request_id: 'r4', question: 'Which?' }, 's1')!;
+    const complete = toMessage('message.complete', { text: 'done' }, 's1')!;
+    const approval = toMessage('approval.request', { tool: 'Bash' }, 's1')!;
+    expect(clarify.tag).not.toBe(complete.tag);
+    expect(clarify.tag).not.toBe(approval.tag);
+  });
+
+  /**
    * The one thing that must never be collapsed away: an approval blocks the
    * agent until it is answered, so a later "task finished" banner replacing it
    * would hide the only notification that still needs the user.
