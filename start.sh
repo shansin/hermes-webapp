@@ -255,6 +255,29 @@ if [ "${TAILSCALE:-0}" = "1" ]; then
   else
     warn "  ! No HTTPS URL from tailscale — falling back to plain LAN HTTP."
   fi
+
+elif [ -z "${PUBLIC_URL:-}" ]; then
+  # --- already published, but nobody said TAILSCALE=1 -------------------------
+  #
+  # `tailscale serve` config persists across reboots, so once this node has been
+  # published the mapping is simply *there* — and every later run without
+  # TAILSCALE=1 would ignore it, leave PUBLIC_URL unset, and hand the phone the
+  # plain LAN HTTP address as the install target. A service worker cannot
+  # register on that origin, so installing from it produces a bookmark rather
+  # than a PWA, and nothing off the LAN works at all.
+  #
+  # That is a trap with no signal attached: the HTTPS front is up and serving
+  # correctly the whole time, so the only symptom is an installed app that will
+  # not open. Reading the existing mapping costs one unprivileged call and
+  # changes no state, so adopt it rather than making the flag load-bearing on
+  # every subsequent run.
+  adopted="$(tailscale_url)"
+  if [ -n "${adopted}" ] && grep -qE "proxy +https?://(127\.0\.0\.1|localhost):${PROXY_PORT}\b" \
+      <<<"$(timeout 10 tailscale serve status 2>/dev/null || true)"; then
+    TS_URL="${adopted}"
+    export PUBLIC_URL="${TS_URL}"
+    bold "→ Adopting the existing Tailscale front: ${TS_URL}"
+  fi
 fi
 
 # --- 4. proxy ----------------------------------------------------------------
