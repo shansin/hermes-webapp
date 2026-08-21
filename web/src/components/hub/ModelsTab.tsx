@@ -20,7 +20,6 @@ import {
 import { ErrorNote, SkeletonList, formatTokens, relTime } from '../shared/misc';
 import { useModelAnalytics, useUsageAnalytics } from '../../api/hub';
 import { DefaultModelSection } from './DefaultModelSection';
-import { useSession } from '../../store/session';
 
 /**
  * Output runs about two orders of magnitude below input — a reply is small
@@ -52,7 +51,6 @@ function UsageTooltip({ active, payload, label }: TooltipProps<number, string>) 
 export function ModelsTab() {
   const usage = useUsageAnalytics();
   const models = useModelAnalytics();
-  const info = useSession((s) => s.info);
 
   // Last 14 days is what fits legibly on a phone.
   //
@@ -95,19 +93,13 @@ export function ModelsTab() {
 
   return (
     <div className="viz" style={{ padding: 12 }}>
-      {info?.model && (
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 5 }}>
-            ACTIVE MODEL · THIS CHAT
-          </div>
-          <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'var(--mono)' }}>{info.model}</div>
-          <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginTop: 3 }}>
-            {info.provider}
-            {info.reasoning_effort && ` · reasoning ${info.reasoning_effort}`}
-          </div>
-        </div>
-      )}
-
+      {/* No "active model" card here.
+          The model a conversation is running on belongs to that conversation,
+          and the chat header already names it — and unlike a card on this
+          screen, tapping it changes it. Repeating it here read as a second,
+          separate setting and could only ever be a read-only copy of the
+          header, out of date the moment you switched chats. This screen is
+          about the default and about what the models have cost. */}
       <DefaultModelSection />
 
       {/* --- daily tokens --- */}
