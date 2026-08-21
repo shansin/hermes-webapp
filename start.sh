@@ -52,6 +52,26 @@ healthy() {
   curl -fsS -m 3 "${BACKEND}/api/health" >/dev/null 2>&1
 }
 
+# Does the backend on the port accept the token we hold?
+#
+# `healthy` above is not enough, and the difference has bitten twice. Hermes'
+# session token lives only in the memory of the process that minted it
+# (`secrets.token_urlsafe(32)`, never written to disk), and `/api/health` needs
+# no credential — so a backend somebody else restarted answers that probe
+# perfectly while rejecting every real call with a 401 and every WS upgrade
+# with a 403. The app reports "connected", then nothing works.
+#
+# That is exactly what an in-place `hermes update` leaves behind: the gateway
+# rewrites its own systemd unit, exits 75, systemd restarts it, and the
+# replacement backend comes up with a token nobody else knows.
+authed() {
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+    ${HERMES_TOKEN:+-H "Authorization: Bearer ${HERMES_TOKEN}"} \
+    "${BACKEND}/api/sessions?limit=1" 2>/dev/null || echo 000)"
+  [ "${code}" = "200" ]
+}
+
 # The proxy's own endpoint, as opposed to the backend's /api/health above: a
 # 200 here means the thing on the port is Hermes Control and not something else.
 proxy_up() {
@@ -69,14 +89,17 @@ proxy_up() {
 # command substitution in `stop_proxy` and take the whole script down under
 # `set -e` — precisely in the case where the port is free and everything is
 # fine. "Nothing found" is an ordinary answer here, not a failure.
-port_pids() {
+pids_on_port() {
+  local port="$1"
   if command -v ss >/dev/null 2>&1; then
-    ss -tlnpH "sport = :${PROXY_PORT}" 2>/dev/null |
+    ss -tlnpH "sport = :${port}" 2>/dev/null |
       grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true
   elif command -v lsof >/dev/null 2>&1; then
-    lsof -tiTCP:"${PROXY_PORT}" -sTCP:LISTEN 2>/dev/null | sort -u || true
+    lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null | sort -u || true
   fi
 }
+
+port_pids() { pids_on_port "${PROXY_PORT}"; }
 
 port_free() { [ -z "$(port_pids)" ]; }
 
@@ -145,7 +168,18 @@ report() {
 TS_URL=""
 
 if [ "${STATUS_ONLY}" = "1" ]; then
-  healthy   && bold "* Hermes backend up on ${HERMES_HOST}:${HERMES_PORT}" || warn "x Hermes backend down"
+  if healthy; then
+    if authed; then
+      bold "* Hermes backend up on ${HERMES_HOST}:${HERMES_PORT}"
+    else
+      # Green on the port, red on every call that matters. Worth its own line:
+      # this is the state that reads as "connected" in the app and then fails.
+      warn "! Hermes backend up on ${HERMES_HOST}:${HERMES_PORT} but rejecting our token"
+      warn "  Someone else started it — probably an update restart. Re-run start.sh to reclaim it."
+    fi
+  else
+    warn "x Hermes backend down"
+  fi
   proxy_up  && bold "* Proxy up on ${PROXY_PORT}"                          || warn "x Proxy not running"
   TS_URL="$(tailscale_url)"
   report
@@ -153,6 +187,41 @@ if [ "${STATUS_ONLY}" = "1" ]; then
 fi
 
 # --- 1. Hermes backend -------------------------------------------------------
+
+# Stop whatever is listening on the backend port. Only ever called for a
+# backend that is up and refusing the token we hold — see the block below.
+stop_backend() {
+  local pids
+  pids="$(pids_on_port "${HERMES_PORT}")"
+  [ -z "${pids}" ] && return 0
+
+  bold "-> Stopping the backend on port ${HERMES_PORT} (${pids//$'\n'/ })..."
+  # shellcheck disable=SC2086
+  kill ${pids} 2>/dev/null || true
+
+  for _ in $(seq 1 20); do
+    healthy || return 0
+    sleep 0.5
+  done
+
+  warn "  ! Did not shut down cleanly - forcing."
+  pids="$(pids_on_port "${HERMES_PORT}")"
+  # shellcheck disable=SC2086
+  [ -n "${pids}" ] && kill -9 ${pids} 2>/dev/null || true
+  sleep 1
+}
+
+if healthy && ! authed && [ -n "${HERMES_TOKEN}" ]; then
+  # We hold a token, the backend will not take it, and its own token is
+  # unknowable — headless `hermes serve` mints it in memory and serves no HTML
+  # to scrape it from. Restarting is the only way the two can agree again, and
+  # we can do it safely because we are about to hand it the token ourselves.
+  #
+  # This kills only the listener on ${HERMES_PORT}. `hermes-gateway.service` is
+  # a separate process on no port and is left alone.
+  warn "! The backend on ${HERMES_PORT} is up but rejects our token — reclaiming it."
+  stop_backend
+fi
 
 if healthy; then
   bold "✓ Hermes backend already running on ${HERMES_HOST}:${HERMES_PORT}"

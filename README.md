@@ -68,6 +68,33 @@ Hermes protects its API with a per-process session token. There are two paths:
 
 `GET /healthz` reports which state you're in.
 
+### After `hermes update`: "connected", but nothing works
+
+An in-place Hermes update restarts the backend out from under you, and the
+replacement mints a **new** session token. That token is `token_urlsafe(32)`
+held in memory and never written to disk, and a headless `hermes serve` publishes
+no HTML to scrape it from — so it is, in the strict sense, unknowable. The proxy
+carries on presenting the old one, and every call comes back `401` while every
+WebSocket upgrade comes back `403`.
+
+The confusing part is that nothing looks down. `/healthz` probes Hermes'
+`/api/health`, which needs no credential, so it keeps answering `backend: up`.
+The app shows a connection banner because its socket is failing — the one
+surface that *does* need the token.
+
+`start.sh` handles this: it probes an authenticated endpoint as well as the
+health one, and a backend that is up but refuses our token gets stopped and
+restarted with the token exported, since that is the only way the two can agree
+again. So the fix is to re-run it:
+
+```bash
+bash start.sh --bg       # reclaims the backend and reports what it did
+bash start.sh --status   # says "up but rejecting our token" rather than a tick
+```
+
+Only the listener on `HERMES_PORT` is touched. `hermes-gateway.service` — the
+messaging gateway, which holds no port — is left alone.
+
 ## Development
 
 Three terminals:
