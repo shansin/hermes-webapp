@@ -67,12 +67,32 @@ TypeScript and the app reads them in TSX with no shared type between them, which
 is how `/chat?session=…` came to be sent by every push payload and read by
 nothing.
 
+**`web/test/sheet.test.tsx`** — the bottom sheet's modal contract: focus moves
+in, wraps at both ends, returns to whatever opened it, and a sheet that demands
+an explicit choice cannot be escaped. Driven with `user-event`, since a focus
+trap only means anything as something a keyboard runs into.
+
+**`web/test/approvalReach.test.tsx`** — that an approval can be answered from
+outside the chat screen. Includes a structural check that the sheet is mounted
+by the shell, because moving it back under one screen would silently make
+approvals unanswerable everywhere else again.
+
+**`web/test/toasts.test.tsx`** — the live region, the keyboard-reachable
+dismiss, and the undo action.
+
+**`web/test/undo.test.ts`** — the deferred-commit window. The backend has no
+restore endpoint, so Undo can only mean "the request has not gone out yet";
+these cover that the window closes, survives the screen that opened it going
+away, and commits rather than cancels when the app is closed.
+
 **`web/test/push.test.ts` / `apiClient.test.ts` / `uiStore.test.ts` /
 `sessionTags.test.ts`** — browser-side push state, REST error shaping, theme
 resolution and persistence, tag parsing.
 
 ## Not covered
 
-React component rendering. The screens are thin over the stores and the API
-layer, both of which are tested directly; adding render tests would mostly
-assert that JSX exists.
+Whole-screen rendering. The screens are thin over the stores and the API layer,
+both of which are tested directly, so a render test of one would mostly assert
+that JSX exists. The components that *are* rendered here earn it by owning
+behaviour of their own — a focus trap, a live region, a modal that must not be
+escapable.
