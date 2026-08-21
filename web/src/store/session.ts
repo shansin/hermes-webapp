@@ -38,6 +38,7 @@ import {
 } from '../ws/types';
 import { hermes } from '../ws/client';
 import { undoTurns } from '../api/gateway';
+import { clarifyQuestionsOf, indexClarifyResults } from '../lib/clarifyExchange';
 import { buzz } from '../lib/haptics';
 
 /**
@@ -165,6 +166,8 @@ interface SessionState {
   clearQueued: () => void;
   retryLast: () => Promise<void>;
   applyResync: (messages: HistoryMessage[]) => void;
+  /** Graft clarify answers back onto a replayed transcript. */
+  restoreClarifyAnswers: (stored: { role?: string; content?: unknown }[]) => void;
   resendFailed: (messageId: string) => Promise<void>;
   editTurn: (messageId: string, newText: string) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -326,7 +329,8 @@ export const useSession = create<SessionState>((set, get) => ({
           at: priorTime(i, 'assistant', text),
         });
       } else if (m.role === 'tool') {
-        // Replayed history has no tool_id and no result — only what was called.
+        // Replayed history has no tool_id and no result — only what was
+        // called, and the arguments it was called with.
         const name = m.name ?? 'tool';
         out.push({
           kind: 'tool',
@@ -334,6 +338,8 @@ export const useSession = create<SessionState>((set, get) => ({
           toolId: `hist-${seq}`,
           name,
           context: m.context,
+          args: m.args,
+          result: m.result,
           status: 'done',
           at: priorTime(i, 'tool', name),
         });
@@ -827,6 +833,34 @@ export const useSession = create<SessionState>((set, get) => ({
     } catch (err) {
       set({ error: err instanceof Error ? err.message : 'Could not send that answer' });
     }
+  },
+
+  /**
+   * Put the answers back into a resumed conversation.
+   *
+   * `session.history` keeps what a tool was called with but not what it
+   * returned, so a replayed clarify arrives as a question with no answer under
+   * it. The stored transcript has the results; this matches them back on by
+   * question text and leaves anything it cannot match alone.
+   */
+  restoreClarifyAnswers: (stored) => {
+    const byQuestion = indexClarifyResults(stored);
+    if (!byQuestion.size) return;
+
+    let changed = false;
+    const messages = get().messages.map((m) => {
+      if (m.kind !== 'tool' || m.name !== 'clarify' || m.result !== undefined) return m;
+
+      for (const question of clarifyQuestionsOf(m.args)) {
+        const result = byQuestion.get(question);
+        if (result === undefined) continue;
+        changed = true;
+        return { ...m, result };
+      }
+      return m;
+    });
+
+    if (changed) set({ messages });
   },
 
   refreshUsage: async () => {

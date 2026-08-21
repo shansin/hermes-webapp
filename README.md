@@ -118,7 +118,8 @@ pnpm build        # production build into web/dist
 **Chat** — streaming replies with markdown and syntax-highlighted, copyable code;
 collapsible reasoning blocks; animated tool cards showing arguments and output;
 a blocking approval sheet for risky tools; a clarify sheet for when the agent
-asks you a question mid-turn; interrupt button; model / reasoning /
+asks you a question mid-turn, which stays in the transcript afterwards as a card
+showing what was asked and what you picked; interrupt button; model / reasoning /
 approval-mode pickers; a context-fill ring that opens a token breakdown and can
 compact the conversation; voice input and per-reply playback; file attachments,
 from the paperclip or from the Android share sheet.

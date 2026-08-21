@@ -30,6 +30,7 @@ vi.mock('../src/ws/client', () => ({
 vi.mock('../src/api/gateway', () => ({ undoTurns: async () => '' }));
 
 const { ClarifySheet } = await import('../src/components/chat/ClarifySheet');
+const { ClarifyCard } = await import('../src/components/chat/ClarifyCard');
 const { useSession } = await import('../src/store/session');
 
 beforeEach(() => {
@@ -246,5 +247,113 @@ describe('one prompt does not answer for another', () => {
 
     expect(screen.getByText('Second?')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send answer' })).toBeDisabled();
+  });
+});
+
+describe('the card left in the transcript', () => {
+  const card = (msg: Record<string, unknown>) =>
+    render(
+      <ClarifyCard
+        msg={
+          {
+            kind: 'tool',
+            id: 'm1',
+            toolId: 't1',
+            name: 'clarify',
+            status: 'done',
+            at: null,
+            ...msg,
+          } as never
+        }
+      />,
+    );
+
+  it('shows the question, the answer, and the options not taken', () => {
+    card({
+      result: JSON.stringify({
+        question: 'Which data source?',
+        choices_offered: ['RSS feed', 'Playwright'],
+        user_response: 'Playwright',
+      }),
+    });
+
+    expect(screen.getByText('Which data source?')).toBeInTheDocument();
+    // Both, not just the winner: an answer only means something against what
+    // else was on offer.
+    expect(screen.getByText('RSS feed')).toBeInTheDocument();
+    expect(screen.getByText('Playwright')).toBeInTheDocument();
+  });
+
+  it('marks which one was taken', () => {
+    card({
+      result: {
+        question: 'Which?',
+        choices_offered: ['A', 'B'],
+        user_response: 'B',
+      },
+    });
+
+    expect(screen.getByText('B').closest('li')).toHaveClass('is-taken');
+    expect(screen.getByText('A').closest('li')).not.toHaveClass('is-taken');
+  });
+
+  it('shows a typed answer as itself rather than as a choice', () => {
+    card({
+      result: {
+        question: 'Which?',
+        choices_offered: ['A', 'B'],
+        user_response: 'Neither, use ollama ps',
+      },
+    });
+
+    expect(screen.getByText(/Neither, use ollama ps/)).toBeInTheDocument();
+    expect(screen.getByText('Answered instead')).toBeInTheDocument();
+  });
+
+  it('says so when nobody ever answered', () => {
+    card({
+      result: {
+        responses: [{ question: 'Which?', choices_offered: ['A'], user_response: '' }],
+        timed_out: true,
+      },
+    });
+
+    expect(screen.getByText(/the agent moved on/i)).toBeInTheDocument();
+    expect(screen.getByText('timed out')).toBeInTheDocument();
+  });
+
+  it('shows a replayed question that has not got its answer back', () => {
+    card({ args: { question: 'Which data source?', choices: ['RSS', 'Playwright'] } });
+
+    expect(screen.getByText('Which data source?')).toBeInTheDocument();
+    expect(screen.getByText('Not answered.')).toBeInTheDocument();
+  });
+
+  it('reads as a live question while it is still being asked', () => {
+    card({ status: 'running', args: { question: 'Which data source?' } });
+    expect(screen.getByText('Waiting for your answer')).toBeInTheDocument();
+  });
+
+  it('shows every question of a batch', () => {
+    card({
+      result: {
+        responses: [
+          { question: 'Which source?', choices_offered: ['RSS'], user_response: 'RSS' },
+          { question: 'How often?', choices_offered: ['Daily'], user_response: 'Daily' },
+        ],
+      },
+    });
+
+    expect(screen.getByText('Which source?')).toBeInTheDocument();
+    expect(screen.getByText('How often?')).toBeInTheDocument();
+  });
+
+  /**
+   * The fallback that keeps a malformed row from becoming a confident-looking
+   * empty card: the generic tool card at least shows what actually arrived.
+   */
+  it('falls back to the ordinary tool card when it cannot read the row', () => {
+    card({ result: 'not json', context: 'clarify(...)' });
+    expect(screen.queryByText('You were asked')).not.toBeInTheDocument();
   });
 });

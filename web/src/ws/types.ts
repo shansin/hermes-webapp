@@ -263,6 +263,14 @@ export const HistoryMessageSchema = z
     name: z.string().optional(),
     context: z.string().optional(),
     reasoning: z.string().optional(),
+    /**
+     * The call's resolved arguments. Present on replayed `tool` rows and worth
+     * keeping: `context` is only an 80-char preview, so a clarify restored
+     * from history would otherwise show a truncated question and no choices.
+     */
+    args: z.record(z.unknown()).optional(),
+    /** What the call returned. Absent from `session.history`; the REST copy has it. */
+    result: z.unknown().optional(),
   })
   .passthrough();
 export type HistoryMessage = z.infer<typeof HistoryMessageSchema>;

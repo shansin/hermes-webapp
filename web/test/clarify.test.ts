@@ -254,3 +254,91 @@ describe('surviving a reconnect', () => {
     expect(store().clarify).toBeNull();
   });
 });
+
+describe('the record it leaves in the transcript', () => {
+  const asked = {
+    question: 'Which data source?',
+    choices_offered: ['RSS', 'Playwright'],
+    user_response: 'Playwright',
+  };
+
+  /**
+   * `session.history` keeps what a tool was called with and drops what it
+   * returned, so a resumed conversation shows the question with no answer
+   * under it — the half a person is most likely to have come back for.
+   */
+  it('keeps the call arguments through a replay, so the question survives', () => {
+    store().loadHistory([
+      { role: 'assistant', text: 'Let me ask.' },
+      { role: 'tool', name: 'clarify', args: { question: 'Which data source?' } },
+    ]);
+
+    const row = store().messages.at(-1)!;
+    expect(row.kind).toBe('tool');
+    expect((row as { args?: Record<string, unknown> }).args).toEqual({
+      question: 'Which data source?',
+    });
+  });
+
+  it('grafts the answer back on from the stored transcript', () => {
+    store().loadHistory([
+      { role: 'tool', name: 'clarify', args: { question: 'Which data source?' } },
+    ]);
+    store().restoreClarifyAnswers([{ role: 'tool', content: JSON.stringify(asked) }]);
+
+    expect((store().messages.at(-1) as { result?: unknown }).result).toMatchObject({
+      user_response: 'Playwright',
+    });
+  });
+
+  /**
+   * Matching is by question text precisely so this cannot happen: two
+   * projections that disagree about what to include would otherwise file a
+   * real answer under a question it does not belong to.
+   */
+  it('leaves a question alone rather than guessing at its answer', () => {
+    store().loadHistory([
+      { role: 'tool', name: 'clarify', args: { question: 'Something else entirely?' } },
+    ]);
+    store().restoreClarifyAnswers([{ role: 'tool', content: JSON.stringify(asked) }]);
+
+    expect((store().messages.at(-1) as { result?: unknown }).result).toBeUndefined();
+  });
+
+  it('does not overwrite an answer it already has', () => {
+    store().loadHistory([
+      {
+        role: 'tool',
+        name: 'clarify',
+        args: { question: 'Which data source?' },
+        result: { question: 'Which data source?', user_response: 'RSS' },
+      },
+    ]);
+    store().restoreClarifyAnswers([{ role: 'tool', content: JSON.stringify(asked) }]);
+
+    expect((store().messages.at(-1) as { result: { user_response: string } }).result.user_response)
+      .toBe('RSS');
+  });
+
+  it('leaves other tools untouched', () => {
+    store().loadHistory([{ role: 'tool', name: 'terminal', args: { command: 'ls' } }]);
+    store().restoreClarifyAnswers([{ role: 'tool', content: JSON.stringify(asked) }]);
+
+    expect((store().messages.at(-1) as { result?: unknown }).result).toBeUndefined();
+  });
+
+  /** The live path already has everything: `tool.complete` carries both. */
+  it('carries args and result straight through from a live call', () => {
+    emit('tool.start', { tool_id: 't1', name: 'clarify' });
+    emit('tool.complete', {
+      tool_id: 't1',
+      name: 'clarify',
+      args: { question: 'Which data source?' },
+      result: JSON.stringify(asked),
+    });
+
+    const row = store().messages.at(-1) as { name: string; result?: unknown };
+    expect(row.name).toBe('clarify');
+    expect(row.result).toBe(JSON.stringify(asked));
+  });
+});

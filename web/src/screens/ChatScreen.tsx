@@ -68,6 +68,7 @@ export function ChatScreen() {
   const reset = useSession((s) => s.reset);
   const adopt = useSession((s) => s.adoptSession);
   const loadHistory = useSession((s) => s.loadHistory);
+  const restoreClarifyAnswers = useSession((s) => s.restoreClarifyAnswers);
   const applyResync = useSession((s) => s.applyResync);
   const setTitle = useSession((s) => s.setTitle);
   const refreshUsage = useSession((s) => s.refreshUsage);
@@ -177,6 +178,28 @@ export function ChatScreen() {
 
       try {
         loadHistory(await fetchHistory(res.session_id));
+
+        /**
+         * The gateway's history projection keeps what a tool was called with
+         * but not what it returned, so a replayed clarify is a question with
+         * no answer under it — the half you probably came back for. The stored
+         * transcript has the results.
+         *
+         * Gated on actually having one, so an ordinary conversation does not
+         * pay a second request for a card it will never show. Best-effort by
+         * design: failing here costs the answers, not the transcript.
+         */
+        const needsAnswers = useSession
+          .getState()
+          .messages.some((m) => m.kind === 'tool' && m.name === 'clarify' && m.result === undefined);
+
+        if (needsAnswers) {
+          try {
+            restoreClarifyAnswers(await fetchStoredMessages(storedIdForRest));
+          } catch {
+            // The questions are on screen; only the answers are missing.
+          }
+        }
       } catch {
         // The transcript is the one thing genuinely worth reporting: the
         // conversation is live, it just has nothing on screen yet. Anything
@@ -338,6 +361,14 @@ export function ChatScreen() {
             text: m.content ?? '',
             name: m.tool_name ?? undefined,
             reasoning: m.reasoning ?? undefined,
+            /**
+             * Only clarify carries its result through here. Its whole exchange
+             * — question, choices and answer — lives in that one object, so
+             * without it an offline transcript shows a question card with
+             * nothing in it. Whether every tool's output should show offline
+             * is a separate question, and not one this change answers.
+             */
+            result: m.tool_name === 'clarify' ? (m.content ?? undefined) : undefined,
           })),
         );
         setOfflineView(true);

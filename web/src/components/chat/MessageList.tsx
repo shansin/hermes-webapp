@@ -21,6 +21,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useNavigate } from 'react-router-dom';
 import { Markdown } from './MarkdownAsync';
 import { ToolCallCard } from './ToolCallCard';
+import { ClarifyCard } from './ClarifyCard';
 import { ThinkingBlock } from './ThinkingBlock';
 import { SubagentCard } from './SubagentCard';
 import { EditTurnSheet } from './EditTurnSheet';
@@ -669,7 +670,11 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
       );
     }
 
-    if (m.kind === 'tool') return <ToolCallCard msg={m} />;
+    // `clarify` is a tool only in the mechanical sense — it ran no command and
+    // returned no output, it asked the person a question. It gets a card that
+    // reads like the exchange it was.
+    if (m.kind === 'tool')
+      return m.name === 'clarify' ? <ClarifyCard msg={m} /> : <ToolCallCard msg={m} />;
     if (m.kind === 'subagent') return <SubagentCard msg={m} />;
 
     return (

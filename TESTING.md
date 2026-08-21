@@ -110,6 +110,16 @@ refuses to send half an answer. Plus the structural check that the shell mounts
 it, since moving it under one screen would make a question raised elsewhere
 unanswerable again.
 
+**`web/test/clarifyExchange.test.ts`** — reading a finished clarify back out of
+the transcript. Every input is somebody else's projection: the tool's result
+JSON, `session.history` (which keeps a call's arguments and drops its result),
+and the REST copy (which keeps both). The card is only as honest as its ability
+to tell "you picked the third option" from "you typed something else" from
+"nobody ever answered", and the last is indistinguishable from a bug unless it
+says so. Also the by-question matching that grafts answers back onto a replay —
+by text, never by position, because a confidently mislabelled answer is worse
+than a missing one.
+
 **`server/test/share.test.ts`** — the share target's server-side fallback, which
 only runs when the service worker didn't. Rare and invisible, which is the
 shape of thing that rots: that it answers 303 rather than 302, carries the text
