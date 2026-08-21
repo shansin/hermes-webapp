@@ -30,7 +30,7 @@ export const isOn = (v: boolean | number | null | undefined): boolean =>
 /** What `GET /api/sessions?archived=` accepts. */
 export type ArchivedFilter = 'exclude' | 'only' | 'include';
 
-interface SessionList {
+export interface SessionList {
   sessions: SessionRow[];
   total: number;
   limit: number;

@@ -19,6 +19,7 @@ import {
   useSessionSearch,
   useSessions,
   type ArchivedFilter,
+  type SessionList,
   type SessionRow,
 } from '../api/sessions';
 import { MenuButton } from '../components/shared/MenuButton';
@@ -26,6 +27,7 @@ import { useUi } from '../store/ui';
 import { useSession } from '../store/session';
 import { collectTags, hasTag, tagHue } from '../lib/sessionTags';
 import { buzz } from '../lib/haptics';
+import { UNDO_WINDOW_MS, scheduleUndoable } from '../lib/undo';
 
 /**
  * How long the search box waits for typing to stop. Long enough to collapse a
@@ -120,16 +122,60 @@ export function SessionsScreen() {
     [navigate],
   );
 
+  /**
+   * Delete a session, with a window to take it back.
+   *
+   * This is reached by swiping a row left — a gesture that costs one careless
+   * thumb movement while scrolling a hundred-row list, and which used to
+   * destroy the conversation outright with no confirmation and nothing to undo.
+   * Every other destructive action in the app (Files, Profiles) asks first.
+   *
+   * Asking here would be the wrong fix: a confirmation dialog in front of a
+   * swipe removes the only reason to swipe. So the row goes immediately and the
+   * *request* is what waits — see `lib/undo.ts`. Undo puts the row back without
+   * anything ever having reached the backend, which is the only kind of undo
+   * available for a delete the API cannot reverse.
+   */
   const removeOne = useCallback(
-    async (id: string) => {
-      try {
-        await deleteSession(id);
-        toast('Session deleted', 'success');
-      } catch (e) {
-        toast(e instanceof Error ? e.message : 'Delete failed', 'error');
-      }
+    (id: string) => {
+      // Hide it everywhere it is listed, and keep the copies so Undo can put
+      // them back exactly as they were rather than waiting on a refetch.
+      const snapshot = qc.getQueriesData<SessionList>({ queryKey: sessionKeys.all });
+      qc.setQueriesData<SessionList>({ queryKey: sessionKeys.all }, (old) =>
+        old?.sessions
+          ? { ...old, sessions: old.sessions.filter((sn) => sn.id !== id) }
+          : old,
+      );
+
+      const { undo } = scheduleUndoable(
+        {
+          commit: () => {
+            void deleteSession(id).catch((e: unknown) => {
+              // Nothing is watching by now, so the row has to come back and
+              // say why on its own.
+              for (const [key, data] of snapshot) qc.setQueryData(key, data);
+              toast(e instanceof Error ? e.message : 'Delete failed', 'error');
+            });
+          },
+          revert: () => {
+            for (const [key, data] of snapshot) qc.setQueryData(key, data);
+          },
+        },
+        UNDO_WINDOW_MS,
+      );
+
+      toast('Session deleted', 'success', {
+        durationMs: UNDO_WINDOW_MS,
+        action: {
+          label: 'Undo',
+          onAction: () => {
+            buzz('tap');
+            undo();
+          },
+        },
+      });
     },
-    [deleteSession, toast],
+    [deleteSession, toast, qc],
   );
 
   const removeSelected = async () => {

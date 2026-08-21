@@ -3,6 +3,7 @@
  */
 import { useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { Sheet } from '../shared/Sheet';
 import { ModelPicker } from '../shared/ModelPicker';
 import { Empty, ErrorNote, SkeletonList, relTime } from '../shared/misc';
@@ -17,6 +18,7 @@ import {
 } from '../../api/hub';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
+import { UNDO_WINDOW_MS, scheduleUndoable } from '../../lib/undo';
 
 function jobName(j: CronJob): string {
   return j.name ?? j.id;
@@ -83,6 +85,7 @@ export function CronTab() {
   const { data, isLoading, error } = useCronJobs();
   const action = useCronAction();
   const del = useDeleteCronJob();
+  const qc = useQueryClient();
   const create = useCreateCronJob();
   const toast = useUi((s) => s.toast);
 
@@ -101,6 +104,54 @@ export function CronTab() {
    * entries behind the back button in `HubPage`.
    */
   const [search, setSearch] = useSearchParams();
+
+  /**
+   * Delete a job, with a window to take it back.
+   *
+   * A single tap on a trash icon used to destroy a schedule outright — no
+   * confirmation, nothing to undo, and a cron job is a thing someone wrote
+   * once and has not thought about since. Same bargain as the session list:
+   * the row goes now, the request waits, and Undo means it never happened.
+   */
+  const removeJob = useCallback(
+    (job: CronJob) => {
+      const snapshot = qc.getQueriesData({ queryKey: ['cron'] });
+      qc.setQueriesData<CronJob[] | { jobs: CronJob[] }>({ queryKey: ['cron'] }, (old) => {
+        if (Array.isArray(old)) return old.filter((j) => j.id !== job.id);
+        if (old?.jobs) return { ...old, jobs: old.jobs.filter((j) => j.id !== job.id) };
+        return old;
+      });
+
+      const restore = () => {
+        for (const [key, data] of snapshot) qc.setQueryData(key, data);
+      };
+
+      const { undo } = scheduleUndoable(
+        {
+          commit: () => {
+            void del.mutateAsync(job.id).catch((e: unknown) => {
+              restore();
+              toast(e instanceof Error ? e.message : 'Delete failed', 'error');
+            });
+          },
+          revert: restore,
+        },
+        UNDO_WINDOW_MS,
+      );
+
+      toast(`Deleted ${job.name ?? 'job'}`, 'success', {
+        durationMs: UNDO_WINDOW_MS,
+        action: {
+          label: 'Undo',
+          onAction: () => {
+            buzz('tap');
+            undo();
+          },
+        },
+      });
+    },
+    [del, qc, toast],
+  );
   const openRuns = search.get('job');
   const setOpenRuns = useCallback(
     (id: string | null) => {
@@ -247,15 +298,8 @@ export function CronTab() {
                 <button
                   className="btn btn--sm btn--ghost"
                   style={{ marginLeft: 'auto', color: 'var(--error)' }}
-                  onClick={async () => {
-                    try {
-                      await del.mutateAsync(j.id);
-                      toast('Job deleted', 'success');
-                    } catch (e) {
-                      toast(e instanceof Error ? e.message : 'Delete failed', 'error');
-                    }
-                  }}
-                  aria-label="Delete job"
+                  onClick={() => removeJob(j)}
+                  aria-label={`Delete ${j.name ?? 'job'}`}
                 >
                   <IconTrash size={15} />
                 </button>
