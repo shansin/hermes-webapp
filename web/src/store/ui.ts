@@ -47,6 +47,38 @@ export interface Toast {
   id: number;
   text: string;
   tone: 'info' | 'success' | 'warn' | 'error';
+  /**
+   * An offer to take it back.
+   *
+   * A toast is the only thing on screen after a destructive action, so it is
+   * the natural place to undo one — and on a phone it is far better than a
+   * confirmation dialog in front of every swipe. See `lib/undo.ts`, which
+   * defers the irreversible half until the toast has expired.
+   */
+  action?: { label: string; onAction: () => void };
+  /** When this toast disappears, so a long one is not gone before it is read. */
+  durationMs: number;
+}
+
+export interface ToastOptions {
+  action?: Toast['action'];
+  durationMs?: number;
+}
+
+/**
+ * Five seconds suits "Copied"; it does not suit a two-line gateway error, which
+ * is gone before it has been read. Long text buys more, up to a ceiling — past
+ * which the toast is the wrong medium anyway.
+ */
+const TOAST_BASE_MS = 5000;
+const TOAST_PER_CHAR_MS = 45;
+const TOAST_MAX_MS = 12_000;
+
+export function toastDuration(text: string, action?: Toast['action']): number {
+  // An undo offer is a decision, not a notice: give it the full window.
+  const floor = action ? 8000 : TOAST_BASE_MS;
+  const scaled = TOAST_BASE_MS + Math.max(0, text.length - 40) * TOAST_PER_CHAR_MS;
+  return Math.min(Math.max(floor, scaled), TOAST_MAX_MS);
 }
 
 const KEYS = {
@@ -100,7 +132,7 @@ interface UiState {
   setDevPanel: (on: boolean) => void;
   setNavOpen: (open: boolean) => void;
   setConnection: (c: ConnState) => void;
-  toast: (text: string, tone?: Toast['tone']) => void;
+  toast: (text: string, tone?: Toast['tone'], opts?: ToastOptions) => void;
   dismissToast: (id: number) => void;
 }
 
@@ -160,10 +192,13 @@ export const useUi = create<UiState>((set, get) => ({
 
   setConnection: (connection) => set({ connection }),
 
-  toast: (text, tone = 'info') => {
+  toast: (text, tone = 'info', opts = {}) => {
     const id = ++toastSeq;
-    set({ toasts: [...get().toasts, { id, text, tone }] });
-    setTimeout(() => get().dismissToast(id), 5000);
+    const durationMs = opts.durationMs ?? toastDuration(text, opts.action);
+    set({
+      toasts: [...get().toasts, { id, text, tone, action: opts.action, durationMs }],
+    });
+    setTimeout(() => get().dismissToast(id), durationMs);
   },
 
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),

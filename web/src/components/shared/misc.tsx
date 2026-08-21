@@ -94,15 +94,54 @@ export function ErrorNote({ error }: { error: unknown }) {
   );
 }
 
+/**
+ * The app's feedback channel.
+ *
+ * Announced, because this is where errors land — a failed send, a rejected
+ * rename, a cron run that failed while you were on another screen — and a
+ * channel that only exists visually reports none of it to anyone using a
+ * screen reader. `assertive` for errors, since those interrupt what someone is
+ * doing; `polite` for everything else, which can wait for a gap.
+ *
+ * The body is a button rather than a div with a click handler, so dismissing
+ * works from a keyboard and the control announces itself as one.
+ */
 export function Toasts() {
   const toasts = useUi((s) => s.toasts);
   const dismiss = useUi((s) => s.dismissToast);
-  if (!toasts.length) return null;
+
+  const hasError = toasts.some((t) => t.tone === 'error');
+
   return (
-    <div className="toasts">
+    <div
+      className="toasts"
+      role={hasError ? 'alert' : 'status'}
+      aria-live={hasError ? 'assertive' : 'polite'}
+      // Read the whole toast when it changes, not just the words that differ.
+      aria-atomic="false"
+    >
       {toasts.map((t) => (
-        <div key={t.id} className={`toast toast--${t.tone}`} onClick={() => dismiss(t.id)}>
-          {t.text}
+        <div key={t.id} className={`toast toast--${t.tone}`}>
+          <button
+            type="button"
+            className="toast__body"
+            onClick={() => dismiss(t.id)}
+            aria-label={`${t.text}. Dismiss`}
+          >
+            {t.text}
+          </button>
+          {t.action && (
+            <button
+              type="button"
+              className="toast__action"
+              onClick={() => {
+                t.action?.onAction();
+                dismiss(t.id);
+              }}
+            >
+              {t.action.label}
+            </button>
+          )}
         </div>
       ))}
     </div>

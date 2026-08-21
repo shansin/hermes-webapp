@@ -171,6 +171,53 @@ describe('toasts', () => {
     vi.useRealTimers();
   });
 
+  /**
+   * Five seconds suits "Copied". It does not suit a two-line gateway error,
+   * which was gone before it had been read.
+   */
+  it('gives a long message longer to be read', async () => {
+    const { toastDuration } = await launch();
+    expect(toastDuration('Copied')).toBe(5000);
+    expect(toastDuration('x'.repeat(200))).toBeGreaterThan(5000);
+  });
+
+  it('caps how long a toast can linger', async () => {
+    const { toastDuration } = await launch();
+    expect(toastDuration('x'.repeat(5000))).toBeLessThanOrEqual(12_000);
+  });
+
+  /** An undo offer is a decision with a deadline, not a notice. */
+  it('gives an actionable toast a full window even when it is short', async () => {
+    const { toastDuration } = await launch();
+    const action = { label: 'Undo', onAction: () => {} };
+    expect(toastDuration('Deleted', action)).toBeGreaterThan(toastDuration('Deleted'));
+  });
+
+  it('carries an action through to the toast', async () => {
+    const { useUi } = await launch();
+    const onAction = vi.fn();
+    useUi.getState().toast('Session deleted', 'success', {
+      action: { label: 'Undo', onAction },
+    });
+
+    const toast = useUi.getState().toasts[0]!;
+    expect(toast.action?.label).toBe('Undo');
+    toast.action!.onAction();
+    expect(onAction).toHaveBeenCalledOnce();
+  });
+
+  it('honours an explicit duration', async () => {
+    vi.useFakeTimers();
+    const { useUi } = await launch();
+    useUi.getState().toast('pinned', 'info', { durationMs: 9000 });
+
+    vi.advanceTimersByTime(5001);
+    expect(useUi.getState().toasts).toHaveLength(1);
+    vi.advanceTimersByTime(4000);
+    expect(useUi.getState().toasts).toEqual([]);
+    vi.useRealTimers();
+  });
+
   it('dismisses only the toast asked for', async () => {
     const { useUi } = await launch();
     useUi.getState().toast('keep');
