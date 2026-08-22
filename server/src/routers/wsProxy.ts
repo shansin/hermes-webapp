@@ -36,9 +36,28 @@ const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
  * peer is not waiting for a reply — and the buffer was previously unbounded.
  */
 const MAX_PENDING_FRAMES = 64;
+
+/**
+ * How often to ping the browser.
+ *
+ * The gateway socket is idle between turns — often for a very long time — and
+ * an idle proxied WebSocket gets closed at 100s by Cloudflare, which is the
+ * whole path in the published deployment. The browser then reconnects, so
+ * nothing breaks, but the app spends its life flashing "Reconnecting…".
+ *
+ * A ping is protocol-level: the browser answers it automatically, no script
+ * involved, and either frame is enough traffic to keep the connection from
+ * looking idle. `push/events.ts` already does exactly this for the proxy's own
+ * upstream socket and for the same underlying reason — an idle socket gets
+ * dropped by something in the middle without telling either end.
+ *
+ * 45s leaves room for one ping to go missing before the 100s ceiling.
+ */
+const CLIENT_PING_INTERVAL_MS = 45_000;
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { getToken, resolveToken, upstreamWs, upstreamHost } from '../config.js';
+import { getToken, resolveToken, upstreamWs, upstreamHost, accessEnabled } from '../config.js';
+import { verifyAccess, nodeHeaders } from '../auth.js';
 import { log } from '../log.js';
 
 /** Paths the Hermes backend exposes as WebSockets and we forward as-is. */
@@ -62,7 +81,10 @@ export function attachWsProxy(server: {
   // then kill the client socket on the way out.
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
 
-  server.on('upgrade', (req, socket, head) => {
+  /** Live bridges, so the log can tell churn from concurrency. */
+  let open = 0;
+
+  server.on('upgrade', async (req, socket, head) => {
     let pathname: string;
     let search: string;
     try {
@@ -79,7 +101,70 @@ export function attachWsProxy(server: {
       return;
     }
 
+    // This handler sits on the raw Node server: Hono never sees an upgrade, so
+    // `requireAccess` cannot cover it. Without this check the REST surface
+    // would be gated while the gateway socket — which is the one that actually
+    // drives the agent — stayed open to anyone.
+    //
+    // A browser cannot set `Cf-Access-Jwt-Assertion` on a handshake, but
+    // cloudflared injects it on the way through and the same-origin
+    // `CF_Authorization` cookie rides along regardless; `extractToken` takes
+    // either.
+    /**
+     * Cloudflare's per-request id, carried through so a client-side capture and
+     * this log can be joined on it.
+     *
+     * Correlating the two by timestamp does not work: the phone, the laptop and
+     * this machine are each a few tens of milliseconds off one another, which is
+     * enough to make a socket look like it existed before the bridge that
+     * carried it. `cf-ray` is the same string on both sides and needs no clocks.
+     * Absent on a request that did not come through the tunnel, which is itself
+     * worth seeing — it means something reached the proxy without passing the
+     * edge.
+     */
+    const cfRay = req.headers['cf-ray'];
+    const ray = typeof cfRay === 'string' ? cfRay : undefined;
+
+    if (accessEnabled) {
+      const result = await verifyAccess(nodeHeaders(req.headers));
+      if (!result.ok) {
+        log.warn({ pathname, ray, reason: result.reason }, 'websocket upgrade refused');
+        // Answer before hanging up. A bare destroy() is a TCP reset, which the
+        // browser reports as close code 1006 — identical to the network being
+        // down, and the client would retry it forever.
+        const status = result.reason === 'forbidden' ? '403 Forbidden' : '401 Unauthorized';
+        socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+        socket.destroy();
+        return;
+      }
+    }
+
     wss.handleUpgrade(req, socket, head, (client) => {
+      // One line per socket — the app opens one for its lifetime, so this is
+      // not chatty. It exists because a *successful* upgrade used to log
+      // nothing at all, which makes silence in the log ambiguous: a client
+      // that never reached the proxy and a client being served perfectly look
+      // identical from here, and telling them apart is most of the work when
+      // something in front of the proxy is misbehaving.
+      open++;
+      log.info({ pathname, open, ray }, 'websocket bridged');
+      const since = Date.now();
+      client.once('close', (code) => {
+        open--;
+        // Duration and the live count are what separate "one client is
+        // reconnecting in a loop" from "several tabs are open" — which look
+        // identical if you only log the opens.
+        log.info(
+          {
+            pathname,
+            open,
+            ray,
+            code,
+            seconds: Math.round((Date.now() - since) / 1000),
+          },
+          'websocket closed',
+        );
+      });
       bridge(client, pathname, search);
     });
   });
@@ -148,7 +233,54 @@ function bridge(client: WebSocket, pathname: string, search: string): void {
     upstream.send(data, { binary: isBinary });
   });
 
-  client.on('close', (code, reason) => closeBoth(code, reason.toString()));
+  /**
+   * Whether the browser has answered since the last ping.
+   *
+   * The keepalive below is also the only thing that can notice a peer that
+   * stopped existing. A phone that walks out of radio range never sends a
+   * close frame, and TCP will sit on the half-open connection for far longer
+   * than anyone waits — so without this the bridge stays "open" forever,
+   * holding a Hermes gateway socket with it, and the proxy's own log of live
+   * connections quietly stops meaning anything. Reading the count is the first
+   * thing anyone does when the app is misbehaving, so it has to be true.
+   */
+  let alive = true;
+  client.on('pong', () => {
+    alive = true;
+  });
+
+  // Keep the connection from looking idle to whatever sits in the middle.
+  // Unconditional rather than gated on the Access config: a home NAT drops idle
+  // sockets too, it is two frames a minute, and a keepalive that only runs in
+  // one deployment is a keepalive nobody notices has broken in the other.
+  const ping = setInterval(() => {
+    if (client.readyState !== WebSocket.OPEN) return;
+    if (!alive) {
+      // Two intervals with no pong. A browser answers at the protocol level
+      // with no script involved, so silence means the peer is gone rather than
+      // busy. `terminate`, not `close`: there is nobody left to complete a
+      // closing handshake with, and waiting on one is how the leak starts.
+      log.warn({ pathname }, 'client stopped answering pings — dropping bridge');
+      clearInterval(ping);
+      client.terminate();
+      closeBoth(1011, 'client unresponsive');
+      return;
+    }
+    alive = false;
+    try {
+      client.ping();
+    } catch {
+      // The close handler is what tears the bridge down; a failed ping just
+      // means we got there first.
+    }
+  }, CLIENT_PING_INTERVAL_MS);
+  // `unref` so a live socket cannot hold the process open through shutdown.
+  ping.unref?.();
+
+  client.on('close', (code, reason) => {
+    clearInterval(ping);
+    closeBoth(code, reason.toString());
+  });
 
   client.on('error', (err) => {
     log.debug({ err: err.message, pathname }, 'client ws error');

@@ -11,6 +11,7 @@
  * Streaming state lives in the session store, not here.
  */
 import { RpcEventSchema, RpcResponseSchema, type ConnState, type RpcEvent } from './types';
+import { probeAccess, markHostReached } from '../lib/accessSession';
 
 export type EventHandler = (event: RpcEvent['params']) => void;
 export type StateHandler = (state: ConnState) => void;
@@ -26,6 +27,8 @@ interface Pending {
 
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 15_000;
+/** Consecutive failures before we suspect the gate rather than the network. */
+const ACCESS_PROBE_AFTER = 3;
 /** Generous: a cold agent build behind `session.create` can take a while. */
 const REQUEST_TIMEOUT_MS = 180_000;
 
@@ -58,6 +61,19 @@ export class HermesClient {
   private stateHandlers = new Set<StateHandler>();
   private frameHandlers = new Set<FrameHandler>();
   private attempt = 0;
+  /**
+   * Consecutive failures since the last socket that actually opened.
+   *
+   * Deliberately *not* `attempt`, which is the backoff counter and is reset to
+   * zero by `connect({ resume: true })` — that is, by every `visibilitychange`
+   * the phone fires. Hanging the Access probe off `attempt` meant that a person
+   * watching the "Reconnecting…" banner, waking the screen as people do, could
+   * keep restarting the count and never reach the threshold; the one state the
+   * probe exists to detect is the one where the user is most likely to be
+   * staring at the screen doing exactly that. This counter is cleared only by a
+   * socket that opens, so it measures what it claims to.
+   */
+  private failuresSinceOpen = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** When the current socket started connecting, to spot one wedged there. */
   private connectingSince = 0;
@@ -96,6 +112,15 @@ export class HermesClient {
       this.discard(this.ws);
     } else if (state === WebSocket.OPEN) {
       return;
+    } else if (state === WebSocket.CLOSING) {
+      // A socket the browser is still closing is not one to wait on, and it is
+      // the state a phone reaches constantly: background the tab, lose the
+      // radio, come back. The close handshake is waiting on an ack that will
+      // never arrive, so this can sit here for as long as the network takes to
+      // give up. Replacing it is right — but it must be `discard`ed on the way
+      // out, because its `onclose` is still pending and would otherwise land
+      // after the replacement is live and tear it down.
+      this.discard(this.ws);
     }
 
     if (resume) this.attempt = 0;
@@ -120,12 +145,32 @@ export class HermesClient {
     }
     this.ws = socket;
 
+    // Every handler below is guarded on still being the live socket.
+    //
+    // `discard` nulls these out, but that only covers the paths that remember
+    // to call it, and the cost of one that does not is severe and silent: a
+    // superseded socket's `onclose` nulls `this.ws` and schedules a reconnect,
+    // so the app reports "Reconnecting…" while holding nothing, even though
+    // the socket it just opened is fine — and the proxy's 45s keepalive means
+    // that orphan never dies of its own accord. Each retry opens another
+    // socket that becomes the next orphan, so the state sustains itself until
+    // the app is reloaded. Ownership is the invariant that makes the whole
+    // class impossible rather than one route into it fixed at a time.
     socket.onopen = () => {
+      if (this.ws !== socket) return;
       this.attempt = 0;
+      this.failuresSinceOpen = 0;
+      // A completed handshake is proof this device can reach the origin, and
+      // it is the only proof that arrives once things are working again: the
+      // Access probe runs from the reconnect path, which by definition stops
+      // running the moment a socket opens. Without this the "can't reach"
+      // banner stayed up over a live, streaming session.
+      markHostReached();
       this.setState('open');
     };
 
     socket.onmessage = (ev) => {
+      if (this.ws !== socket) return;
       const raw = typeof ev.data === 'string' ? ev.data : '';
       if (!raw) return;
       // One WS message may batch several newline-delimited JSON-RPC frames.
@@ -136,6 +181,7 @@ export class HermesClient {
     };
 
     socket.onclose = () => {
+      if (this.ws !== socket) return;
       this.ws = null;
       // Fail in-flight calls rather than letting their promises hang forever.
       this.rejectAllPending(new Error('connection closed'));
@@ -155,8 +201,14 @@ export class HermesClient {
     this.closedByUser = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
-    this.ws?.close(1000, 'client shutdown');
-    this.ws = null;
+    // `discard`, not `close`: dropping the reference while leaving the
+    // handlers attached leaves a socket that will report its own closure
+    // against whatever has replaced it by then, and `connect()` clears
+    // `closedByUser` — so a shutdown immediately followed by a reconnect could
+    // have the old socket schedule a retry on top of the new one.
+    this.discard(this.ws);
+    // Nothing is coming back for calls issued before the shutdown.
+    this.rejectAllPending(new Error('connection closed'));
     this.setState('closed');
   }
 
@@ -322,6 +374,17 @@ export class HermesClient {
     const backoff = Math.min(RECONNECT_BASE_MS * 2 ** this.attempt, RECONNECT_MAX_MS);
     const delay = backoff * (0.75 + Math.random() * 0.5);
     this.attempt++;
+    this.failuresSinceOpen++;
+
+    // A refused upgrade and an unplugged router produce the same close event —
+    // the handshake status never reaches script. So after a few failures, stop
+    // guessing and ask over REST whether the Access session is what lapsed.
+    //
+    // `>=`, not `===`: a threshold that has to be hit exactly is a threshold
+    // that can be stepped over, and the cost of missing it is the app insisting
+    // it is reconnecting until someone gives up and reinstalls it. Re-asking
+    // costs nothing — `probeAccess` single-flights and latches.
+    if (this.failuresSinceOpen >= ACCESS_PROBE_AFTER) void probeAccess();
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();

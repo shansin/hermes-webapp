@@ -16,7 +16,17 @@ import type { AddressInfo } from 'node:net';
 let resolveDelayMs = 0;
 let token = 'discovered-token';
 
+/** Whether the Access gate is configured, and what it says. */
+let accessOn = false;
+let accessVerdict: { ok: true; email: string } | { ok: false; reason: string } = {
+  ok: false,
+  reason: 'missing',
+};
+
 vi.mock('../src/config.js', () => ({
+  get accessEnabled() {
+    return accessOn;
+  },
   getToken: () => '',
   resolveToken: async () => {
     if (resolveDelayMs) await new Promise((r) => setTimeout(r, resolveDelayMs));
@@ -32,6 +42,12 @@ vi.mock('../src/config.js', () => ({
 vi.mock('../src/log.js', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
+vi.mock('../src/auth.js', () => ({
+  // The assertion checking itself is covered in auth.test.ts against real
+  // keys; what matters here is that the upgrade path consults it at all.
+  nodeHeaders: () => () => undefined,
+  verifyAccess: async () => accessVerdict,
+}));
 
 let upstreamUrl = '';
 let upstreamHostValue = '';
@@ -43,6 +59,8 @@ interface Upgrade {
   origin?: string;
 }
 let upgrades: Upgrade[];
+/** The fake Hermes' end of each bridge, so a teardown is observable there. */
+let upstreamSockets: WebSocket[];
 let upstreamFrames: string[];
 /** Resolved by the fake Hermes on each frame, so tests can await delivery. */
 let onUpstreamFrame: (() => void) | null;
@@ -58,6 +76,7 @@ beforeAll(async () => {
   hermesServer = createServer();
   hermesWss = new WebSocketServer({ server: hermesServer });
   hermesWss.on('connection', (socket, req) => {
+    upstreamSockets.push(socket);
     upgrades.push({
       url: req.url ?? '',
       host: req.headers.host,
@@ -88,18 +107,19 @@ afterAll(async () => {
 
 beforeEach(() => {
   upgrades = [];
+  upstreamSockets = [];
   upstreamFrames = [];
   onUpstreamFrame = null;
   resolveDelayMs = 0;
   token = 'discovered-token';
 });
 
-const openClient = (path = '/api/ws') =>
+const openClient = (path = '/api/ws', extraHeaders: Record<string, string> = {}) =>
   new Promise<WebSocket>((resolve, reject) => {
     // The phone's own Origin — the LAN address it loaded the app from, which
     // is exactly what Hermes would refuse.
     const client = new WebSocket(`ws://127.0.0.1:${proxyPort}${path}`, {
-      headers: { origin: `http://192.168.1.50:${proxyPort}` },
+      headers: { origin: `http://192.168.1.50:${proxyPort}`, ...extraHeaders },
     });
     client.once('open', () => resolve(client));
     client.once('error', reject);
@@ -163,6 +183,76 @@ describe('path allowlist', () => {
   });
 });
 
+/**
+ * Upgrades never touch Hono, so the middleware that gates `/api/*` does not
+ * cover them. If this check regressed, the REST surface would stay locked
+ * while the socket that actually drives the agent stood open — and nothing in
+ * the app would look any different.
+ */
+describe('the Access gate on upgrades', () => {
+  afterEach(() => {
+    accessOn = false;
+    accessVerdict = { ok: false, reason: 'missing' };
+  });
+
+  it('lets the upgrade through untouched when the gate is not configured', async () => {
+    const client = track(await openClient());
+    expect(client.readyState).toBe(WebSocket.OPEN);
+    // The upstream leg is dialled after the client handshake resolves, so it
+    // has to be waited for rather than sampled.
+    await upgraded();
+  });
+
+  it('refuses an unauthenticated upgrade, and never dials Hermes', async () => {
+    accessOn = true;
+    accessVerdict = { ok: false, reason: 'missing' };
+
+    await expect(openClient()).rejects.toThrow();
+    // The point of rejecting during the handshake rather than after: the
+    // upstream leg is never opened, so an unauthenticated client cannot make
+    // the proxy hold a session against the backend. Give a dial the time it
+    // would have needed, so this cannot pass by being sampled too early.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(upgrades).toEqual([]);
+  });
+
+  it('answers with a status rather than resetting the connection', async () => {
+    accessOn = true;
+    accessVerdict = { ok: false, reason: 'missing' };
+
+    // A bare destroy() is a TCP reset, which reaches the browser as close code
+    // 1006 — identical to the network being down, so the client retries for
+    // ever instead of prompting for a login.
+    const err = await openClient().then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err?.message).toMatch(/401/);
+  });
+
+  it('rejects a signed-in stranger with 403', async () => {
+    accessOn = true;
+    accessVerdict = { ok: false, reason: 'forbidden' };
+
+    const err = await openClient().then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err?.message).toMatch(/403/);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(upgrades).toEqual([]);
+  });
+
+  it('proxies normally once the assertion checks out', async () => {
+    accessOn = true;
+    accessVerdict = { ok: true, email: 'owner@example.com' };
+
+    const client = track(await openClient());
+    expect(client.readyState).toBe(WebSocket.OPEN);
+    await upgraded();
+  });
+});
+
 describe('the loopback disguise', () => {
   /**
    * The whole reason this proxy exists. Hermes checks Host against the
@@ -208,6 +298,145 @@ describe('token handling', () => {
     track(await openClient('/api/ws?token=stale'));
     const params = new URL((await upgraded()).url, 'http://x').searchParams;
     expect(params.has('token')).toBe(false);
+  });
+});
+
+/**
+ * The gateway socket is idle between turns, and anything in the middle — a home
+ * NAT, or Cloudflare, which closes an idle proxied WebSocket at 100s — will
+ * quietly drop it. The client reconnects, so nothing breaks and nothing is
+ * logged; the only symptom is an app that sits flashing "Reconnecting…". That
+ * is invisible enough to be worth pinning down.
+ */
+describe('the client keepalive', () => {
+  it('pings the browser while the socket is idle', async () => {
+    // Fake only setInterval: the sockets below are real and need their own I/O
+    // timers to keep working.
+    vi.useFakeTimers({ toFake: ['setInterval'] });
+    try {
+      const client = track(await openClient());
+      await upgraded();
+
+      const pinged = new Promise<void>((resolve) => client.once('ping', () => resolve()));
+      await vi.advanceTimersByTimeAsync(45_000);
+
+      await expect(
+        Promise.race([
+          pinged,
+          new Promise((_, r) => setTimeout(() => r(new Error('no ping arrived')), 2000)),
+        ]),
+      ).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops pinging once the client has gone', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] });
+    try {
+      const client = await openClient();
+      await upgraded();
+      const closed = new Promise<void>((r) => client.once('close', () => r()));
+      client.close();
+      await closed;
+
+      // A leaked interval would go on poking a dead socket for the life of the
+      // process, once per client that ever connected.
+      const before = vi.getTimerCount();
+      await vi.advanceTimersByTimeAsync(45_000 * 3);
+      expect(vi.getTimerCount()).toBeLessThanOrEqual(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The keepalive is also the only thing that can notice a peer that stopped
+   * existing. A phone walking out of radio range sends no close frame, and TCP
+   * will sit on the half-open connection far longer than anyone waits — so the
+   * bridge stays "open" forever with a Hermes socket held open behind it, and
+   * the live-connection count in the log stops meaning anything. That count is
+   * the first thing anyone reads when the app is misbehaving.
+   */
+  it('drops a bridge whose client has stopped answering', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] });
+    try {
+      const client = track(await openClient());
+      await upgraded();
+      const upstream = upstreamSockets[0]!;
+      const upstreamClosed = new Promise<void>((r) => upstream.once('close', () => r()));
+
+      // Pausing the socket is a peer that has gone without saying so: the ping
+      // is never read, so no pong is ever sent.
+      client.pause();
+
+      // One interval sends the ping; the next finds it unanswered.
+      await vi.advanceTimersByTimeAsync(45_000);
+      await vi.advanceTimersByTimeAsync(45_000);
+
+      await expect(
+        Promise.race([
+          upstreamClosed,
+          new Promise((_, r) => setTimeout(() => r(new Error('the bridge was left open')), 2000)),
+        ]),
+      ).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a bridge whose client is answering', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] });
+    try {
+      track(await openClient());
+      await upgraded();
+      const upstream = upstreamSockets[0]!;
+
+      // Several rounds of ping/pong, which `ws` answers at the protocol level.
+      for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(45_000);
+
+      expect(upstream.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * The join key between this log and a capture taken in a browser.
+ *
+ * Timestamps cannot do the job: the machines involved are tens of milliseconds
+ * apart, which was enough during one investigation to make a socket appear to
+ * predate the bridge that carried it and send the reading off down a false
+ * trail. `cf-ray` is one string that both ends see.
+ */
+describe('request correlation', () => {
+  it('records the Cloudflare ray id on the bridge it belongs to', async () => {
+    const { log } = await import('../src/log.js');
+    const info = vi.mocked(log.info);
+    info.mockClear();
+
+    track(await openClient('/api/ws', { 'cf-ray': '8f2c1d4e5a6b7c8d-SJC' }));
+    await upgraded();
+
+    const bridged = info.mock.calls.find((c) => c[1] === 'websocket bridged');
+    expect(bridged?.[0]).toMatchObject({ ray: '8f2c1d4e5a6b7c8d-SJC' });
+  });
+
+  /**
+   * No header is not an error — it is the signature of a request that reached
+   * the proxy without passing the edge, which is worth being able to see.
+   */
+  it('leaves the field absent when the request did not come through the tunnel', async () => {
+    const { log } = await import('../src/log.js');
+    const info = vi.mocked(log.info);
+    info.mockClear();
+
+    track(await openClient());
+    await upgraded();
+
+    const bridged = info.mock.calls.find((c) => c[1] === 'websocket bridged');
+    expect((bridged?.[0] as { ray?: string }).ray).toBeUndefined();
   });
 });
 

@@ -10,12 +10,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HermesClient, RpcError, defaultWsUrl, CONTROL_TIMEOUT_MS } from '../src/ws/client';
 import { MockSocket, installMockSocket } from './helpers/mockSocket';
 
+/**
+ * The Access probe is mocked rather than exercised: what matters here is *when*
+ * the client decides to ask, and the asking itself has its own suite in
+ * `accessSession.test.ts`.
+ */
+const probeAccess = vi.hoisted(() => vi.fn(async () => false));
+const markHostReached = vi.hoisted(() => vi.fn());
+vi.mock('../src/lib/accessSession', () => ({ probeAccess, markHostReached }));
+
 let restore: () => void;
 let client: HermesClient;
 
 beforeEach(() => {
   restore = installMockSocket();
   vi.useFakeTimers();
+  probeAccess.mockClear();
+  markHostReached.mockClear();
   client = new HermesClient('ws://test/api/ws');
 });
 
@@ -332,6 +343,73 @@ describe('reconnecting', () => {
   });
 
   /**
+   * A socket the browser is still closing is not a socket to wait on.
+   *
+   * This is the state a phone produces constantly: background the tab, lose
+   * the radio, come back. The close handshake is waiting on an ack that will
+   * never arrive, so `readyState` sits at CLOSING — neither the "already
+   * connecting" nor the "already open" early-out applies, and the resume falls
+   * through to build a replacement while the old socket's `onclose` is still
+   * pending.
+   */
+  it('replaces a socket stuck in CLOSING on resume', () => {
+    const socket = connected();
+    socket.close();
+    expect(socket.readyState).toBe(MockSocket.CLOSING);
+
+    client.connect({ resume: true });
+    expect(MockSocket.instances).toHaveLength(2);
+  });
+
+  /**
+   * ...and the socket it replaced must not be allowed to take the successor
+   * down with it when its `onclose` finally lands.
+   *
+   * This is the bug that strands the app on "Reconnecting…" for good. The
+   * stale `onclose` nulls out the *new* socket's reference and schedules a
+   * reconnect, so the client believes it has nothing while a perfectly good
+   * socket stays open — and the proxy, which pings every 45s, keeps that
+   * orphan alive rather than letting it die. The next reconnect opens another
+   * socket, which becomes the next orphan: the failure feeds itself, and the
+   * only visible symptom is a banner that never clears.
+   */
+  it('does not let a socket closing in the background strand its successor', async () => {
+    const stale = connected();
+    stale.close();
+
+    client.connect({ resume: true });
+    const fresh = MockSocket.last;
+    fresh.open();
+
+    // The stale socket's `onclose` lands here, after its successor is live.
+    await Promise.resolve();
+
+    expect(client.state).toBe('open');
+    void client.call('session.list');
+    expect(fresh.sent).toHaveLength(1);
+
+    // Nothing may be scheduled on top of the socket that is already open.
+    vi.advanceTimersByTime(60_000);
+    expect(MockSocket.last).toBe(fresh);
+  });
+
+  /**
+   * The mirror image: a superseded socket that completes its handshake late
+   * must not report the client "open" on behalf of a socket nobody holds.
+   * Left unguarded it clears the banner while every call rejects with "not
+   * connected" — the same confusion, wearing the opposite face.
+   */
+  it('ignores a superseded socket that opens late', () => {
+    client.connect();
+    const stale = MockSocket.last;
+    vi.advanceTimersByTime(11_000);
+    client.connect({ resume: true });
+
+    stale.open();
+    expect(client.state).not.toBe('open');
+  });
+
+  /**
    * The socket discarded above must not fire its own `onclose`: that would
    * schedule a second reconnect on top of the one just started.
    */
@@ -343,6 +421,40 @@ describe('reconnecting', () => {
 
     vi.advanceTimersByTime(60_000);
     expect(MockSocket.instances).toHaveLength(afterResume);
+  });
+});
+
+/**
+ * The socket is the app's best evidence about the network, and for a while it
+ * was the evidence nobody collected.
+ *
+ * The "this device can't reach the host" banner is raised by the Access probe,
+ * which only runs while a reconnect is failing. So the banner went up
+ * correctly, the socket recovered, the probes stopped — and nothing was left
+ * to take it down again. It sat there over a live session that was streaming
+ * replies perfectly.
+ */
+describe('reporting reachability', () => {
+  it('reports the host reachable as soon as a socket opens', () => {
+    connected();
+    expect(markHostReached).toHaveBeenCalled();
+  });
+
+  it('does not report it for a socket that never opened', () => {
+    client.connect();
+    MockSocket.last.drop();
+    expect(markHostReached).not.toHaveBeenCalled();
+  });
+
+  it('says nothing on behalf of a socket it no longer holds', () => {
+    client.connect();
+    const stale = MockSocket.last;
+    vi.advanceTimersByTime(11_000);
+    client.connect({ resume: true });
+    markHostReached.mockClear();
+
+    stale.open();
+    expect(markHostReached).not.toHaveBeenCalled();
   });
 });
 
@@ -401,5 +513,77 @@ describe('defaultWsUrl', () => {
 
   it('forwards an explicit token, escaped', () => {
     expect(defaultWsUrl('a b&c')).toBe(`ws://${location.host}/api/ws?token=a%20b%26c`);
+  });
+});
+
+/**
+ * Telling "the gate signed me out" apart from "the network is gone".
+ *
+ * A WebSocket handshake refused with a 401, and one that never reached a
+ * server at all, arrive at script as the same bare close event — the status
+ * line is not exposed. So the client cannot read the answer and has to go and
+ * ask over REST instead. Getting the timing of that wrong is not a crash: it
+ * is the app claiming to be reconnecting, for ever, while the only thing that
+ * would fix it is a trip through Google.
+ */
+describe('suspecting the Access gate', () => {
+  /** Let the backoff elapse and kill whatever socket it opened. */
+  function failOnce(): void {
+    vi.advanceTimersByTime(20_000);
+    if (MockSocket.last.readyState === MockSocket.CONNECTING) MockSocket.last.drop();
+  }
+
+  it('does not probe on the first failure — a blip is not a sign-out', () => {
+    connected().drop();
+    expect(probeAccess).not.toHaveBeenCalled();
+  });
+
+  it('probes once the failures stop looking like a blip', () => {
+    connected().drop();
+    failOnce();
+    failOnce();
+    expect(probeAccess).toHaveBeenCalled();
+  });
+
+  /**
+   * The regression this counter exists for.
+   *
+   * `connect({ resume: true })` zeroes the *backoff* counter, and the phone
+   * fires `visibilitychange` every time the screen wakes. Counting failures
+   * with the backoff meant someone watching the banner and prodding the phone
+   * could restart the count indefinitely and never be told they were signed
+   * out — in precisely the situation where they are most likely to be prodding
+   * it.
+   */
+  it('probes even when resumes keep restarting the backoff', () => {
+    connected().drop();
+    client.connect({ resume: true });
+    MockSocket.last.drop();
+    client.connect({ resume: true });
+    MockSocket.last.drop();
+    expect(probeAccess).toHaveBeenCalled();
+  });
+
+  it('keeps asking rather than relying on hitting a threshold exactly', () => {
+    connected().drop();
+    failOnce();
+    failOnce();
+    const afterThreshold = probeAccess.mock.calls.length;
+    failOnce();
+    expect(probeAccess.mock.calls.length).toBeGreaterThan(afterThreshold);
+  });
+
+  it('forgets the failures once a socket actually opens', () => {
+    connected().drop();
+    failOnce();
+    failOnce();
+    expect(probeAccess).toHaveBeenCalled();
+    probeAccess.mockClear();
+
+    // A socket that opens means the gate is letting us through after all.
+    vi.advanceTimersByTime(20_000);
+    MockSocket.last.open();
+    MockSocket.last.drop();
+    expect(probeAccess).not.toHaveBeenCalled();
   });
 });
