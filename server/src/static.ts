@@ -22,7 +22,7 @@
  *    of re-streaming index.html.
  */
 import { Hono } from 'hono';
-import { createReadStream } from 'node:fs';
+import { createReadStream, readFileSync } from 'node:fs';
 import { stat, readdir, readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -108,6 +108,27 @@ const manifest = new Map<string, Entry>();
 let builtWeb = false;
 
 export const hasBuiltWeb = (): boolean => builtWeb;
+
+/**
+ * The stamp of the bundle currently on disk, written by the build (see
+ * `buildStamp` in `web/vite.config.ts`).
+ *
+ * Re-read per call rather than cached at boot: `SKIP_BUILD=1` in the systemd
+ * unit means a rebuild happens *without* restarting this process, so a value
+ * captured at startup would go stale exactly when someone is checking whether
+ * their deploy landed. It is one small file read, on a settings screen.
+ */
+export function webBuildId(): string | null {
+  try {
+    const raw = readFileSync(resolve(webDist, 'build.json'), 'utf8');
+    const parsed: unknown = JSON.parse(raw);
+    const id = (parsed as { id?: unknown }).id;
+    return typeof id === 'string' ? id : null;
+  } catch {
+    // A dist built before this existed, or no dist at all.
+    return null;
+  }
+}
 
 function entryOf(abs: string, size: number, mtimeMs: number): Entry {
   const ext = extname(abs).toLowerCase();

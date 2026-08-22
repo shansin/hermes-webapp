@@ -24,6 +24,8 @@ const BIG_JS = `console.log(${JSON.stringify('x'.repeat(4096))});\n`;
 const get = (path: string, headers: Record<string, string> = {}) =>
   staticRouter.request(new Request(`http://proxy.test${path}`, { headers }));
 
+let webBuildId: typeof import('../src/static.js').webBuildId;
+
 beforeAll(async () => {
   dist = await mkdtemp(join(tmpdir(), 'hermes-dist-'));
   await mkdir(join(dist, 'assets'), { recursive: true });
@@ -41,6 +43,7 @@ beforeAll(async () => {
   staticRouter = mod.staticRouter;
   initStatic = mod.initStatic;
   hasBuiltWeb = mod.hasBuiltWeb;
+  webBuildId = mod.webBuildId;
   await initStatic();
 });
 
@@ -195,6 +198,43 @@ describe('SPA fallback', () => {
   it('never answers /healthz with the shell', async () => {
     const res = await get('/healthz');
     expect(res.status).toBe(404);
+  });
+});
+
+/**
+ * The stamp exists so a person can compare what the server serves against what
+ * their browser is running. Both failure modes below are ordinary — a dist
+ * built before the stamp existed, or a half-written file — and neither may take
+ * the settings screen down with it.
+ */
+describe('the build stamp', () => {
+  it('reports the id the build wrote', async () => {
+    await writeFile(join(dist, 'build.json'), JSON.stringify({ id: '2026-08-22 17:04Z abc1234' }));
+    expect(webBuildId()).toBe('2026-08-22 17:04Z abc1234');
+  });
+
+  it('reports nothing rather than throwing when the file is absent', async () => {
+    await rm(join(dist, 'build.json'), { force: true });
+    expect(webBuildId()).toBeNull();
+  });
+
+  it('survives a file that is not the shape it expects', async () => {
+    await writeFile(join(dist, 'build.json'), '{ this is not json');
+    expect(webBuildId()).toBeNull();
+    await writeFile(join(dist, 'build.json'), JSON.stringify({ id: 42 }));
+    expect(webBuildId()).toBeNull();
+  });
+
+  /**
+   * `SKIP_BUILD=1` in the systemd unit means a rebuild happens without
+   * restarting this process, so a value cached at boot would be stale exactly
+   * when someone is checking whether their deploy landed.
+   */
+  it('picks up a rebuild that happened without a restart', async () => {
+    await writeFile(join(dist, 'build.json'), JSON.stringify({ id: 'first' }));
+    expect(webBuildId()).toBe('first');
+    await writeFile(join(dist, 'build.json'), JSON.stringify({ id: 'second' }));
+    expect(webBuildId()).toBe('second');
   });
 });
 

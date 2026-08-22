@@ -380,6 +380,44 @@ export interface SetModelResult {
  * Note the confirmation path resolves as a 200 with `ok: false`, not an error,
  * so callers must inspect the result rather than trusting the promise.
  */
+/**
+ * Write the model Hermes uses for auxiliary work.
+ *
+ * `scope: "auxiliary"` with no `task` sets every auxiliary task at once —
+ * `vision`, `compression`, `title_generation`, `approval` and the rest — which
+ * is the whole point: these are the jobs nobody wants to configure one at a
+ * time, and pointing them all at one cheap model is the setting people
+ * actually want. Passing a `task` narrows it to that one, which the backend
+ * validates; this app does not expose per-task control because eleven pickers
+ * on a phone is not a feature.
+ *
+ * `provider: "auto"` with an empty `model` is the factory state, and how you
+ * get back to "let Hermes decide" — there is no separate reset call.
+ */
+export function useSetAuxiliaryModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      provider,
+      model,
+      confirmExpensive = false,
+    }: {
+      provider: string;
+      model: string;
+      confirmExpensive?: boolean;
+    }) =>
+      api.post<SetModelResult>('/api/model/set', {
+        scope: 'auxiliary',
+        provider,
+        model,
+        confirm_expensive_model: confirmExpensive,
+      }),
+    onSuccess: (res) => {
+      if (!res.confirm_required) void qc.invalidateQueries({ queryKey: ['model', 'default'] });
+    },
+  });
+}
+
 export function useSetDefaultModel() {
   const qc = useQueryClient();
   return useMutation({
@@ -425,6 +463,13 @@ export function useHealth() {
         version: string | null;
         upstream: string;
         hasToken: boolean;
+        /**
+         * The build the *server* is serving, and when the proxy last started.
+         * Compare `webBuild` against the bundle's own `__BUILD_ID__` to catch a
+         * service worker still holding an older copy of the app.
+         */
+        webBuild?: string | null;
+        serverStartedAt?: string;
         /** Where another device on the LAN should point. Null if undetectable. */
         lanUrl?: string | null;
         /**

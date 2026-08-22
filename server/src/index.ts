@@ -25,7 +25,8 @@ import { readFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createServer as createHttpsServer } from 'node:https';
 
-import { config, getToken, resolveToken, upstreamHttp, upstreamHost } from './config.js';
+import { config, accessEnabled, getToken, resolveToken, upstreamHttp, upstreamHost } from './config.js';
+import { requireAccess } from './auth.js';
 import { log } from './log.js';
 import { apiProxy } from './routers/apiProxy.js';
 import { pushRouter } from './routers/push.js';
@@ -34,9 +35,19 @@ import { notificationsRouter } from './routers/notifications.js';
 import { startPushListener, stopPushListener } from './push/events.js';
 import { pushPublicKey } from './push/send.js';
 import { attachWsProxy } from './routers/wsProxy.js';
-import { staticRouter, hasBuiltWeb, initStatic } from './static.js';
+import { staticRouter, hasBuiltWeb, webBuildId, initStatic } from './static.js';
 
 const app = new Hono();
+
+/**
+ * The gate, first in line. Registered before every route — including
+ * `/healthz`, which `requireAccess` exempts itself rather than relying on
+ * being declared above this line, so reordering the routes below can never
+ * quietly open a door.
+ *
+ * A no-op unless Cloudflare Access is configured; see `auth.ts`.
+ */
+app.use('*', requireAccess);
 
 /**
  * Upstream health, cached briefly.
@@ -47,6 +58,13 @@ const app = new Hono();
  */
 const HEALTH_TTL_MS = 2000;
 let healthAt = 0;
+/**
+ * When this process came up — the closest thing the proxy has to a deploy
+ * timestamp, since it runs from source under `tsx` and has no build artefact
+ * of its own. Restarting the service is the deploy.
+ */
+const startedAt = new Date().toISOString();
+
 let healthCache: { backend: 'up' | 'down' | 'unauthorized'; version: string | null } | null = null;
 let healthInFlight: Promise<{
   backend: 'up' | 'down' | 'unauthorized';
@@ -99,6 +117,14 @@ app.get('/healthz', async (c) => {
     upstream: upstreamHost,
     hasToken: Boolean(token),
     webBuilt: hasBuiltWeb(),
+    /**
+     * What this process is *serving*, and how long it has been up. The client
+     * reports what it is *running* (`__BUILD_ID__`, baked into its bundle);
+     * the two differing is a service worker holding an old copy, which is
+     * otherwise invisible from both ends.
+     */
+    webBuild: webBuildId(),
+    serverStartedAt: startedAt,
     pushEnabled: Boolean(pushPublicKey()),
     lanUrl: lanUrl(),
     publicUrl: config.PUBLIC_URL ?? null,
@@ -182,9 +208,20 @@ const server = serve(
     const scheme = config.https ? 'https' : 'http';
     const lan = lanAddress();
     log.info(`Hermes Control listening on ${scheme}://${config.PROXY_HOST}:${info.port}`);
-    if (lan) log.info(`  On your phone:  ${scheme}://${lan}:${info.port}`);
+    // Only when we are actually listening on the LAN. Bound to loopback — the
+    // Cloudflare deployment — that address refuses connections, and printing it
+    // sends you off to debug a phone that was never going to reach it.
+    const onLan = config.PROXY_HOST !== '127.0.0.1' && config.PROXY_HOST !== 'localhost';
+    if (lan && onLan) log.info(`  On your phone:  ${scheme}://${lan}:${info.port}`);
     if (config.PUBLIC_URL) log.info(`  Public URL:     ${config.PUBLIC_URL}`);
     log.info(`  Hermes backend: ${upstreamHost} (token ${token ? 'ok' : 'MISSING'})`);
+    // A proxy that thinks it is gated but is not is the failure worth shouting
+    // about: everything looks healthy while the agent is wide open.
+    if (accessEnabled) {
+      log.info(`  Access gate:    on (${config.ACCESS_TEAM_DOMAIN})`);
+    } else if (config.PUBLIC_URL && !config.PUBLIC_URL.includes('ts.net')) {
+      log.warn('  Access gate:    OFF — PUBLIC_URL is set but nothing authenticates callers.');
+    }
     if (!config.https && !config.PUBLIC_URL) {
       log.info('  HTTP mode — PWA install/offline/push stay dormant until TLS is configured.');
     } else if (pushPublicKey()) {

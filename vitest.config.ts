@@ -38,6 +38,15 @@ export default defineConfig({
         resolve: {
           alias: { '@': resolve(__dirname, 'web/src') },
         },
+        /**
+         * `__BUILD_ID__` is substituted by `vite.config.ts` at build time, and
+         * that config is not loaded here. Without this, importing anything that
+         * reads the stamp throws a bare ReferenceError in a test that has
+         * nothing to do with builds.
+         */
+        define: {
+          __BUILD_ID__: JSON.stringify('test-build'),
+        },
       },
     ],
     coverage: {

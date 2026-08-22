@@ -334,6 +334,16 @@ export function SettingsTab() {
 
   const health = useHealth();
 
+  /**
+   * The bundle in this tab is older than the one on disk.
+   *
+   * Only ever reported when the server actually knows its own build: a dist
+   * built before the stamp existed reports null, and "null !== ours" is not a
+   * reason to tell someone their app is stale.
+   */
+  const serverBuild = health.data?.webBuild;
+  const staleBundle = Boolean(serverBuild) && serverBuild !== __BUILD_ID__;
+
   // Triple-tap the heading to reveal the dev panel.
   const taps = useRef<number[]>([]);
   const onHeadingTap = () => {
@@ -435,6 +445,21 @@ export function SettingsTab() {
       <NotificationsSection />
 
       <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
+        BUILD
+      </div>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <Row label="App" value={__BUILD_ID__} />
+        <Row label="Server" value={health.data?.webBuild ?? '…'} />
+        <Row label="Proxy up since" value={formatStarted(health.data?.serverStartedAt)} />
+        {staleBundle && (
+          <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--warn)', marginTop: 8 }}>
+            The server has a newer build than this tab is running. Reload to pick
+            it up — an installed app may need closing and reopening.
+          </div>
+        )}
+      </div>
+
+      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
         BACKEND
       </div>
       <div className="card" style={{ marginBottom: 16 }}>
@@ -507,6 +532,20 @@ export function SettingsTab() {
       {devPanel && <DevPanel />}
     </div>
   );
+}
+
+/**
+ * "3h ago (16:41Z)" — the elapsed time is what someone actually wants when
+ * asking whether a restart took, and the absolute value is what they need to
+ * match against a log line.
+ */
+function formatStarted(iso?: string): string {
+  if (!iso) return '…';
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return iso;
+  const mins = Math.max(0, Math.round((Date.now() - then) / 60_000));
+  const ago = mins < 60 ? `${mins}m` : mins < 1440 ? `${Math.floor(mins / 60)}h` : `${Math.floor(mins / 1440)}d`;
+  return `${ago} ago (${iso.slice(11, 16)}Z)`;
 }
 
 function Row({
