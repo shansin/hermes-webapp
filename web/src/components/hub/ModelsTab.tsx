@@ -13,6 +13,7 @@
  */
 import { Link } from 'react-router-dom';
 import { DefaultModelSection } from './DefaultModelSection';
+import { AuxiliaryModelSection } from './AuxiliaryModelSection';
 import { IconUsage } from '../shared/Icons';
 import { buzz } from '../../lib/haptics';
 
@@ -20,6 +21,7 @@ export function ModelsTab() {
   return (
     <div style={{ padding: 12 }}>
       <DefaultModelSection />
+      <AuxiliaryModelSection />
 
       <Link to="/usage" className="card usage-crosslink" onClick={() => buzz('tap')}>
         <span className="usage-crosslink__icon">
