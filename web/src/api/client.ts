@@ -6,6 +6,7 @@
  * explicitly, which supports pointing the app at a Hermes instance directly.
  */
 import { useUi } from '../store/ui';
+import { probeAccess, markAccessRefused } from '../lib/accessSession';
 
 export class ApiError extends Error {
   constructor(
@@ -61,10 +62,30 @@ function errorMessage(body: unknown, res: Response): string {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: { ...authHeaders(), ...(init.headers ?? {}) },
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      ...init,
+      headers: { ...authHeaders(), ...(init.headers ?? {}) },
+    });
+  } catch (err) {
+    // A rejected fetch is either the network being gone or Cloudflare Access
+    // bouncing us to a login page that sends no CORS headers — the two are
+    // indistinguishable from here, so ask. See `lib/accessSession.ts`.
+    //
+    // Do not treat this as the app's expiry detector. The service worker's
+    // NetworkFirst route answers a failed GET of the list endpoints out of the
+    // cache, so those never get here — see the comment on that route in
+    // `vite.config.ts`. Writes and uncached reads do; the gateway socket covers
+    // the rest.
+    void probeAccess();
+    throw err;
+  }
+
+  // The proxy's own gate answers 401 when it holds no valid Access assertion.
+  // Believe it directly rather than probing: `/healthz` is exempt from the
+  // gate, so a probe would answer 200 and we would go on reconnecting for ever.
+  if (res.status === 401 || res.status === 403) markAccessRefused();
 
   if (!res.ok) {
     const body = await parse(res).catch(() => null);

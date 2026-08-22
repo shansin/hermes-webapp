@@ -33,7 +33,30 @@ stripping, and dropping a scraped token on a 401.
 **`server/test/wsProxy.test.ts`** — a real `ws` server standing in for Hermes
 and a real client for the phone. The handshake disguise is not observable any
 other way. Includes the regression for frames sent before the upstream leg is
-ready.
+ready, and the Access gate on upgrades — which needs its own coverage because
+upgrades bypass Hono entirely, so gating `/api/*` does not gate the socket that
+actually drives the agent.
+
+The keepalive lives there too: Cloudflare closes an idle proxied WebSocket at
+100s, and the failure is a working app that flashes "Reconnecting…" for ever
+while logging nothing at either end.
+
+**`server/test/auth.test.ts`** — the Cloudflare Access gate, against real RS256
+keys and a real JWKS document rather than a stubbed `jwtVerify`: the claim
+checks *are* the feature. A gate that wrongly rejects locks out a phone, which
+announces itself; a gate that wrongly accepts leaves the agent wide open and
+looks identical from every screen. Covers signature, `aud` (the only thing
+separating this application's tokens from another app on the same Cloudflare
+account), expiry, the email allowlist, 401-vs-403, the `/healthz` exemption,
+key-set caching, and that an invented `kid` cannot be used to make the proxy
+hammer Cloudflare.
+
+**`web/test/accessSession.test.ts`** — telling an expired sign-in apart from a
+dead network. The two are indistinguishable in the browser (a rejected `fetch`,
+a 1006 close) and want opposite responses, so the discrimination is tested
+rather than assumed — including that the probe uses `redirect: 'manual'`, which
+is the only way the redirect is observable at all, and that a screen full of
+simultaneous failures produces exactly one probe.
 
 **`server/test/store.test.ts` / `feed.test.ts`** — the two JSON files the proxy
 owns. Upsert-by-endpoint, atomic writes, `0600` permissions, and recovery from a

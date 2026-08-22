@@ -1110,6 +1110,22 @@ button.header__sub::after {
   color: #fff;
 }
 
+/* The sign-in prompt is the one banner that is actionable, so its control has
+   to read as a control — inheriting the banner's own colours keeps it legible
+   against the red without inventing a second palette. */
+.conn-banner__action {
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  min-height: 32px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
 /* --- pull to refresh ------------------------------------------------------ */
 
 .ptr {

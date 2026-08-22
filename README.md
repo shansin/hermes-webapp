@@ -1,7 +1,8 @@
 # Hermes Control
 
 A phone-first web app (and dormant PWA) for driving the [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-running on your own machine, from your phone on the same LAN.
+running on your own machine — from your phone on the same LAN, over Tailscale,
+or from anywhere behind a Google sign-in.
 
 Chat with live token streaming, browse and resume sessions, run the kanban
 board, edit memory, toggle skills, manage cron jobs, and watch usage — all from
@@ -12,6 +13,14 @@ Phone (LAN) ──http──> Node proxy :3000            Hermes backend :9119
                        ├─ serves the built React app   ├─ REST /api/*
                        ├─ /api/*   HTTP proxy ────────>├─ JSON-RPC WS /api/ws
                        └─ /api/ws  WS proxy ──────────>└─ kanban plugin API
+```
+
+Published, the same proxy sits behind Cloudflare, which does the sign-in before
+anything reaches your machine:
+
+```
+Phone (anywhere) ──https──> Cloudflare Access ──tunnel──> proxy :3000 (loopback)
+                              └─ Google sign-in, one allowed account
 ```
 
 ## Why the proxy exists
@@ -54,6 +63,23 @@ since the run just rebuilt the bundle that instance was serving.
 bash start.sh --bg        # detach; logs to .logs/hermes-control.log
 bash start.sh --status    # report what's up, change nothing
 ```
+
+### Two config files, one per deployment
+
+`.env` is the base. A deployment layers on top of it through `ENV_FILE`, rather
+than being edited into `.env` and edited back out again:
+
+```bash
+bash start.sh                        # .env alone — LAN, and Tailscale if it's up
+ENV_FILE=.env.public bash start.sh   # .env + .env.public — Cloudflare, gated
+```
+
+Later file wins, and both are read before the proxy starts, so switching
+between LAN and public is a choice at launch instead of a diff to remember.
+`.env.public` is what [Going public](#going-public-a-real-domain-behind-google-sign-in)
+below fills in; `.env*` is gitignored.
+
+Everything is optional and documented in `.env.example`.
 
 ### The session token
 
@@ -179,8 +205,10 @@ enable service workers, installability, push, and the **microphone** in a
 **secure context**. Over plain HTTP on a LAN IP none of it activates, and the
 app degrades to a browser bookmark with in-app toasts instead of push.
 
-Tailscale is the way to switch all of it on, with no code change and no
-certificate to install on the phone: `tailscale serve` terminates TLS under this
+Tailscale is the simplest way to switch all of it on, with no code change and
+no certificate to install on the phone (the other is
+[going public](#going-public-a-real-domain-behind-google-sign-in), which gives
+you HTTPS on your own domain instead of a `ts.net` name): `tailscale serve` terminates TLS under this
 machine's MagicDNS name using a real Let's Encrypt cert, and forwards to the
 proxy over loopback. It also makes the app reachable when you're away from the
 house.
@@ -337,11 +365,155 @@ Two things behave differently than you might expect:
 With the app open and visible, the service worker suppresses its banner and
 hands the text to the page instead, so an event never arrives twice.
 
+## Going public: a real domain behind Google sign-in
+
+Tailscale covers "reachable when I'm out"; this covers "on my own domain, from
+any device, without installing anything". **Cloudflare Tunnel** carries traffic
+to the box and **Cloudflare Access** does the Google sign-in at the edge, so an
+unauthorised request is refused before it reaches your machine at all. Both are
+free, and no router port is opened — `cloudflared` dials *out*, so your home IP
+never appears in DNS.
+
+The domain's nameservers have to point at Cloudflare (free; registration can
+stay wherever it is). Then, roughly:
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create hermes
+cloudflared tunnel route dns hermes hermes.example.com
+```
+
+…with `~/.cloudflared/config.yml` pointing the hostname at `http://127.0.0.1:3000`,
+and an Access **self-hosted application** on that hostname whose policy allows
+exactly the Google addresses you name. WebSockets need no special configuration:
+an `http://` service forwards the `Upgrade` header, which `/api/ws` depends on.
+
+Copy the application's **Audience (AUD) tag** out of Access, and write
+`.env.public`:
+
+```bash
+# .env.public
+PROXY_HOST=127.0.0.1                       # cloudflared reaches it over loopback
+PUBLIC_URL=https://hermes.example.com
+ACCESS_TEAM_DOMAIN=yourteam.cloudflareaccess.com
+ACCESS_AUD=<the 64-hex audience tag>
+ACCESS_ALLOWED_EMAILS=you@gmail.com,backup@gmail.com
+```
+
+```bash
+ENV_FILE=.env.public bash start.sh
+```
+
+`PROXY_HOST=127.0.0.1` is the line that makes the gate mean something: it closes
+the LAN port, so the tunnel becomes the only way in. Your phone at home then
+uses the public URL too — which is no loss, because it finally gets HTTPS
+everywhere and the whole dormant PWA layer (install, offline, push, microphone)
+wakes up on every device without Tailscale.
+
+### The proxy checks the sign-in too
+
+Setting those three `ACCESS_*` values also makes the proxy verify Access's
+signed assertion itself, on every request **and** every WebSocket upgrade.
+
+That is not redundant. Cloudflare's check is the one doing the work, but without
+a second one, a tunnel pointed at the wrong port, a `cloudflared` that died, or
+a stray client on the LAN each leaves the agent wide open — and every screen in
+the app looks perfectly healthy while it happens. With it, all of those fail
+closed. `bash start.sh --status` reports both the gate and the tunnel, so a dead
+`cloudflared` is visible instead of showing a green `/healthz` behind an
+unreachable URL.
+
+Enforcement is off unless all three are set, so `.env` alone — dev, LAN,
+Tailscale — behaves exactly as it always did.
+
+Cloudflare closes an idle proxied WebSocket at 100 seconds, and the gateway
+socket is idle between turns — so the proxy pings the browser every 45s to keep
+it from looking idle. Without that the app works but spends its life flashing
+"Reconnecting…". Nothing is logged when it happens, which is why it is pinned
+down by a test.
+
+Signing out is handled: when the Access session lapses the app says "Signed
+out" and offers a button, rather than sitting on "Reconnecting…" forever. It has
+to work that way because an expired session and a dead network are
+indistinguishable in a browser — see `web/src/lib/accessSession.ts` for why the
+detection looks the way it does.
+
+### Rebuilding from scratch
+
+`setup_hermes_shsin_blog.sh` stands the whole public deployment back up on a
+fresh machine — dependencies, web build, `cloudflared`, the tunnel, the Access
+application and its policy, `.env.public`, and both systemd services. It assumes
+only that Hermes itself is installed, needs no root, and is safe to re-run.
+
+```bash
+bash setup_hermes_shsin_blog.sh
+```
+
+It asks for a Cloudflare API token once and caches it at `~/.cf-token`.
+
+What it *adopts* rather than recreates, because those live in the Cloudflare
+account and a format does not touch them: the zone and its DNS, the Zero Trust
+organisation, the Google identity provider, and the Access application — the
+last of these matters, since recreating the app would mint a new Audience tag
+and silently invalidate every live session.
+
+What it always rebuilds: the tunnel credentials. `tunnel_secret` is returned
+once at creation and never again, so a machine that lost `~/.cloudflared` cannot
+rejoin its old tunnel. The script notices, stops the connector, deletes the
+stale tunnel, waits for the name to come free, creates a new one and repoints
+the hostname at it. (Skipping the stop leaves the tunnel live-connected and the
+name reserved, and the next step fails with a mystifying `1013`.)
+
+The one thing no script can do is the Google OAuth client — Google exposes no
+API for creating Web-application OAuth clients. If the identity provider is
+missing, the script prints the exact steps and the redirect URI, then stops.
+
+It finishes with seven checks, including the one that matters most: that
+`/api/sessions` on the origin returns **401**. A 200 there would mean the proxy
+is trusting the tunnel blindly.
+
+### Surviving a reboot
+
+`start.sh` alone does not: it detaches the proxy, which dies with the machine,
+and the tunnel would come back up to find nothing behind it — a Cloudflare 502
+that looks like Cloudflare's fault when nothing is listening. Two systemd
+**user** services close that (no root; `loginctl enable-linger $USER` is what
+makes user services start at boot without logging in):
+
+```bash
+systemctl --user enable --now cloudflared      # the tunnel
+systemctl --user enable --now hermes-webapp    # start.sh, which also starts Hermes
+```
+
+`hermes-webapp.service` runs `start.sh` in the foreground with
+`ENV_FILE=.env.public` and `SKIP_BUILD=1`, so it health-checks the Hermes
+backend and starts it if needed, then execs the proxy. Skipping the build keeps
+boot fast — run `pnpm build` yourself after changing code.
+
+```bash
+systemctl --user status hermes-webapp
+journalctl --user -u hermes-webapp -f
+```
+
+To take it down: `systemctl --user disable --now hermes-webapp`, then drop
+`ENV_FILE` and run `bash start.sh`. Nothing about the LAN setup was changed.
+
 ## Security
 
-There is no user authentication — this is designed for a trusted home LAN, and
-anyone who can reach `:3000` gets full control of your agent. Don't port-forward
-it. If you want access from outside, use Tailscale rather than opening a port.
+The proxy has no user accounts of its own: reaching `:3000` is full control of
+your agent. What stands in front of that port is the entire security model, and
+there are two supported answers.
+
+**LAN / Tailscale (default).** Nothing authenticates callers, so this assumes a
+trusted home network. Don't port-forward it; use Tailscale if you want in from
+outside.
+
+**Public (Cloudflare Tunnel + Access).** Cloudflare refuses anyone outside your
+allowlist at the edge, the proxy binds loopback so the tunnel is the only route
+in, and it re-verifies the signed assertion itself as described above.
+
+Either way, credentials for the Hermes backend stay server-side — the phone
+never holds one.
 
 ## Layout
 
@@ -349,6 +521,7 @@ it. If you want access from outside, use Tailscale rather than opening a port.
 server/src/
   index.ts             app wiring, HTTPS when configured, graceful shutdown
   config.ts            zod-validated env + token discovery
+  auth.ts              the Cloudflare Access gate (off unless configured)
   routers/apiProxy.ts  /api/* → loopback, Host + Bearer rewrite, streamed bodies
   routers/wsProxy.ts   WS upgrade forwarding with the Origin rewrite
   routers/push.ts      /push/* — subscribe, unsubscribe, send a test
@@ -365,11 +538,14 @@ web/src/
   screens/             Chat, Sessions, Kanban, Files, and the Hub pages
   lib/push.ts          permission, subscription, and what to say when it fails
   lib/sharedIntake.ts  claiming a shared photo back off the service worker
+  lib/accessSession.ts telling an expired sign-in apart from a dead network
   components/          chat, composer, sessions, kanban, hub, shared
     chat/ClarifySheet.tsx  the agent's own question, asked mid-turn
 web/public/
   push-sw.js           push + notificationclick, imported by the Workbox worker
   share-sw.js          the share-target POST, filed for the page to claim
+.env                   the base config (LAN / Tailscale)
+.env.public            layered on top for the Cloudflare deployment, via ENV_FILE
 ```
 
 ### A note on the protocol

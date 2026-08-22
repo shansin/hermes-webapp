@@ -38,6 +38,9 @@ importers:
       hono:
         specifier: ^4.6.14
         version: 4.13.2
+      jose:
+        specifier: ^6.2.9
+        version: 6.2.9
       pino:
         specifier: ^9.5.0
         version: 9.14.0
@@ -2451,6 +2454,9 @@ packages:
     resolution: {integrity: sha512-wpHYzhxiVQL+IV05BLE2Xn34zW1S223hvjtqk0+gsPrwd/8JNLXJgZZM/iPFsYc1xyphF+6M6EvdE5E9MBGkDA==}
     engines: {node: '>=10'}
     hasBin: true
+
+  jose@6.2.9:
+    resolution: {integrity: sha512-XrchZOFZUl/T3vTwRe8XK+cJrGtMF4th1ARnDfwbBXFKThGhlsxEE4Zu03AD/bjJSt/9jT/mxrOCkJWOg77aPA==}
 
   js-tokens@10.0.0:
     resolution: {integrity: sha512-lM/UBzQmfJRo9ABXbPWemivdCW8V2G8FHaHdypQaIy523snUjog0W71ayWXTjiR+ixeMyVHN2XcpnTd/liPg/Q==}
@@ -6081,6 +6087,8 @@ snapshots:
       async: 3.2.6
       filelist: 1.0.6
       picocolors: 1.1.1
+
+  jose@6.2.9: {}
 
   js-tokens@10.0.0: {}
 

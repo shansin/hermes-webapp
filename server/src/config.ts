@@ -69,6 +69,21 @@ const Schema = z.object({
     .url()
     .optional()
     .transform((u) => u?.replace(/\/+$/, '')),
+  /**
+   * Cloudflare Access — the public-endpoint gate.
+   *
+   * Access performs the Google sign-in at Cloudflare's edge and forwards a
+   * signed JWT (`Cf-Access-Jwt-Assertion`) with every request it lets past.
+   * Verifying that JWT here too is not redundant belt-and-braces: it is what
+   * makes a mis-pointed tunnel, or anything that reaches this port directly,
+   * fail closed instead of silently handing over the agent.
+   *
+   * Enforcement is off unless ALL THREE are set, so `pnpm dev:server`, plain
+   * LAN use and Tailscale keep working with no configuration at all.
+   */
+  ACCESS_TEAM_DOMAIN: z.string().default(''),
+  ACCESS_AUD: z.string().default(''),
+  ACCESS_ALLOWED_EMAILS: z.string().default(''),
   HTTPS_CERT: z.string().optional(),
   HTTPS_KEY: z.string().optional(),
   /**
@@ -170,6 +185,23 @@ export function clearToken(): void {
   if (env.HERMES_TOKEN) return;
   sessionToken = '';
 }
+
+/**
+ * Who may drive the agent, lower-cased for comparison. Empty unless the
+ * Cloudflare Access gate is configured.
+ */
+export const allowedEmails: ReadonlySet<string> = new Set(
+  env.ACCESS_ALLOWED_EMAILS.split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+/**
+ * The enforcement predicate, in one place so the HTTP middleware and the raw
+ * WS upgrade handler can never disagree about whether the gate is up.
+ */
+export const accessEnabled =
+  Boolean(env.ACCESS_TEAM_DOMAIN) && Boolean(env.ACCESS_AUD) && allowedEmails.size > 0;
 
 /**
  * Where the proxy keeps files it owns (push subscriptions, the generated VAPID

@@ -6,6 +6,14 @@ import { Suspense, lazy, useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { ChatScreen } from './screens/ChatScreen';
 import { HubPage, HubRedirect } from './screens/HubPage';
+import {
+  onAccessExpired,
+  isAccessExpired,
+  goToAccessLogin,
+  onHostReachabilityChange,
+  isHostUnreachable,
+  stripLoginMarker,
+} from './lib/accessSession';
 
 /**
  * Everything except chat is split out of the initial download.
@@ -84,6 +92,21 @@ export function App() {
 
   // Open the socket once for the app's lifetime and mirror its state into the
   // UI store so any screen can react to a drop.
+  const [accessExpired, setAccessExpired] = useState(isAccessExpired);
+
+  /**
+   * A returning login leaves `?cf_login=` in the address bar — it exists only
+   * to get the navigation past the service worker. Clear it once we are back,
+   * so it does not end up bookmarked or shared.
+   */
+  useEffect(() => {
+    stripLoginMarker();
+    return onAccessExpired(() => setAccessExpired(true));
+  }, []);
+
+  const [hostUnreachable, setHostUnreachable] = useState(isHostUnreachable);
+  useEffect(() => onHostReachabilityChange(setHostUnreachable), []);
+
   useEffect(() => {
     const off = hermes.onState(setConnection);
     hermes.setUrl(defaultWsUrl(token || undefined));
@@ -138,7 +161,34 @@ export function App() {
 
   return (
     <div className="app">
-      {connection !== 'open' && showBanner && (
+      {accessExpired ? (
+        /* An expired Access session looks exactly like a dead network from in
+           here, and the reconnect banner would keep insisting it is one. Say
+           what actually happened and offer the only thing that fixes it. */
+        <div role="alert" className="conn-banner conn-banner--closed">
+          Signed out.{' '}
+          <button type="button" className="conn-banner__action" onClick={goToAccessLogin}>
+            Sign in again
+          </button>
+        </div>
+      ) : hostUnreachable && connection !== 'open' ? (
+        /* Not the same thing as a dead agent, and saying "Reconnecting…" for it
+           implies Hermes is at fault when the fault is on this device. Traced
+           from four separate outages where the client's own DNS resolver
+           returned empty answers: every request died before leaving the
+           machine, `navigator.onLine` stayed `true` throughout, and the app had
+           nothing true to say. No action offered because none helps — the
+           retry loop is already running and picks up by itself.
+
+           Gated on the socket being down as well as the flag being set. The
+           two cannot honestly disagree — an open gateway socket *is* the host
+           being reachable — so if they ever do, the socket is the one telling
+           the truth and this banner must not contradict it on screen. */
+        <div role="alert" className="conn-banner conn-banner--closed">
+          This device can’t reach {window.location.host} — check its network. Retrying…
+        </div>
+      ) : (
+        connection !== 'open' && showBanner && (
         <div
           role="status"
           aria-live="polite"
@@ -152,6 +202,7 @@ export function App() {
               ? 'Reconnecting…'
               : 'Disconnected'}
         </div>
+        )
       )}
 
       <div className="app__body">

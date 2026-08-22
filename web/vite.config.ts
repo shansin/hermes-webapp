@@ -2,6 +2,60 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'node:path';
+import { execSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+
+/**
+ * A stamp identifying this build, baked into the bundle and written beside it.
+ *
+ * It exists to answer one question that was previously unanswerable from the
+ * outside: *is the browser running the code we last deployed?* A phone holds
+ * the app in a service worker precache, so a tab can serve a build from days
+ * ago while every server-side symptom says the fix is live. Diagnosing that
+ * meant grepping the built bundle for a string and comparing asset hashes by
+ * hand.
+ *
+ * Minute precision, because it is read by a person comparing two values on a
+ * screen, not by a machine. The short SHA rides along when git is available —
+ * the timestamp says *when*, the SHA says *what*, and only the second one
+ * survives being rebuilt from an unchanged tree.
+ */
+function buildStamp(): string {
+  const when = new Date().toISOString().slice(0, 16).replace('T', ' ') + 'Z';
+  try {
+    const sha = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+    const dirty = execSync('git status --porcelain', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+    return `${when} ${sha}${dirty ? '+' : ''}`;
+  } catch {
+    // Not a git checkout, or git is absent. The timestamp alone still
+    // identifies the build well enough to compare two of them.
+    return when;
+  }
+}
+
+const BUILD_ID = buildStamp();
+
+/**
+ * Write the same stamp into `dist/`, so the server can report what it is
+ * *serving* while the bundle reports what the browser is *running*. Those two
+ * being different is exactly the stale-service-worker case, and it is only
+ * detectable because the value is recorded in both places.
+ */
+function emitBuildStamp() {
+  return {
+    name: 'hermes-build-stamp',
+    closeBundle() {
+      writeFileSync(
+        resolve(__dirname, 'dist', 'build.json'),
+        JSON.stringify({ id: BUILD_ID }) + '\n',
+      );
+    },
+  };
+}
 
 /**
  * The PWA layer is built but dormant on plain HTTP: browsers only register a
@@ -11,6 +65,9 @@ import { resolve } from 'node:path';
 export default defineConfig({
   resolve: {
     alias: { '@': resolve(__dirname, 'src') },
+  },
+  define: {
+    __BUILD_ID__: JSON.stringify(BUILD_ID),
   },
   server: {
     host: true, // listen on the LAN so the phone can hit the dev server
@@ -54,6 +111,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    emitBuildStamp(),
     react(),
     VitePWA({
       registerType: 'autoUpdate',
@@ -160,7 +218,10 @@ export default defineConfig({
          * itself, and Workbox must not race it with an index.html from
          * precache.
          */
-        navigateFallbackDenylist: [/^\/api/, /^\/healthz/, /^\/push/, /^\/share/],
+        // `cf_login` is load-bearing: it is how the app hands a navigation back
+        // to Cloudflare Access. Without it here, `navigateFallback` answers the
+        // reload out of the precache and the login redirect never happens.
+        navigateFallbackDenylist: [/^\/api/, /^\/healthz/, /^\/push/, /^\/share/, /[?&]cf_login=/],
         runtimeCaching: [
           {
             // Session history is the one thing worth reading offline.
@@ -182,6 +243,26 @@ export default defineConfig({
             },
           },
           {
+            /**
+             * This route swallows an expired Cloudflare Access session.
+             *
+             * NetworkFirst falls back to the cache on a network *error*, and a
+             * cross-origin bounce to the Access login page is exactly that: the
+             * `fetch` rejects, Workbox catches it, and `api/client.ts` is handed
+             * a cheerful cached 200 instead of the failure it probes on. So the
+             * REST side of the expiry detection in `lib/accessSession.ts` cannot
+             * fire for these reads at all, and the authority is the gateway
+             * socket — the WS handshake is not a `fetch` and nothing caches it.
+             *
+             * Two things do still reach the app, which is why this is a gap and
+             * not a hole: a 401/403 is a real response, so Workbox returns it
+             * rather than the cache, and the route matches GET only, so every
+             * write still rejects and still probes.
+             *
+             * Narrowing this to un-mask the reads would trade a detection path
+             * the socket already covers for the offline session list, which is
+             * the whole reason the route exists.
+             */
             urlPattern: /\/api\/(sessions|skills|cron|plugins\/kanban)\b.*$/,
             handler: 'NetworkFirst',
             options: {
