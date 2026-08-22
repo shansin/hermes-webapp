@@ -14,6 +14,7 @@
 #   bash start.sh --bg         # detach, log to .logs/hermes-control.log
 #   bash start.sh --status     # report, change nothing
 #   TAILSCALE=1 bash start.sh  # with the HTTPS front
+#   ENV_FILE=.env.public bash start.sh   # the Cloudflare Tunnel + Access deployment
 #
 # Everything is configurable through .env — see .env.example.
 
@@ -23,7 +24,44 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 # --- config ------------------------------------------------------------------
 
+# `.env` is the base; ENV_FILE layers a deployment on top of it. The public
+# (Cloudflare) setup lives in `.env.public` rather than being edited into
+# `.env`, so the LAN config stays intact and switching between them is a
+# choice at launch rather than a diff to remember. Later file wins — the
+# proxy reads real env before its own .env, so exported values take priority.
 [ -f .env ] && set -a && . ./.env && set +a || true
+
+ENV_FILE="${ENV_FILE:-}"
+
+# Inherit the running service's ENV_FILE when none was given.
+#
+# The systemd unit launches this script with ENV_FILE=.env.public, so a bare
+# `bash start.sh` used to load `.env` instead and describe — or start — a
+# completely different deployment: PROXY_HOST=0.0.0.0 with no Access gate,
+# against a service running on loopback behind Cloudflare. `--status` reported
+# the live public deployment as plain-HTTP LAN mode and advertised a URL that
+# was refused, and a manual run bound the agent to the LAN and killed the
+# backend out of the unit's cgroup on its way past.
+#
+# Reading the unit's own value keeps a hand-run consistent with what is already
+# running. Explicit ENV_FILE still wins, and nothing here fails if systemd is
+# absent.
+if [ -z "${ENV_FILE}" ] && command -v systemctl >/dev/null 2>&1; then
+  if systemctl --user is-active --quiet hermes-webapp 2>/dev/null; then
+    _unit_env="$(systemctl --user show hermes-webapp -p Environment --value 2>/dev/null || true)"
+    for _kv in ${_unit_env}; do
+      case "${_kv}" in
+        ENV_FILE=*) ENV_FILE="${_kv#ENV_FILE=}" ;;
+      esac
+    done
+    [ -n "${ENV_FILE}" ] && echo "  Using ENV_FILE=${ENV_FILE} from the running hermes-webapp service."
+  fi
+fi
+
+if [ -n "${ENV_FILE}" ]; then
+  [ -f "${ENV_FILE}" ] || { echo "ENV_FILE=${ENV_FILE} not found" >&2; exit 1; }
+  set -a && . "./${ENV_FILE#./}" && set +a
+fi
 
 HERMES_HOST="${HERMES_HOST:-127.0.0.1}"
 HERMES_PORT="${HERMES_PORT:-9119}"
@@ -74,6 +112,20 @@ authed() {
 
 # The proxy's own endpoint, as opposed to the backend's /api/health above: a
 # 200 here means the thing on the port is Hermes Control and not something else.
+# Is the public endpoint actually being served? With the Access gate configured
+# the proxy binds loopback, so a dead tunnel means the app is unreachable from
+# everywhere except this machine — while `/healthz` stays perfectly green. The
+# symptom has no signal attached unless we go and look.
+tunnel_up() {
+  command -v cloudflared >/dev/null || return 1
+  systemctl is-active --quiet cloudflared 2>/dev/null && return 0
+  pgrep -x cloudflared >/dev/null 2>&1
+}
+
+access_configured() {
+  [ -n "${ACCESS_TEAM_DOMAIN:-}" ] && [ -n "${ACCESS_AUD:-}" ] && [ -n "${ACCESS_ALLOWED_EMAILS:-}" ]
+}
+
 proxy_up() {
   curl -fsS -m 3 "http://127.0.0.1:${PROXY_PORT}/healthz" >/dev/null 2>&1
 }
@@ -148,9 +200,19 @@ report() {
 
   echo
   bold "Hermes Control"
+  [ -n "${ENV_FILE:-}" ] && echo "  Config:          .env + ${ENV_FILE}"
   echo "  On this machine: ${scheme}://localhost:${PROXY_PORT}"
-  [ -n "${lan_ip}" ] && echo "  On your phone:   ${scheme}://${lan_ip}:${PROXY_PORT}"
-  if [ -n "${TS_URL}" ]; then
+  # Only when the proxy is actually listening on the LAN. Bound to loopback
+  # (the Cloudflare deployment), that address refuses connections, and printing
+  # it sends you off to debug a phone that was never going to reach it.
+  case "${PROXY_HOST:-0.0.0.0}" in
+    127.0.0.1|localhost|::1) ;;
+    *) [ -n "${lan_ip}" ] && echo "  On your phone:   ${scheme}://${lan_ip}:${PROXY_PORT}" ;;
+  esac
+  if access_configured && [ -n "${PUBLIC_URL:-}" ]; then
+    echo "  Public:          ${PUBLIC_URL}   <- Google sign-in, open this one"
+    tunnel_up || warn "  ! cloudflared is not running - that URL will not resolve to this box."
+  elif [ -n "${TS_URL}" ]; then
     echo "  Over Tailscale:  ${TS_URL}   <- open this one to install the PWA"
   elif [ "${scheme}" = "http" ]; then
     warn "  HTTP mode - install/offline/push stay dormant (see README)."
@@ -181,6 +243,13 @@ if [ "${STATUS_ONLY}" = "1" ]; then
     warn "x Hermes backend down"
   fi
   proxy_up  && bold "* Proxy up on ${PROXY_PORT}"                          || warn "x Proxy not running"
+  if access_configured; then
+    bold "* Access gate configured (${ACCESS_TEAM_DOMAIN})"
+    tunnel_up && bold "* Cloudflare tunnel running" \
+              || warn "x Cloudflare tunnel NOT running - ${PUBLIC_URL:-the public URL} is unreachable"
+    [ "${PROXY_HOST}" = "0.0.0.0" ] && \
+      warn "! PROXY_HOST=0.0.0.0 - :${PROXY_PORT} is open on the LAN, where Access cannot see it"
+  fi
   TS_URL="$(tailscale_url)"
   report
   exit 0
