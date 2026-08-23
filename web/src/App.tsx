@@ -214,6 +214,10 @@ export function App() {
             <Route path="/kanban" element={<KanbanScreen />} />
             <Route path="/files" element={<FilesScreen />} />
             <Route path="/notifications" element={<NotificationsScreen />} />
+            {/* The screen is called Updates now, but `/notifications` stays the
+                canonical path — see the note at the top of the screen. This is
+                the alias for anyone who types what they see. */}
+            <Route path="/updates" element={<Navigate to="/notifications" replace />} />
             <Route path="/memory" element={<HubPage title="Memory"><MemoryTab /></HubPage>} />
             <Route path="/skills" element={<HubPage title="Skills"><SkillsTab /></HubPage>} />
             <Route path="/cron" element={<HubPage title="Cron"><CronTab /></HubPage>} />

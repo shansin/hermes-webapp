@@ -11,7 +11,7 @@ worlds and faking either one would hide the things most worth testing:
 
 | Project  | Environment | Root      | Covers                                        |
 | -------- | ----------- | --------- | --------------------------------------------- |
-| `server` | node        | `server/` | static serving, proxying, push, the cron feed  |
+| `server` | node        | `server/` | static serving, proxying, push, the updates feed |
 | `web`    | jsdom       | `web/`    | the gateway client, the chat store, PWA wiring |
 
 Run one at a time with `npx vitest run --project server`.
@@ -61,7 +61,12 @@ simultaneous failures produces exactly one probe.
 **`server/test/store.test.ts` / `feed.test.ts`** — the two JSON files the proxy
 owns. Upsert-by-endpoint, atomic writes, `0600` permissions, and recovery from a
 corrupt file. `config.js` is mocked to a temp directory so the suite never
-touches the real `.hermes-push.json`.
+touches the real `.hermes-push.json`. `feed.test.ts` additionally pins the two
+properties the feed gained when it widened past cron: a file written by the
+older shape still loads (it is somebody's history, and warning-and-starting-
+empty would discard it), and the unread watermark is the newest entry's
+timestamp rather than the clock, so a run finishing as the screen opens is
+still news.
 
 **`server/test/cron.test.ts`** — the reconcile pass, driven against a stubbed
 gateway. Mostly about telling a person exactly once: seeding, dedupe by run id,
@@ -69,6 +74,14 @@ failures that never produced a run, and a gateway that is not answering.
 
 **`server/test/events.test.ts`** — which gateway events are worth waking a phone
 for, and which must stay silent.
+
+**`server/test/updates.test.ts`** — the two feed sources that are not cron, and
+mostly about restraint in both directions. The agent's announcements have to be
+written down *with no push devices registered* — that is the whole case the
+widened frame scan in `events.ts` exists for, and the failure is silent — while
+writing no push of their own, because `events.ts` already sends those. The
+backend watch has to stay quiet through a restart that reconnects inside the
+grace window, and through a clean shutdown, whose socket close is its own.
 
 **`server/test/routers.test.ts`** — the push and feed HTTP endpoints.
 

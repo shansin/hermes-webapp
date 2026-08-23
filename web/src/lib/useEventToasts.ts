@@ -29,16 +29,24 @@ export function useEventToasts(): void {
         const p = (payload ?? {}) as Record<string, unknown>;
 
         switch (type) {
+          /**
+           * These three are also written to the Updates feed by the proxy (see
+           * `server/src/push/updates.ts`), so each one moves the unread badge.
+           * Invalidating here is what makes that immediate rather than up to a
+           * minute late on the fallback poll.
+           */
           case 'background.complete': {
             buzz('done');
             const label = typeof p.title === 'string' ? p.title : 'Background task';
             toast(`${label} finished`, 'success');
+            void qc.invalidateQueries({ queryKey: notificationKeys.all });
             return;
           }
 
           case 'subagent.complete': {
             const name = typeof p.name === 'string' ? p.name : 'Subagent';
             toast(`${name} finished`, 'info');
+            void qc.invalidateQueries({ queryKey: notificationKeys.all });
             return;
           }
 
@@ -51,6 +59,7 @@ export function useEventToasts(): void {
               buzz('tap');
               toast(text, 'info');
             }
+            void qc.invalidateQueries({ queryKey: notificationKeys.all });
             return;
           }
 
@@ -94,6 +103,13 @@ export function useEventToasts(): void {
       if (data.source === 'hermes-push' && data.text && hermes.state !== 'open') {
         buzz('tap');
         toast(data.text, 'info');
+        /**
+         * Pull the feed forward too. This branch is reached precisely when the
+         * socket is down — the backend-offline notification being the case
+         * built for it — so there is no gateway event coming to invalidate on,
+         * and without this the badge waits out the 60s poll.
+         */
+        void qc.invalidateQueries({ queryKey: notificationKeys.all });
         return;
       }
 
@@ -107,7 +123,7 @@ export function useEventToasts(): void {
 
     navigator.serviceWorker.addEventListener('message', onMessage);
     return () => navigator.serviceWorker.removeEventListener('message', onMessage);
-  }, [toast, navigate]);
+  }, [toast, navigate, qc]);
 }
 
 /**
@@ -120,6 +136,22 @@ export function useEventToasts(): void {
  * The first load is adopted silently: arriving at the app with ten runs
  * recorded since yesterday should not stack ten toasts.
  */
+/** As much of a reply as a toast can hold. */
+const TOAST_CHARS = 120;
+
+/**
+ * A feed entry's body, cut down to a toast.
+ *
+ * The feed stores the reply whole now, for the card that renders it — which
+ * makes this necessary rather than tidy: without it a nightly digest arrives
+ * as a toast several paragraphs tall, covering the screen it is announcing
+ * itself over. The card is where the whole thing belongs.
+ */
+function oneLine(body: string): string {
+  const flat = body.replace(/^\s{0,3}[#>*-]+\s*/gm, '').replace(/\s+/g, ' ').trim();
+  return flat.length > TOAST_CHARS ? `${flat.slice(0, TOAST_CHARS - 1).trimEnd()}…` : flat;
+}
+
 export function useCronFeedToasts(): void {
   const toast = useUi.getState().toast;
   const { data } = useNotifications();
@@ -138,7 +170,7 @@ export function useCronFeedToasts(): void {
       if (seen.current.has(entry.id)) continue;
       seen.current.add(entry.id);
       buzz(entry.failed ? 'warn' : 'done');
-      toast(`${entry.title}: ${entry.body}`, entry.failed ? 'error' : 'success');
+      toast(`${entry.title}: ${oneLine(entry.body)}`, entry.failed ? 'error' : 'success');
     }
   }, [data, toast]);
 }

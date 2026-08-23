@@ -1,10 +1,15 @@
 /**
- * The cron notification feed.
+ * The updates feed.
  *
  * The properties worth pinning down are the ones that decide whether a person
  * gets told about a scheduled run exactly once: dedupe by run id, the
  * newest-first read order, and the rule that clearing the feed forgets the
  * *entries* but never the runs.
+ *
+ * Since the feed widened past cron there are two more: a file written by the
+ * older shape still has to load (that file is somebody's history), and
+ * `appendUpdate` has to collapse a repeat rather than let a flapping backend
+ * bury everything else.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -211,5 +216,158 @@ describe('lookup cost', () => {
     const started = performance.now();
     for (let i = 0; i < 20_000; i++) feed.hasRun(`run-${i % 1200}`);
     expect(performance.now() - started).toBeLessThan(150);
+  });
+});
+
+describe('entries written before the feed widened past cron', () => {
+  /**
+   * The stored file predates `source`, `severity`, `dedupeKey` and
+   * `lastReadAt`. It is the only copy of that history, so the schema has to
+   * read it rather than warn and start empty.
+   */
+  it('loads and defaults the fields it has never heard of', async () => {
+    writeFileSync(
+      FILE,
+      JSON.stringify({
+        entries: [
+          {
+            id: 'old-1',
+            at: 1_700_000_000_000,
+            kind: 'cron.changed',
+            title: 'Nightly digest',
+            body: '3 PRs need review',
+            url: '/chat?session=r1',
+            jobId: 'j',
+            jobName: 'Nightly digest',
+            runId: 'r1',
+            status: 'cron_complete',
+            failed: false,
+            sessionId: 'r1',
+          },
+        ],
+        seeded: true,
+        seenRuns: ['r1'],
+      }),
+    );
+    vi.resetModules();
+    feed = await import('../src/push/feed.js');
+
+    const rows = feed.listEntries();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ title: 'Nightly digest', source: 'cron', severity: 'ok' });
+    // Everything is unread on a file that never carried a watermark, which is
+    // the honest answer: nobody has opened the screen since it gained one.
+    expect(feed.unreadCount()).toBe(1);
+  });
+
+  it('reads a failed run as an error even though it stored no severity', async () => {
+    writeFileSync(
+      FILE,
+      JSON.stringify({
+        entries: [
+          {
+            id: 'old-2',
+            at: 1_700_000_000_000,
+            kind: 'cron.failed',
+            title: 'Nightly digest',
+            body: 'did not run',
+            url: '/cron',
+            failed: true,
+          },
+        ],
+      }),
+    );
+    vi.resetModules();
+    feed = await import('../src/push/feed.js');
+    expect(feed.listEntries()[0]?.severity).toBe('error');
+  });
+});
+
+describe('appendUpdate', () => {
+  const update = (over: Record<string, unknown> = {}) =>
+    entry({
+      kind: 'backend.down',
+      source: 'system' as const,
+      severity: 'warn' as const,
+      dedupeKey: 'backend-state',
+      runId: null,
+      jobId: null,
+      jobName: null,
+      sessionId: null,
+      ...over,
+    });
+
+  it('collapses a repeat of the same thing into the row already there', () => {
+    const now = Date.now();
+    feed.appendUpdate(update({ at: now, body: 'went offline' }));
+    feed.appendUpdate(update({ at: now + 5_000, body: 'still offline' }));
+
+    const rows = feed.listEntries();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.body).toBe('still offline');
+  });
+
+  /**
+   * Two outages an hour apart are two things that happened. Collapsing them
+   * would mean the feed could never show that the backend went down twice.
+   */
+  it('keeps a repeat that arrives long enough afterwards', () => {
+    const now = Date.now();
+    feed.appendUpdate(update({ at: now, body: 'first outage' }));
+    feed.appendUpdate(update({ at: now + 10 * 60_000, body: 'second outage' }));
+    expect(feed.listEntries().map((e) => e.body)).toEqual(['second outage', 'first outage']);
+  });
+
+  it('never collapses onto a row that is not the newest', () => {
+    const now = Date.now();
+    feed.appendUpdate(update({ at: now, body: 'went offline' }));
+    feed.appendEntry(entry({ at: now + 1_000, runId: 'run-x', title: 'Nightly' }));
+    feed.appendUpdate(update({ at: now + 2_000, body: 'still offline' }));
+    expect(feed.listEntries()).toHaveLength(3);
+  });
+
+  it('appends when there is no key to collapse on', () => {
+    const now = Date.now();
+    feed.appendUpdate(update({ at: now, dedupeKey: null, body: 'one' }));
+    feed.appendUpdate(update({ at: now + 100, dedupeKey: null, body: 'two' }));
+    expect(feed.listEntries()).toHaveLength(2);
+  });
+});
+
+describe('read tracking', () => {
+  it('counts everything as unread until the screen is opened', () => {
+    feed.appendEntry(entry({ runId: 'r1', at: 1_000 }));
+    feed.appendEntry(entry({ runId: 'r2', at: 2_000 }));
+    expect(feed.unreadCount()).toBe(2);
+    feed.markRead();
+    expect(feed.unreadCount()).toBe(0);
+  });
+
+  /**
+   * The watermark is the newest entry's timestamp, not the clock. Stamping the
+   * clock would swallow a run that finished in the same second the screen
+   * opened — the one case where the badge matters most.
+   */
+  it('leaves an entry that lands afterwards unread', () => {
+    feed.appendEntry(entry({ runId: 'r1', at: 1_000 }));
+    feed.markRead();
+    feed.appendEntry(entry({ runId: 'r2', at: 2_000 }));
+    expect(feed.unreadCount()).toBe(1);
+  });
+
+  it('survives a reload, so a phone picked up later shows the same badge', async () => {
+    feed.appendEntry(entry({ runId: 'r1', at: 1_000 }));
+    feed.markRead();
+    feed.appendEntry(entry({ runId: 'r2', at: 2_000 }));
+
+    vi.resetModules();
+    feed = await import('../src/push/feed.js');
+    expect(feed.unreadCount()).toBe(1);
+  });
+
+  it('clearing the feed leaves nothing unread', () => {
+    feed.appendEntry(entry({ runId: 'r1', at: 1_000 }));
+    feed.clearEntries();
+    expect(feed.unreadCount()).toBe(0);
   });
 });

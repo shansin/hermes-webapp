@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A phone-first web app + LAN-facing Node proxy for driving a [Hermes Agent](https://github.com/NousResearch/hermes-agent) backend running on the same machine. pnpm workspace, two packages: `server` (Hono proxy, Node) and `web` (React 19 + Vite PWA).
 
-There is **no agent logic here**. Hermes owns all of it, including the kanban board. This repo is transport, presentation, and the two pieces of state the proxy owns (push subscriptions, the cron feed).
+There is **no agent logic here**. Hermes owns all of it, including the kanban board. This repo is transport, presentation, and the two pieces of state the proxy owns (push subscriptions, the updates feed).
 
 ## Commands
 
@@ -81,6 +81,16 @@ Routes are `React.lazy` in `App.tsx` — deliberately, so Rollup splits along dy
 Models carries two model settings, and they are not the same thing. **Default model** (`scope: "main"`) is what new chats start with. **Auxiliary model** (`scope: "auxiliary"`, no `task`) is the eleven side jobs Hermes runs behind every turn — titles, vision, approval checks, compression, memory query rewriting — which sit at `provider: "auto"` by default and therefore bill to whatever the main model is. `/api/model/set` also accepts a single `task`, deliberately not exposed: eleven pickers is a config screen, not a setting. `provider: "auto"` with an empty `model` is the factory state and the only way back, so the sheet offers it explicitly — otherwise choosing once is a one-way door.
 
 The seven system screens (Memory, Skills, Cron, Models, Usage, Profiles, Settings) are separate routes; `/hub?tab=<id>` redirects for old bookmarks.
+
+**Updates** (`/notifications`, the screen formerly called Cron Notifications) is the one channel carrying everything Hermes reports, and three writers feed it. `push/cron.ts` writes scheduled runs; `push/updates.ts` writes the agent's own announcements (`notification.show`, `background.complete`, `subagent.complete`) and the backend going up and down. All of it goes through `push/feed.ts`, which is the proxy's own record and therefore the part that survives nobody being connected — a push you did not see is gone, a row is not.
+
+Three things there are easy to get wrong:
+
+- **The route stays `/notifications` despite the rename.** Every push payload already sitting on a phone points at it, as does the stored `url` of every entry written before the rename. `/updates` is an alias.
+- **`handleFrame`'s early-out gates the feed, not just push.** It skips `JSON.parse` on the firehose unless the line contains one of the types that matter, so a type handled in `updates.ts` but missing from `FEED_EVENT_TYPES` simply never reaches the feed on a machine with no push devices — invisibly. The list is exported from `updates.ts` for exactly that reason, and `updates.test.ts` checks the two against each other.
+- **The backend watch has to stay quiet.** A row per Hermes restart trains you to ignore the row that means it has been down all night, so an outage is only recorded after a grace window, recovery is silent unless an outage was announced, and `stopPushListener` resets the watch — otherwise a proxy shutting down announces that the backend is offline on its way out.
+
+What stays out of the feed is deliberate: `message.complete` would make it a second copy of every transcript, and `approval.request` / `clarify.request` block the agent and already have always-mounted sheets. All three still push.
 
 The **share target** is Android-only (iOS has no Web Share Target) and needs the worker: a file-carrying target must be `POST`, which a SPA cannot receive, so `public/share-sw.js` intercepts the POST, files the parts in Cache Storage and 303s to `/chat?new=1&share=<id>`; the page claims that payload once via `lib/sharedIntake.ts` and the worker deletes it. `routers/share.ts` is the no-worker fallback and can only forward the text. Four files in three languages with no shared type between them — `test/deepLinks.test.ts` is what keeps the field names aligned.
 

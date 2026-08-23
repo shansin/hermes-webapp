@@ -579,6 +579,112 @@ button.header__sub::after {
 
 .drawer__item--active .drawer__hint { color: color-mix(in srgb, var(--accent) 65%, var(--text-faint)); }
 
+/* --- Updates feed card ---------------------------------------------------- */
+
+/* The body of a feed row. Clamped to `--feed-clamp` lines rather than to a
+   character count, because what overflows depends on the viewport and where
+   the words break — and the feed stores the whole reply now, so a nightly
+   digest would otherwise bury every other row. `pre-wrap` keeps the paragraph
+   breaks the server deliberately preserved. */
+.feed-body {
+  position: relative;
+  margin-top: 4px;
+  font-size: 14.5px;
+  overflow-wrap: anywhere;
+  /* `.msg__bubble` is `pre-wrap`, which is right for a plain chat bubble and
+     wrong here: the body is rendered markdown, so the newlines *between* its
+     block elements would each become a visible blank line. Chat never hit
+     this because it renders its markdown inside `.msg__body` instead. The
+     lazy fallback sets its own `pre-wrap` and is unaffected. */
+  white-space: normal;
+  /* A height clamp rather than `-webkit-line-clamp`, which only counts the
+     inline content of one box — the body is markdown now, so it is headings,
+     lists and code blocks, and line-clamp silently gives up on those. */
+  max-height: calc(var(--feed-clamp, 10) * 1.5em);
+  overflow: hidden;
+}
+
+.feed-body--open {
+  max-height: none;
+  overflow: visible;
+}
+
+/* Markdown inside a feed row is denser than in a transcript: the row is a
+   summary someone is scanning, not a document they are reading. */
+.feed-body .md p,
+.feed-body .md ul,
+.feed-body .md ol {
+  margin-bottom: 0.45em;
+}
+
+.feed-body .md li {
+  margin: 0.1em 0;
+}
+
+.feed-body .md h1,
+.feed-body .md h2,
+.feed-body .md h3,
+.feed-body .md h4 {
+  margin: 0.5em 0 0.3em;
+  font-size: 1.05em;
+}
+
+/* A hard cut mid-sentence reads as a rendering bug; the fade says the text
+   continues. Only applied when something is actually hidden. */
+.feed-body--faded::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 1.6em;
+  background: linear-gradient(to bottom, transparent, var(--bg-elev-2));
+  pointer-events: none;
+}
+
+/* Sits in the meta row, outside the bubble — the bubble is itself a button and
+   a nested one is invalid HTML. */
+/* The explicit open affordance, and the keyboard path into the card — the
+   bubble is a plain div now, because markdown puts links and copy buttons
+   inside it and a button may not contain those. */
+.feed-open {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: left;
+  cursor: pointer;
+}
+
+.feed-more {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Unread count on the Updates row. `margin-left: auto` pins it to the trailing
+   edge without the label having to give up its own width. */
+.drawer__badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: var(--shape-full);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+}
+
 /* --- generic surfaces ----------------------------------------------------- */
 
 .card {

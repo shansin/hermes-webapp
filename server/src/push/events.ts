@@ -17,6 +17,14 @@ import { getToken, resolveToken, upstreamWs, upstreamHost } from '../config.js';
 import { log } from '../log.js';
 import { sendPush, pushEnabled, type PushMessage } from './send.js';
 import { scheduleCronReconcile } from './cron.js';
+import { flatten } from './preview.js';
+import {
+  FEED_EVENT_TYPES,
+  backendCameBack,
+  backendWentDown,
+  recordGatewayEvent,
+  resetBackendWatch,
+} from './updates.js';
 import { listSubscriptions } from './store.js';
 
 const RECONNECT_BASE_MS = 1000;
@@ -48,6 +56,9 @@ export function startPushListener(): void {
 
 export function stopPushListener(): void {
   stopped = true;
+  // Before the close handler runs: a proxy on its way out must not announce
+  // that the backend is offline.
+  resetBackendWatch();
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
   clearHeartbeat();
@@ -88,6 +99,8 @@ async function connect(): Promise<void> {
   ws.on('open', () => {
     attempt = 0;
     log.info('Push listener connected to the Hermes gateway.');
+    // Silent unless an outage was actually announced — see `updates.ts`.
+    backendCameBack();
     clearHeartbeat();
     pingTimer = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) return;
@@ -120,6 +133,8 @@ async function connect(): Promise<void> {
     clearHeartbeat();
     if (socket === ws) socket = null;
     if (stopped) return;
+    // Starts the grace timer; a restart that reconnects inside it says nothing.
+    backendWentDown();
     // 4403 is Hermes rejecting the upgrade — usually a stale token. Reconnect
     // anyway: `resolveToken` re-scrapes on the next attempt.
     log.debug(`Push listener socket closed (${code}); reconnecting.`);
@@ -146,6 +161,9 @@ function scheduleReconnect(): void {
   reconnectTimer.unref?.();
 }
 
+/** Frame types worth parsing even with no push devices registered. */
+const FEED_TYPE_SCAN = ['cron.changed', ...FEED_EVENT_TYPES];
+
 function handleFrame(line: string): void {
   /**
    * Cheap early-out: composing a message and signing a payload is wasted work
@@ -155,14 +173,19 @@ function handleFrame(line: string): void {
    * proxy was running `JSON.parse` 30–60×/second through every turn only to
    * discard the result here.
    *
-   * The cron feed has to survive that shortcut: it is the record of runs that
+   * The updates feed has to survive that shortcut: it is the record of what
    * happened while nobody was watching, and on a setup with no push devices at
    * all it would otherwise never be written. A substring scan is the
    * compromise — orders of magnitude cheaper than `JSON.parse`, and it fails
    * on the first few bytes of the token deltas that make up the firehose.
+   *
+   * The scanned set is `cron.changed` plus whatever `updates.ts` writes down,
+   * taken from that module rather than repeated here: a type in its switch but
+   * missing from this list would simply never reach the feed, with nothing
+   * anywhere to say why.
    */
   const subscribed = listSubscriptions().length > 0;
-  if (!subscribed && !line.includes('cron.changed')) return;
+  if (!subscribed && !FEED_TYPE_SCAN.some((type) => line.includes(type))) return;
 
   let parsed: unknown;
   try {
@@ -179,6 +202,13 @@ function handleFrame(line: string): void {
 
   const payload = (params.payload ?? {}) as Record<string, unknown>;
   const sessionId = typeof params.session_id === 'string' ? params.session_id : null;
+
+  /**
+   * Written whether or not a phone is registered, and deliberately ahead of
+   * the `subscribed` check below for the same reason `cron.changed` is: the
+   * feed is the thing that survives nobody being there to see the banner.
+   */
+  recordGatewayEvent(params.type, payload, sessionId);
 
   if (params.type === 'cron.changed') {
     // Nothing in the frame to read — see the note on the `cron.changed` case
@@ -198,29 +228,6 @@ function handleFrame(line: string): void {
 
 function str(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
-}
-
-/** How much of a reply fits on a lock screen before the OS truncates anyway. */
-const PREVIEW_CHARS = 140;
-
-/**
- * First line or so of a reply, as notification body text.
- *
- * Replies are markdown, and a lock screen renders none of it — so a leading
- * heading or bullet marker is noise, and the newlines that separate them
- * collapse to spaces. Enough to recognise the answer, not to read it.
- */
-function previewOf(text: string | null): string | null {
-  if (!text) return null;
-
-  const flat = text
-    .replace(/```[\s\S]*?```/g, ' [code] ')
-    .replace(/^\s{0,3}[#>*-]+\s*/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (!flat) return null;
-  return flat.length > PREVIEW_CHARS ? `${flat.slice(0, PREVIEW_CHARS - 1).trimEnd()}…` : flat;
 }
 
 /**
@@ -301,7 +308,7 @@ export function toMessage(
       }
 
       // A turn that only ran tools and produced no prose has nothing to say.
-      const preview = previewOf(str(payload.text));
+      const preview = flatten(str(payload.text));
       if (!preview) return null;
 
       return { title: 'Hermes', body: preview, url: chatUrl, tag: sessionTag, kind: type };
@@ -318,7 +325,7 @@ export function toMessage(
       const first = batch?.length
         ? (batch[0] as Record<string, unknown>)
         : (payload as Record<string, unknown>);
-      const question = previewOf(str(first.question)) ?? 'The agent needs an answer';
+      const question = flatten(str(first.question)) ?? 'The agent needs an answer';
       const more = batch && batch.length > 1 ? ` (+${batch.length - 1} more)` : '';
 
       return {

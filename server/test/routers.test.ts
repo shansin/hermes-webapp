@@ -196,7 +196,30 @@ describe('the cron feed endpoint', () => {
 
   it('starts empty', async () => {
     const res = await notificationsRouter.request('http://proxy.test/push/feed');
-    expect(await res.json()).toEqual({ entries: [], total: 0 });
+    expect(await res.json()).toEqual({ entries: [], total: 0, unread: 0, lastReadAt: 0 });
+  });
+
+  it('counts unread until the screen says it has been read', async () => {
+    feed.appendEntry(entry({ runId: 'r1', at: 1_000 }));
+    feed.appendEntry(entry({ runId: 'r2', at: 2_000 }));
+
+    const before = (await (
+      await notificationsRouter.request('http://proxy.test/push/feed')
+    ).json()) as { unread: number };
+    expect(before.unread).toBe(2);
+
+    const read = await notificationsRouter.request(
+      new Request('http://proxy.test/push/feed/read', { method: 'POST' }),
+    );
+    expect(await read.json()).toEqual({ ok: true, unread: 0 });
+
+    // And a run that lands afterwards is unread again — the watermark is a
+    // timestamp, not a "seen everything" flag.
+    feed.appendEntry(entry({ runId: 'r3', at: 3_000 }));
+    const after = (await (
+      await notificationsRouter.request('http://proxy.test/push/feed')
+    ).json()) as { unread: number };
+    expect(after.unread).toBe(1);
   });
 
   it('returns entries newest first with a total', async () => {

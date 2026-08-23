@@ -34,6 +34,7 @@
 import { clearToken, getToken, resolveToken, upstreamHttp, upstreamHost } from '../config.js';
 import { log } from '../log.js';
 import { appendEntry, hasRun, hasSeeded, markSeeded, markRunSeen } from './feed.js';
+import { flatten, fullText } from './preview.js';
 import { sendPush } from './send.js';
 import { listSubscriptions } from './store.js';
 
@@ -46,9 +47,6 @@ import { listSubscriptions } from './store.js';
  * run instead of four, and avoids reading a row that is still being written.
  */
 const SETTLE_MS = 2500;
-
-/** Enough of a reply to recognise it on a lock screen. */
-const PREVIEW_CHARS = 140;
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 let running = false;
@@ -116,24 +114,12 @@ function jobNameFromTitle(title: string | null, fallback: string | null): string
 }
 
 /**
- * The agent's own words, flattened for a lock screen.
+ * The last thing the agent said in a run, if it said anything.
  *
- * Same treatment as `previewOf` in `events.ts`: markdown renders as nothing in
- * a notification, so headings and bullet markers are stripped and newlines
- * collapse. This is the whole point of the feature — "Nightly digest finished"
- * says a job ran, "3 PRs need review, none urgent" says what it found.
+ * Kept whole. The feed card renders all of it and the push body is flattened
+ * back down at send time — storing the 140-character version here is what used
+ * to make a digest unreadable in the one place there was room to read it.
  */
-function flatten(text: string): string | null {
-  const flat = text
-    .replace(/```[\s\S]*?```/g, ' [code] ')
-    .replace(/^\s{0,3}[#>*-]+\s*/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!flat) return null;
-  return flat.length > PREVIEW_CHARS ? `${flat.slice(0, PREVIEW_CHARS - 1).trimEnd()}…` : flat;
-}
-
-/** The last thing the agent said in a run, if it said anything. */
 async function replyOf(runId: string): Promise<string | null> {
   const body = await gatewayGet<{ messages?: unknown[] } | unknown[]>(
     `/api/sessions/${encodeURIComponent(runId)}/messages`,
@@ -144,7 +130,7 @@ async function replyOf(runId: string): Promise<string | null> {
     const m = messages[i] as { role?: unknown; content?: unknown };
     if (m?.role !== 'assistant') continue;
     const content = str(m.content);
-    if (content) return flatten(content);
+    if (content) return fullText(content);
   }
   return null;
 }
@@ -219,7 +205,7 @@ async function reportFailedExecution(
    * exactly what belongs on a lock screen. The `RuntimeError:` prefix is noise
    * to a person, so it goes.
    */
-  const detail = error ? flatten(error.replace(/^[A-Za-z]*(Error|Exception):\s*/, '')) : null;
+  const detail = error ? fullText(error.replace(/^[A-Za-z]*(Error|Exception):\s*/, '')) : null;
 
   const finishedAt = num(execution.finished_at);
   const at = finishedAt != null ? finishedAt * 1000 : Date.parse(str(job.last_run_at) ?? '') || Date.now();
@@ -245,7 +231,8 @@ async function reportFailedExecution(
   if (listSubscriptions().length) {
     void sendPush({
       title: `${jobName} failed`,
-      body: entry.body,
+      // The row keeps the whole reply; a banner gets one line of it.
+      body: flatten(entry.body) ?? entry.body,
       url: '/notifications',
       tag: `cron:${jobId}`,
       kind: 'cron.failed',
@@ -350,7 +337,8 @@ export async function reconcile(): Promise<void> {
         if (listSubscriptions().length) {
           void sendPush({
             title: jobName,
-            body: entry.body,
+            // The row keeps the whole reply; a banner gets one line of it.
+      body: flatten(entry.body) ?? entry.body,
             /**
              * Onto the feed rather than this one run: by the time a phone is
              * picked up there may be several waiting, and opening the newest

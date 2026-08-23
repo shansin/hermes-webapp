@@ -28,6 +28,7 @@ import {
   IconUsage,
 } from './Icons';
 import { useUi } from '../../store/ui';
+import { useUnreadCount } from '../../api/notifications';
 import { buzz } from '../../lib/haptics';
 import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
 
@@ -40,10 +41,11 @@ import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
  * than as more peers of Chat. Both groups carry a hint — twelve of them run
  * past the fold on a short phone, which the list scrolls for.
  *
- * Cron Notifications sits in the working group rather than under SYSTEM, next
- * to Files: what a scheduled job reported is something you read, like a
- * transcript, not something you configure. Its job list stays under SYSTEM,
- * which is where the schedules are actually managed.
+ * Updates sits in the working group rather than under SYSTEM, next to Files:
+ * what Hermes reported — a scheduled run, an announcement mid-turn, the
+ * backend going away — is something you read, like a transcript, not something
+ * you configure. The cron job list stays under SYSTEM, which is where the
+ * schedules are actually managed.
  */
 const WORK = [
   { to: '/chat', label: 'Chat', hint: 'Talk to the agent', Icon: IconChat },
@@ -52,9 +54,10 @@ const WORK = [
   { to: '/files', label: 'Files', hint: 'Browse the workspace', Icon: IconFolder },
   {
     to: '/notifications',
-    label: 'Cron Notifications',
-    hint: 'What ran while you were away',
+    label: 'Updates',
+    hint: 'What happened while you were away',
     Icon: IconBell,
+    badge: true,
   },
 ];
 
@@ -75,6 +78,7 @@ export function NavDrawer() {
   const open = useUi((s) => s.navOpen);
   const setOpen = useUi((s) => s.setNavOpen);
   const connection = useUi((s) => s.connection);
+  const unread = useUnreadCount();
 
   const [dragX, setDragX] = useState(0);
   const startX = useRef<number | null>(null);
@@ -143,8 +147,16 @@ export function NavDrawer() {
         </div>
 
         <div className="drawer__list">
-          {WORK.map(({ to, label, hint, Icon }) => (
-            <Item key={to} to={to} label={label} hint={hint} Icon={Icon} onNavigate={close} />
+          {WORK.map(({ to, label, hint, Icon, badge }) => (
+            <Item
+              key={to}
+              to={to}
+              label={label}
+              hint={hint}
+              Icon={Icon}
+              count={badge ? unread : 0}
+              onNavigate={close}
+            />
           ))}
 
           <div className="drawer__section">SYSTEM</div>
@@ -164,6 +176,7 @@ function Item({
   hint,
   Icon,
   compact = false,
+  count = 0,
   onNavigate,
 }: {
   to: string;
@@ -171,6 +184,8 @@ function Item({
   hint?: string;
   Icon: ComponentType<{ size?: number }>;
   compact?: boolean;
+  /** Unread badge. Zero renders nothing rather than a "0" pill. */
+  count?: number;
   onNavigate: () => void;
 }) {
   return (
@@ -197,6 +212,14 @@ function Item({
         <span className="drawer__label">{label}</span>
         {hint && <span className="drawer__hint">{hint}</span>}
       </span>
+      {/* The number lives here, where there is room to read it — the dot on
+          the hamburger only says that there is one. Capped so a feed left
+          unread for a month does not widen the row. */}
+      {count > 0 && (
+        <span className="drawer__badge" aria-label={`${count} unread`}>
+          {count > 99 ? '99+' : count}
+        </span>
+      )}
     </NavLink>
   );
 }

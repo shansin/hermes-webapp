@@ -1,5 +1,11 @@
 /**
- * Cron Notifications — a read-only transcript of every scheduled run.
+ * Updates — a read-only channel carrying everything Hermes reports.
+ *
+ * Three sources write to it, and the chip on each row says which: a scheduled
+ * run finishing, the agent announcing something mid-turn, and the proxy's own
+ * report on the backend going away and coming back. What they have in common
+ * is that all three happen while nobody is looking, which is the whole reason
+ * they are written down rather than only pushed.
  *
  * This reads like a conversation and is deliberately not one. Hermes owns
  * sessions and exposes no way to append a message to one, so there is nothing
@@ -10,16 +16,28 @@
  * That turns out to be the stronger way to build "a session you cannot send
  * to": there is no composer on this screen and no gateway session behind it,
  * so sending is not refused, it is absent. The one affordance each entry has
- * is the tap that carries you onward to the run itself.
+ * is the tap that carries you onward — to the run, the conversation, or the
+ * status the row is about.
+ *
+ * The route is `/notifications` and stays that way despite the rename. Every
+ * push payload already sitting on a phone points at it, as does the `url` of
+ * every entry written before the rename; `/updates` is an alias for the sake
+ * of the address bar. Changing the canonical path would strand both.
  */
-import { useMemo } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MenuButton } from '../components/shared/MenuButton';
 import { IconBack, IconTrash } from '../components/shared/Icons';
 import { Empty, ErrorNote, SkeletonList, dayGroup, relTime } from '../components/shared/misc';
-import { useClearNotifications, useNotifications, type NotificationEntry } from '../api/notifications';
+import {
+  useClearNotifications,
+  useMarkNotificationsRead,
+  useNotifications,
+  type NotificationEntry,
+} from '../api/notifications';
 import { useUi } from '../store/ui';
 import { buzz } from '../lib/haptics';
+import { Markdown } from '../components/chat/MarkdownAsync';
 
 /**
  * Group by day, newest first.
@@ -40,13 +58,51 @@ function groupByDay(entries: NotificationEntry[]): [string, NotificationEntry[]]
   return out;
 }
 
+/**
+ * How each source announces itself, and how each severity reads.
+ *
+ * The icons are the vocabulary already used for session sources in
+ * `components/sessions/SessionRow.tsx`, so a cron row looks like a cron row
+ * wherever you meet one.
+ */
+const SOURCE_CHIP: Record<NotificationEntry['source'], { icon: string; label: string }> = {
+  cron: { icon: '⏰', label: 'Scheduled' },
+  agent: { icon: '✻', label: 'Agent' },
+  system: { icon: '⚙', label: 'System' },
+};
+
+const SEVERITY_COLOR: Record<NotificationEntry['severity'], string> = {
+  ok: 'var(--ok)',
+  info: 'var(--info)',
+  warn: 'var(--warn)',
+  error: 'var(--error)',
+};
+
 export function NotificationsScreen() {
   const navigate = useNavigate();
   const toast = useUi((s) => s.toast);
   const { data, isLoading, error } = useNotifications();
   const clear = useClearNotifications();
+  const markRead = useMarkNotificationsRead();
 
   const groups = useMemo(() => groupByDay(data ?? []), [data]);
+
+  /**
+   * Opening the screen is what clears the badge.
+   *
+   * Keyed on the newest entry rather than firing once on mount: something
+   * landing while the screen is already open has been seen too, and leaving
+   * the badge lit behind it would mean tapping into a screen you are looking
+   * at to dismiss a count for a row already on it. `mutate` is deliberately
+   * fire-and-forget — a failed mark-read costs a stale badge until the next
+   * visit, which is not worth a toast.
+   */
+  const newest = data?.[0]?.at ?? 0;
+  useEffect(() => {
+    if (newest) markRead.mutate();
+    // `markRead` is a fresh object each render; the newest entry is the signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newest]);
 
   return (
     <div className="screen">
@@ -65,7 +121,7 @@ export function NotificationsScreen() {
         >
           <IconBack size={19} />
         </button>
-        <div className="header__title">Cron Notifications</div>
+        <div className="header__title">Updates</div>
         {data && data.length > 0 && (
           <button
             className="icon-btn"
@@ -92,9 +148,9 @@ export function NotificationsScreen() {
           <ErrorNote error={error} />
         ) : !data || data.length === 0 ? (
           <Empty
-            icon="⏰"
-            title="No scheduled runs yet"
-            hint="When a cron job finishes, its reply posts here — even if the app was closed at the time."
+            icon="📣"
+            title="Nothing to report yet"
+            hint="Scheduled runs, anything the agent wants to tell you, and the backend going up or down all post here — even if the app was closed at the time."
           />
         ) : (
           groups.map(([label, entries]) => (
@@ -120,40 +176,153 @@ export function NotificationsScreen() {
           textAlign: 'center',
         }}
       >
-        Scheduled runs post here. Tap one to open its conversation.
+        Everything Hermes reports posts here. Tap a row to open what it is about.
       </div>
     </div>
   );
 }
 
+/**
+ * How many lines of a reply the card shows before it clamps.
+ *
+ * The feed stores the whole thing now, and a nightly digest runs to several
+ * thousand characters — enough to bury every other row in the list. Ten lines
+ * is more than a lock screen ever showed and still leaves the feed scannable;
+ * the rest is one tap away, and nothing is unreachable.
+ */
+const CLAMP_LINES = 10;
+
+/**
+ * Whether this click was someone reading rather than navigating.
+ *
+ * The card opens its conversation when tapped, but the body is real markdown
+ * now: links, code blocks and their copy buttons all live inside it, and a tap
+ * on any of those means what it says, not "leave this screen". Dragging out a
+ * selection then releasing is the same — it ends in a click the card would
+ * otherwise answer by navigating away from the text just selected.
+ */
+function isReadingGesture(target: EventTarget | null): boolean {
+  const el = target instanceof Element ? target : null;
+  if (el?.closest('a, button, pre, code, .code')) return true;
+  const selection = window.getSelection();
+  return !!selection && !selection.isCollapsed;
+}
+
 function Entry({ entry, onOpen }: { entry: NotificationEntry; onOpen: () => void }) {
+  const chip = SOURCE_CHIP[entry.source] ?? SOURCE_CHIP.cron;
+  // Old rows predate `severity`; the server fills it in from `failed` on read,
+  // and this is the belt for a response that somehow arrives without it.
+  const accent = SEVERITY_COLOR[entry.severity] ?? (entry.failed ? 'var(--error)' : 'var(--ok)');
+
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  /**
+   * Whether there is anything hidden to reveal.
+   *
+   * Measured rather than guessed from the character count: what overflows ten
+   * lines depends on the font, the viewport and where the words break — and
+   * with markdown it also depends on how tall the headings and lists render.
+   * A "Show more" that reveals nothing is worse than no button at all. Sticky
+   * once true, because an expanded element no longer overflows and would
+   * otherwise remove the control needed to collapse it again.
+   */
+  const [overflows, setOverflows] = useState(false);
+  useLayoutEffect(() => {
+    if (expanded) return;
+    const el = bodyRef.current;
+    if (!el) return;
+
+    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
+    measure();
+
+    /**
+     * Markdown arrives in two stages — raw text while the renderer chunk is in
+     * flight, then the real thing — and the two are different heights. Without
+     * re-measuring, a card whose plain-text fallback happened to fit keeps no
+     * "Show more" once the rendered version overflows.
+     */
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [entry.body, expanded]);
+
+  const openHint = entry.sessionId
+    ? 'Open the conversation'
+    : entry.source === 'system'
+      ? 'Open status'
+      : 'Open scheduled jobs';
+
   return (
     <div className="msg msg--assistant">
-      <button
-        className="msg__bubble msg__bubble--tappable"
+      {/*
+        A div rather than a button, unlike every other tappable bubble in the
+        app. The body renders markdown, so it contains links and the code
+        blocks' own copy buttons — interactive elements a button may not
+        legally hold, and whose taps must not be swallowed by the card. The
+        keyboard path is the real button in the footer.
+      */}
+      <div
+        className="msg__bubble feed-card"
         style={{
           background: 'var(--bg-elev-2)',
           borderRadius: '18px 18px 18px 5px',
-          borderLeft: entry.failed ? '3px solid var(--error)' : '3px solid var(--ok)',
+          borderLeft: `3px solid ${accent}`,
           width: '100%',
           maxWidth: '100%',
         }}
-        onClick={() => {
+        onClick={(e) => {
+          if (isReadingGesture(e.target)) return;
           buzz('tap');
           onOpen();
         }}
       >
-        {/* The job name heads the entry; the agent's own reply is the body.
-            That ordering is the point of the screen — "Nightly digest" tells
-            you which job, the reply tells you what it found. */}
-        <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-dim)' }}>{entry.title}</div>
-        <div style={{ fontSize: 14.5, marginTop: 3, whiteSpace: 'pre-wrap' }}>{entry.body}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 6 }}>
-          {entry.sessionId ? 'Tap to open the conversation' : 'Tap to open scheduled jobs'}
+        {/* The source chip, then the title, then the words. The chip is what
+            makes a mixed feed legible: "Hermes" heading a row means something
+            different when the agent said it than when the proxy did. */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 6,
+            fontWeight: 600,
+            fontSize: 13,
+            color: 'var(--text-dim)',
+          }}
+        >
+          <span aria-label={chip.label} title={chip.label} style={{ fontSize: 12 }}>
+            {chip.icon}
+          </span>
+          <span>{entry.title}</span>
         </div>
-      </button>
+        <div
+          ref={bodyRef}
+          className={`feed-body${expanded ? ' feed-body--open' : ''}${
+            !expanded && overflows ? ' feed-body--faded' : ''
+          }`}
+          style={{ ['--feed-clamp' as string]: CLAMP_LINES }}
+        >
+          <Markdown>{entry.body}</Markdown>
+        </div>
+        <button type="button" className="feed-open" onClick={onOpen}>
+          {openHint}
+        </button>
+      </div>
       <div className="msg__meta">
         <span>{relTime(entry.at / 1000)}</span>
+        {overflows && (
+          <button
+            type="button"
+            className="feed-more"
+            aria-expanded={expanded}
+            onClick={() => {
+              buzz('tap');
+              setExpanded((v) => !v);
+            }}
+          >
+            {expanded ? 'Show less' : 'Show more'}
+          </button>
+        )}
         {entry.failed && entry.status && <span style={{ color: 'var(--error)' }}>{entry.status}</span>}
       </div>
     </div>

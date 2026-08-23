@@ -239,11 +239,46 @@ describe('what the entry says', () => {
     expect(feed.listEntries()[0]!.title).toBe('Nightly digest');
   });
 
-  it('flattens markdown out of the reply', async () => {
+  /**
+   * The row keeps the reply as written — paragraph breaks and all — because
+   * the card renders the whole thing. Storing the flattened banner text here
+   * is what used to make a digest unreadable in the one place with room for
+   * it.
+   */
+  it('keeps the reply whole, markdown and line breaks intact', async () => {
     runs('job-1', run());
     messages('run-1', { role: 'assistant', content: '## Digest\n- one\n- two' });
     await cron.reconcile();
-    expect(feed.listEntries()[0]!.body).toBe('Digest one two');
+    expect(feed.listEntries()[0]!.body).toBe('## Digest\n- one\n- two');
+  });
+
+  /** The lock screen still gets one line, derived at send time. */
+  it('flattens the same reply for the banner', async () => {
+    runs('job-1', run());
+    messages('run-1', { role: 'assistant', content: '## Digest\n- one\n- two' });
+    await cron.reconcile();
+    expect(sendPush).toHaveBeenCalledWith(expect.objectContaining({ body: 'Digest one two' }));
+  });
+
+  /**
+   * The cap is a bound on the file, not on the card. It sits well above the
+   * real nightly digests (4300–4600 characters) precisely so it does not cut
+   * the content the feed exists to keep.
+   */
+  it('caps a runaway reply so the feed file stays bounded', async () => {
+    runs('job-1', run());
+    messages('run-1', { role: 'assistant', content: 'x'.repeat(20_000) });
+    await cron.reconcile();
+    const body = feed.listEntries()[0]!.body;
+    expect(body.length).toBe(8000);
+    expect(body.endsWith('…')).toBe(true);
+  });
+
+  it('leaves a real digest untouched', async () => {
+    runs('job-1', run());
+    messages('run-1', { role: 'assistant', content: 'y'.repeat(4600) });
+    await cron.reconcile();
+    expect(feed.listEntries()[0]!.body).toBe('y'.repeat(4600));
   });
 
   it('names the job when the run produced no prose', async () => {
