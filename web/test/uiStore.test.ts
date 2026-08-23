@@ -228,3 +228,38 @@ describe('toasts', () => {
     expect(useUi.getState().toasts.map((t) => t.text)).toEqual(['keep']);
   });
 });
+
+describe('the Sessions lane filter', () => {
+  /**
+   * The list mixes your conversations with cron runs and kanban workers, so
+   * the lane is a preference, not screen state — it has to survive a relaunch
+   * or picking it again every visit becomes the new annoyance.
+   */
+  it('survives a relaunch', async () => {
+    const { useUi } = await launch();
+    expect(useUi.getState().sessionFilter).toBe('all');
+
+    useUi.getState().setSessionFilter('kanban');
+    expect(localStorage.getItem('hermes.sessionFilter')).toBe('kanban');
+
+    const relaunched = await launch({ 'hermes.sessionFilter': 'kanban' });
+    expect(relaunched.useUi.getState().sessionFilter).toBe('kanban');
+  });
+
+  it('starts on all when nothing is stored', async () => {
+    const { useUi } = await launch();
+    expect(useUi.getState().sessionFilter).toBe('all');
+  });
+
+  /**
+   * A stale or hand-edited value must not leave the list filtered by a bucket
+   * no chip can turn off — the rows would be gone with no way to get them
+   * back short of clearing site data.
+   */
+  it('falls back to all on a value it cannot render', async () => {
+    for (const stored of ['archived', '', 'MINE', 'null']) {
+      const { useUi } = await launch({ 'hermes.sessionFilter': stored });
+      expect(useUi.getState().sessionFilter, stored).toBe('all');
+    }
+  });
+});

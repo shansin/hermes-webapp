@@ -6,6 +6,7 @@
  * so the app never paints the wrong theme for a frame.
  */
 import { create } from 'zustand';
+import { isSessionFilter, type SessionFilter } from '../lib/sessionKinds';
 import { setHapticsEnabled } from '../lib/haptics';
 import type { ConnState } from '../ws/types';
 
@@ -87,6 +88,7 @@ const KEYS = {
   haptics: 'hermes.haptics',
   token: 'hermes.token',
   devPanel: 'hermes.devPanel',
+  sessionFilter: 'hermes.sessionFilter',
 } as const;
 
 function read(key: string, fallback: string): string {
@@ -116,6 +118,14 @@ interface UiState {
   /** Optional explicit token, only needed when bypassing the proxy. */
   token: string;
   devPanel: boolean;
+  /**
+   * Which bucket the Sessions screen is showing.
+   *
+   * A preference rather than screen state: the whole point is that it survives
+   * leaving the screen and closing the app. Someone who works out of the
+   * kanban lane should not have to re-pick it every time.
+   */
+  sessionFilter: SessionFilter;
   connection: ConnState;
   toasts: Toast[];
   /**
@@ -130,6 +140,7 @@ interface UiState {
   setHaptics: (on: boolean) => void;
   setToken: (t: string) => void;
   setDevPanel: (on: boolean) => void;
+  setSessionFilter: (f: SessionFilter) => void;
   setNavOpen: (open: boolean) => void;
   setConnection: (c: ConnState) => void;
   toast: (text: string, tone?: Toast['tone'], opts?: ToastOptions) => void;
@@ -149,6 +160,11 @@ const initialAccent: Accent = ACCENTS.includes(stored) ? stored : 'amber';
 const initialHaptics = read(KEYS.haptics, 'on') === 'on';
 setHapticsEnabled(initialHaptics);
 
+// Same treatment as the accent: an unknown stored value falls back rather
+// than filtering the list by a bucket no chip can turn off.
+const storedFilter = read(KEYS.sessionFilter, 'all');
+const initialSessionFilter: SessionFilter = isSessionFilter(storedFilter) ? storedFilter : 'all';
+
 export const useUi = create<UiState>((set, get) => ({
   theme: initialTheme,
   resolvedTheme: resolveTheme(initialTheme),
@@ -156,6 +172,9 @@ export const useUi = create<UiState>((set, get) => ({
   haptics: initialHaptics,
   token: read(KEYS.token, ''),
   devPanel: read(KEYS.devPanel, 'off') === 'on',
+  // Validated on the way in: a hand-edited or stale value must not leave the
+  // list filtered by something no chip can clear.
+  sessionFilter: initialSessionFilter,
   connection: 'closed',
   toasts: [],
   navOpen: false,
@@ -188,6 +207,11 @@ export const useUi = create<UiState>((set, get) => ({
   setDevPanel: (on) => {
     write(KEYS.devPanel, on ? 'on' : 'off');
     set({ devPanel: on });
+  },
+
+  setSessionFilter: (sessionFilter) => {
+    write(KEYS.sessionFilter, sessionFilter);
+    set({ sessionFilter });
   },
 
   setConnection: (connection) => set({ connection }),

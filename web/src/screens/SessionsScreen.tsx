@@ -26,6 +26,13 @@ import { MenuButton } from '../components/shared/MenuButton';
 import { useUi } from '../store/ui';
 import { useSession } from '../store/session';
 import { collectTags, hasTag, tagHue } from '../lib/sessionTags';
+import {
+  FILTER_LABEL,
+  SESSION_FILTERS,
+  countByKind,
+  matchesFilter,
+  type SessionFilter,
+} from '../lib/sessionKinds';
 import { buzz } from '../lib/haptics';
 import { UNDO_WINDOW_MS, scheduleUndoable } from '../lib/undo';
 
@@ -39,6 +46,13 @@ export function SessionsScreen() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const toast = useUi((s) => s.toast);
+  /**
+   * Persisted, not local state: the list mixes your conversations with cron
+   * runs and kanban workers, and having to re-pick the lane on every visit is
+   * the thing that makes the mixing tiresome in the first place.
+   */
+  const filter = useUi((s) => s.sessionFilter);
+  const setFilter = useUi((s) => s.setSessionFilter);
 
   // `/resume <text>` lands here with the typed argument as a search seed.
   const [params] = useSearchParams();
@@ -69,6 +83,32 @@ export function SessionsScreen() {
   );
 
   /**
+   * Counted across the loaded page rather than the filtered view, so the chips
+   * keep saying how much is in each lane while you are standing in one of
+   * them. "Loaded page" is the honest scope: `useSessions` fetches a capped
+   * list, so these count what the list could show, not all history — which is
+   * the number that matches what filtering actually does here.
+   */
+  const kindCounts = useMemo(() => countByKind(data?.sessions ?? []), [data]);
+
+  /**
+   * Which chips to render.
+   *
+   * `all` and `mine` always, because those are the two you switch between; the
+   * automated lanes only once something has actually run, so a machine with no
+   * kanban tasks never carries a permanent "Kanban 0". A lane you are
+   * currently filtered into stays visible even at zero — otherwise the chip
+   * that would clear the filter disappears along with the rows.
+   */
+  const visibleFilters = useMemo(
+    () =>
+      SESSION_FILTERS.filter(
+        (f) => f === 'all' || f === 'mine' || f === filter || kindCounts[f] > 0,
+      ),
+    [kindCounts, filter],
+  );
+
+  /**
    * Pinned sessions lead, then the rest grouped by day.
    *
    * The sort happens here rather than in the query because the backend orders
@@ -79,7 +119,8 @@ export function SessionsScreen() {
    */
   const groups = useMemo(() => {
     const all = data?.sessions ?? [];
-    const rows = tag ? all.filter((s) => hasTag(s.title, tag)) : all;
+    const byKind = all.filter((s) => matchesFilter(s, filter));
+    const rows = tag ? byKind.filter((s) => hasTag(s.title, tag)) : byKind;
     const out: { label: string; items: SessionRow[] }[] = [];
     const pinned = rows.filter((s) => isOn(s.pinned));
     if (pinned.length) out.push({ label: 'Pinned', items: pinned });
@@ -91,7 +132,13 @@ export function SessionsScreen() {
       else out.push({ label, items: [s] });
     }
     return out;
-  }, [data, tag]);
+  }, [data, tag, filter]);
+
+  /** How many rows the current filter and tag actually leave on screen. */
+  const visibleCount = useMemo(
+    () => groups.reduce((n, g) => n + g.items.length, 0),
+    [groups],
+  );
 
   const actionsSession = useMemo(
     () => data?.sessions.find((s) => s.id === actionsFor) ?? null,
@@ -242,7 +289,14 @@ export function SessionsScreen() {
             <MenuButton />
             <div className="header__title">
               {showArchived ? 'Archived' : 'Sessions'}
-              {data && <span className="header__sub"> · {data.total}</span>}
+              {/* The filtered count, not the server's total: with a lane
+                  selected the total describes a list you are not looking at. */}
+              {data && (
+                <span className="header__sub">
+                  {' · '}
+                  {filter === 'all' && !tag ? data.total : visibleCount}
+                </span>
+              )}
             </div>
             <button
               className={`chip${showArchived ? ' chip--active' : ''}`}
@@ -260,6 +314,31 @@ export function SessionsScreen() {
           </>
         )}
       </div>
+
+      {/* The lane picker. Above the tag rail because it is the coarser cut:
+          which kind of session, then which tag within it. */}
+      {!searching && !selecting && (
+        <div className="tag-rail">
+          {visibleFilters.map((f) => {
+            const on = filter === f;
+            const count = f === 'all' ? undefined : kindCounts[f];
+            return (
+              <button
+                key={f}
+                className={`chip${on ? ' chip--active' : ''}`}
+                onClick={() => {
+                  buzz('tap');
+                  setFilter(f as SessionFilter);
+                }}
+                aria-pressed={on}
+              >
+                {FILTER_LABEL[f]}
+                {count !== undefined && <span className="chip__count">{count}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Only worth showing once tags actually exist; an empty rail on a phone
           is pure lost height. */}
@@ -332,7 +411,27 @@ export function SessionsScreen() {
                 ))}
               </>
             ) : groups.length === 0 ? (
-              showArchived ? (
+              /* A filtered-out list is not an empty one, and saying "No
+                 sessions yet" to someone with a hundred of them reads as data
+                 loss. Offer the way back out. */
+              filter !== 'all' && (data?.sessions.length ?? 0) > 0 ? (
+                <Empty
+                  icon="🫙"
+                  title={`Nothing in ${FILTER_LABEL[filter]}`}
+                  hint="Other sessions are hidden by this filter."
+                  action={
+                    <button
+                      className="btn btn--primary"
+                      onClick={() => {
+                        buzz('tap');
+                        setFilter('all');
+                      }}
+                    >
+                      Show all
+                    </button>
+                  }
+                />
+              ) : showArchived ? (
                 <Empty
                   icon="🗄"
                   title="Nothing archived"

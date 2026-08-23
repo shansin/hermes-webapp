@@ -579,6 +579,14 @@ button.header__sub::after {
 
 .drawer__item--active .drawer__hint { color: color-mix(in srgb, var(--accent) 65%, var(--text-faint)); }
 
+/* The count on a Sessions lane chip. Dimmer than the label so the chip still
+   reads as its name first and its size second. */
+.chip__count {
+  margin-left: 5px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
 /* --- Updates feed card ---------------------------------------------------- */
 
 /* The body of a feed row. Clamped to `--feed-clamp` lines rather than to a
