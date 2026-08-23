@@ -12,7 +12,7 @@
  *    the stored session id used by the REST endpoints
  */
 import { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { MessageList } from '../components/chat/MessageList';
 import { Composer } from '../components/composer/Composer';
 import { CommandPalette } from '../components/composer/CommandPalette';
@@ -28,9 +28,17 @@ import { createSession, fetchHistory, resumeSession } from '../api/gateway';
 import { fetchSessionTitle, fetchStoredMessages } from '../api/sessions';
 import { useSlashRunner } from '../lib/useSlashRunner';
 import { takeShared } from '../lib/sharedIntake';
+import { useActivity } from '../lib/useActivity';
 
 export function ChatScreen() {
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
+  /**
+   * Sessions only. A count in the chat header must not make the busiest screen
+   * in the app poll the kanban board and the cron list — and a running
+   * delegation, which is what this is for, is a session either way.
+   */
+  const { running: activityRunning } = useActivity(false);
   const [modelSheet, setModelSheet] = useState(false);
   const [contextSheet, setContextSheet] = useState(false);
   const [palette, setPalette] = useState(false);
@@ -450,6 +458,19 @@ export function ChatScreen() {
             <IconChevron size={11} style={{ transform: 'rotate(90deg)' }} />
           </button>
         </div>
+        {/* Only when something is actually running. The header is already
+            four controls wide, so this has to cost nothing the rest of the
+            time — which is most of the time. Sessions only: see `useActivity`. */}
+        {activityRunning > 0 && (
+          <button
+            className="chip chip--live"
+            onClick={() => navigate('/activity')}
+            aria-label={`${activityRunning} running — open Activity`}
+          >
+            <span className="tool__pulse" />
+            {activityRunning}
+          </button>
+        )}
         <button
           className="icon-btn"
           onClick={() => setSearchOpen((o) => !o)}

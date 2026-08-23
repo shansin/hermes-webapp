@@ -579,6 +579,67 @@ button.header__sub::after {
 
 .drawer__item--active .drawer__hint { color: color-mix(in srgb, var(--accent) 65%, var(--text-faint)); }
 
+/* --- Activity rows -------------------------------------------------------- */
+
+.activity {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  width: 100%;
+  padding: 11px 14px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.activity:active { background: var(--surface-container-high); }
+
+.activity__icon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  padding-top: 3px;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.activity__main { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+
+.activity__title {
+  font-size: 14.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The live progress line — "delegate_task: subagent running execute_code
+   (iteration 5/250)". Two lines, because that string is the whole point of the
+   screen and clipping it to one throws away the iteration counter. */
+.activity__detail {
+  font-size: 13px;
+  color: var(--text-dim);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.activity__meta { font-size: 11.5px; color: var(--text-faint); }
+
+/* The chat header's running pill. */
+.chip--live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
 /* The count on a Sessions lane chip. Dimmer than the label so the chip still
    reads as its name first and its size second. */
 .chip__count {

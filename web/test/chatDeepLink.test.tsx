@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 vi.mock('../src/lib/haptics', () => ({ buzz: vi.fn(), setHapticsEnabled: vi.fn() }));
 
@@ -42,6 +43,9 @@ const fetchStoredMessages = vi.fn();
 vi.mock('../src/api/sessions', () => ({
   fetchSessionTitle: (...a: unknown[]) => fetchSessionTitle(...(a as [])),
   fetchStoredMessages: (...a: unknown[]) => fetchStoredMessages(...(a as [])),
+  // The header's running-count pill reads this. Idle: these tests are about
+  // deep links, and a pill that never appears is the right backdrop for them.
+  useActiveSessions: () => ({ data: { sessions: [] }, isLoading: false, error: null }),
 }));
 
 const { ChatScreen } = await import('../src/screens/ChatScreen');
@@ -75,11 +79,18 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
+/**
+ * The header's running-count pill reads react-query, so the screen needs a
+ * client even though none of these tests touch it. `retry: false` keeps a
+ * failed background fetch from holding the test open.
+ */
 const openAt = (url: string) =>
   render(
-    <MemoryRouter initialEntries={[url]}>
-      <ChatScreen />
-    </MemoryRouter>,
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <MemoryRouter initialEntries={[url]}>
+        <ChatScreen />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 
 describe('arriving from a cron notification', () => {

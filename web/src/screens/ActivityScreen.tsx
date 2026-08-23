@@ -1,0 +1,179 @@
+/**
+ * Activity — what Hermes is doing right now, and what is queued behind it.
+ *
+ * The screen you open when a session kicked off a `delegate_task` and you have
+ * no idea how it is going. Three lanes land here: sessions with a turn in
+ * flight (which is where a running delegation shows up, carrying its own
+ * progress line), kanban workers, and cron. See `lib/activity.ts` for why the
+ * data comes over REST rather than off the socket.
+ *
+ * Read-only by design, like the Updates feed: every row is a way *into* the
+ * thing it describes, not a control for it. Stopping a run belongs in the
+ * conversation or on the board, where the context to decide is.
+ */
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+
+import { MenuButton } from '../components/shared/MenuButton';
+import { PullToRefresh } from '../components/shared/PullToRefresh';
+import { Empty, ErrorNote, SkeletonList, relTime } from '../components/shared/misc';
+import { useActivity } from '../lib/useActivity';
+import { isQuiet, quietFor, type ActivityItem } from '../lib/activity';
+import { buzz } from '../lib/haptics';
+import { useQueryClient } from '@tanstack/react-query';
+
+const KIND_ICON: Record<ActivityItem['kind'], string> = {
+  session: '✻',
+  kanban: '▤',
+  cron: '⏰',
+};
+
+/**
+ * "in 6h" for something due later.
+ *
+ * `relTime` measures into the past and collapses anything under a minute to
+ * "now" — which for a future timestamp means a cron job due at nine tonight
+ * reads as due this instant. Queued rows need the other direction.
+ */
+function untilTime(epochSeconds: number | null): string {
+  if (epochSeconds == null) return 'queued';
+  const diff = epochSeconds - Date.now() / 1000;
+  if (diff <= 0) return 'due now';
+  if (diff < 60) return 'in under a minute';
+  if (diff < 3600) return `in ${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `in ${Math.floor(diff / 3600)}h`;
+  return `in ${Math.floor(diff / 86400)}d`;
+}
+
+/**
+ * A clock that ticks while the screen is open.
+ *
+ * The rows say how long something has been quiet, which is only true at the
+ * moment it renders — without this a row frozen at "no update in 2m" while the
+ * agent has actually been silent for ten is worse than saying nothing.
+ */
+function useNowSeconds(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => setNow(Date.now() / 1000), 5_000);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
+}
+
+export function ActivityScreen() {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const { items, running, isLoading, error } = useActivity(true);
+  const nowS = useNowSeconds(items.length > 0);
+
+  const live = items.filter((i) => i.state !== 'queued');
+  const queued = items.filter((i) => i.state === 'queued');
+
+  return (
+    <div className="screen">
+      <div className="header">
+        <MenuButton />
+        <div className="header__title">
+          Activity
+          {running > 0 && <span className="header__sub"> · {running} running</span>}
+        </div>
+      </div>
+
+      {isLoading && items.length === 0 ? (
+        <SkeletonList n={4} h={58} />
+      ) : error ? (
+        <ErrorNote error={error} />
+      ) : (
+        <PullToRefresh
+          onRefresh={async () => {
+            await Promise.all([
+              qc.invalidateQueries({ queryKey: ['sessions', 'recent'] }),
+              qc.invalidateQueries({ queryKey: ['kanban', 'board'] }),
+              qc.invalidateQueries({ queryKey: ['cron'] }),
+            ]);
+          }}
+        >
+          {items.length === 0 ? (
+            <Empty
+              icon="😴"
+              title="Nothing running"
+              hint="Delegated tasks, kanban workers and cron jobs show up here while they work — including ones that started while the app was closed."
+            />
+          ) : (
+            <div className="chat__list">
+              {live.length > 0 && <div className="msg-divider">Now</div>}
+              {live.map((item) => (
+                <Row
+                  key={item.id}
+                  item={item}
+                  nowS={nowS}
+                  onOpen={() => {
+                    buzz('tap');
+                    navigate(item.url);
+                  }}
+                />
+              ))}
+
+              {queued.length > 0 && <div className="msg-divider">Next</div>}
+              {queued.map((item) => (
+                <Row
+                  key={item.id}
+                  item={item}
+                  nowS={nowS}
+                  onOpen={() => {
+                    buzz('tap');
+                    navigate(item.url);
+                  }}
+                />
+              ))}
+            </div>
+          )}
+        </PullToRefresh>
+      )}
+    </div>
+  );
+}
+
+function Row({
+  item,
+  nowS,
+  onOpen,
+}: {
+  item: ActivityItem;
+  nowS: number;
+  onOpen: () => void;
+}) {
+  const quiet = item.state === 'running' && isQuiet(item, nowS);
+  const seconds = quietFor(item, nowS);
+
+  return (
+    <button className="activity" onClick={onOpen}>
+      <span className="activity__icon" aria-hidden>
+        {item.state === 'running' && !quiet ? (
+          <span className="tool__pulse" />
+        ) : (
+          KIND_ICON[item.kind]
+        )}
+      </span>
+      <span className="activity__main">
+        <span className="activity__title">{item.title}</span>
+        {item.detail && <span className="activity__detail">{item.detail}</span>}
+        <span className="activity__meta">
+          {item.state === 'queued'
+            ? untilTime(item.since)
+            : /* Running rows say when they last moved rather than how long
+                 they have run: "started 40m ago" is reassuring about a job
+                 that died 39 minutes in. */
+              (item.note ??
+              (seconds == null
+                ? 'running'
+                : quiet
+                  ? `no update in ${relTime(item.since)}`
+                  : `updated ${relTime(item.since)}`))}
+        </span>
+      </span>
+    </button>
+  );
+}

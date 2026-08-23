@@ -19,6 +19,7 @@ import {
   IconCron,
   IconFolder,
   IconKanban,
+  IconPlay,
   IconMemory,
   IconModels,
   IconProfiles,
@@ -29,6 +30,7 @@ import {
 } from './Icons';
 import { useUi } from '../../store/ui';
 import { useUnreadCount } from '../../api/notifications';
+import { useActivity } from '../../lib/useActivity';
 import { buzz } from '../../lib/haptics';
 import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
 
@@ -51,6 +53,13 @@ const WORK = [
   { to: '/chat', label: 'Chat', hint: 'Talk to the agent', Icon: IconChat },
   { to: '/sessions', label: 'Sessions', hint: 'History and search', Icon: IconSessions },
   { to: '/kanban', label: 'Kanban', hint: 'The task board', Icon: IconKanban },
+  {
+    to: '/activity',
+    label: 'Activity',
+    hint: 'What is running now',
+    Icon: IconPlay,
+    live: true,
+  },
   { to: '/files', label: 'Files', hint: 'Browse the workspace', Icon: IconFolder },
   {
     to: '/notifications',
@@ -79,6 +88,9 @@ export function NavDrawer() {
   const setOpen = useUi((s) => s.setNavOpen);
   const connection = useUi((s) => s.connection);
   const unread = useUnreadCount();
+  // Sessions only — the drawer must not make every screen poll the kanban
+  // board and the cron list just to show a number.
+  const { running } = useActivity(false);
 
   const [dragX, setDragX] = useState(0);
   const startX = useRef<number | null>(null);
@@ -147,14 +159,14 @@ export function NavDrawer() {
         </div>
 
         <div className="drawer__list">
-          {WORK.map(({ to, label, hint, Icon, badge }) => (
+          {WORK.map(({ to, label, hint, Icon, badge, live }) => (
             <Item
               key={to}
               to={to}
               label={label}
               hint={hint}
               Icon={Icon}
-              count={badge ? unread : 0}
+              count={badge ? unread : live ? running : 0}
               onNavigate={close}
             />
           ))}

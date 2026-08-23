@@ -33,6 +33,9 @@ const SessionsScreen = lazy(() =>
 const KanbanScreen = lazy(() =>
   import('./screens/KanbanScreen').then((m) => ({ default: m.KanbanScreen })),
 );
+const ActivityScreen = lazy(() =>
+  import('./screens/ActivityScreen').then((m) => ({ default: m.ActivityScreen })),
+);
 const FilesScreen = lazy(() =>
   import('./screens/FilesScreen').then((m) => ({ default: m.FilesScreen })),
 );
@@ -212,6 +215,7 @@ export function App() {
             <Route path="/chat" element={<ChatScreen />} />
             <Route path="/sessions" element={<SessionsScreen />} />
             <Route path="/kanban" element={<KanbanScreen />} />
+            <Route path="/activity" element={<ActivityScreen />} />
             <Route path="/files" element={<FilesScreen />} />
             <Route path="/notifications" element={<NotificationsScreen />} />
             {/* The screen is called Updates now, but `/notifications` stays the

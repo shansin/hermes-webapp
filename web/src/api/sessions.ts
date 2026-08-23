@@ -24,6 +24,22 @@ export interface SessionRow {
   reasoning_tokens?: number | null;
   /** Why the session ended — `ws_orphan_reap`, `agent_close`, `cron_complete`. */
   end_reason?: string | null;
+  /**
+   * Whether Hermes considers this session to have work in flight.
+   *
+   * Computed backend-side as `ended_at is None and (now - last_active) < 300`,
+   * so it expires on its own and can be up to five minutes behind reality.
+   * Optional because an older backend omits it — `lib/activity.ts` treats a
+   * missing flag as "not running" rather than guessing.
+   */
+  is_active?: boolean | null;
+  last_activity_at?: number | null;
+  /**
+   * The live progress line, and the only place a running `delegate_task` is
+   * visible outside the process that owns it: "delegate_task: subagent running
+   * execute_code (iteration 5/250)". See `lib/activity.ts`.
+   */
+  last_activity_description?: string | null;
   cwd: string | null;
   parent_session_id: string | null;
   /**
@@ -87,6 +103,32 @@ export function useSessions(limit = MAX_SESSION_LIMIT, archived: ArchivedFilter 
     queryKey: sessionKeys.list(capped, archived),
     queryFn: () => api.get<SessionList>(`/api/sessions?limit=${capped}&archived=${archived}`),
     staleTime: 15_000,
+  });
+}
+
+/**
+ * Sessions ordered by latest activity, for the Activity pane.
+ *
+ * `order=recent` is the point: a session with work in flight is by definition
+ * recently active, so it lands on the first page. The endpoint has no
+ * "active only" filter and caps `limit` at 100 (see
+ * `hermes_cli/web_routers/sessions.py`), so a small recent page is both
+ * cheaper and more reliable than a large one ordered by creation.
+ *
+ * `refetchInterval` is a function of the data: once nothing is active there is
+ * nothing to watch, and an idle phone should not poll for ever. A running turn
+ * updates its progress line every few seconds, so 5s is what makes the
+ * iteration counter move.
+ */
+export function useActiveSessions(limit = 25, enabled = true) {
+  const capped = Math.min(limit, MAX_SESSION_LIMIT);
+  return useQuery({
+    queryKey: ['sessions', 'recent', capped],
+    enabled,
+    queryFn: () => api.get<SessionList>(`/api/sessions?limit=${capped}&order=recent&archived=exclude`),
+    staleTime: 2_000,
+    refetchInterval: (q) =>
+      (q.state.data?.sessions ?? []).some((s) => s.is_active && !s.ended_at) ? 5_000 : 30_000,
   });
 }
 
