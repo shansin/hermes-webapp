@@ -27,6 +27,7 @@
 import type { SessionRow } from '../api/sessions';
 import type { Task } from '../api/kanban';
 import type { CronJob } from '../api/hub';
+import { humanCron } from './cronText';
 
 export type ActivityKind = 'session' | 'kanban' | 'cron';
 export type ActivityState = 'running' | 'queued' | 'stalled';
@@ -229,7 +230,10 @@ export function fromCron(jobs: readonly CronJob[] | undefined, queuedLimit = 3):
         ...base,
         id: `cron:${job.id}`,
         state: 'queued',
-        detail: text(job.schedule_display) ?? 'Scheduled',
+        /* `schedule_display` is the cron expression echoed back, not a
+           rendered string — see `humanCron`, which falls back to the raw
+           expression rather than guessing at a shape it does not know. */
+        detail: humanCron(text(job.schedule_display)) ?? text(job.schedule_display) ?? 'Scheduled',
         since: next,
       });
     }

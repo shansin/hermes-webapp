@@ -50,6 +50,7 @@ import { useActiveProfile, useProfiles } from '../../api/profiles';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 import { UNDO_WINDOW_MS, scheduleUndoable } from '../../lib/undo';
+import { humanCron } from '../../lib/cronText';
 
 function jobName(j: CronJob): string {
   return j.name ?? j.id;
@@ -63,12 +64,28 @@ function jobName(j: CronJob): string {
  * the object into JSX is what blanked this tab, so nothing renders `schedule`
  * directly any more.
  */
-function scheduleText(j: CronJob): string {
+function scheduleExpr(j: CronJob): string {
   if (j.schedule_display) return j.schedule_display;
   const s = j.schedule;
   if (typeof s === 'string') return s;
   if (s && typeof s === 'object') return s.display ?? s.kind ?? '';
   return '';
+}
+
+/**
+ * The schedule as a sentence, falling back to the expression.
+ *
+ * `schedule_display` sounds pre-rendered and is not — it is the cron
+ * expression echoed back, so this row showed `30 20 * * *` where it meant
+ * "8:30 PM daily". `humanCron` translates the shapes it recognises and returns
+ * null for anything else, which is deliberately shown raw: a schedule rendered
+ * wrong is believed, while a cryptic one at least announces that it needs
+ * reading.
+ */
+function scheduleText(j: CronJob): { text: string; raw: string; humanised: boolean } {
+  const raw = scheduleExpr(j);
+  const human = humanCron(raw);
+  return { text: human ?? raw, raw, humanised: human !== null };
 }
 
 /**
@@ -344,9 +361,21 @@ export function CronTab() {
                       </span>
                     )}
                   </div>
-                  {schedule && (
-                    <div style={{ fontSize: 12, color: 'var(--text-faint)', fontFamily: 'var(--mono)', marginTop: 2 }}>
-                      {schedule}
+                  {schedule.text && (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--text-faint)',
+                        // Monospace only when it is still an expression. A
+                        // sentence set in mono reads as a machine string.
+                        fontFamily: schedule.humanised ? undefined : 'var(--mono)',
+                        marginTop: 2,
+                      }}
+                      // The expression stays reachable for anyone who wants to
+                      // check it, rather than being replaced outright.
+                      title={schedule.humanised ? schedule.raw : undefined}
+                    >
+                      {schedule.text}
                     </div>
                   )}
                   {j.prompt && (

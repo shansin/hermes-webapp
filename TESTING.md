@@ -116,6 +116,14 @@ in, wraps at both ends, returns to whatever opened it, and a sheet that demands
 an explicit choice cannot be escaped. Driven with `user-event`, since a focus
 trap only means anything as something a keyboard runs into.
 
+**`web/test/cronText.test.ts`** — cron expressions in words. Hermes'
+`schedule_display` sounds pre-rendered and is not: it is the expression echoed
+back, so `30 6 * * *` was sitting in the line meant to explain a row. Most of
+these cases pin the *refusals* — six-field dialects, macros, unhandled ranges,
+day-of-month combined with day-of-week (cron ORs them), out-of-range values —
+because a schedule rendered wrong is believed, while a cryptic one announces
+that it needs reading.
+
 **`web/test/activity.test.ts`** — also covers which agent a row belongs to. The
 label matters, but the session link matters more: a row for another profile's
 work whose URL omits `&profile=` opens an empty chat, because the resume looks
