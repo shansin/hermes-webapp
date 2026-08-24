@@ -22,14 +22,15 @@ import {
   IconPlay,
   IconMemory,
   IconModels,
+  IconPlug,
   IconProfiles,
   IconSessions,
   IconSettings,
   IconSkills,
-  IconUsage,
 } from './Icons';
 import { useUi } from '../../store/ui';
 import { useUnreadCount } from '../../api/notifications';
+import { useActiveProfile } from '../../api/profiles';
 import { useActivity } from '../../lib/useActivity';
 import { buzz } from '../../lib/haptics';
 import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
@@ -74,8 +75,13 @@ const SYSTEM = [
   { to: '/memory', label: 'Memory', hint: 'What the agent remembers', Icon: IconMemory },
   { to: '/skills', label: 'Skills', hint: 'Toggle, search, install', Icon: IconSkills },
   { to: '/cron', label: 'Cron', hint: 'Scheduled jobs', Icon: IconCron },
-  { to: '/models', label: 'Models', hint: 'What new sessions start on', Icon: IconModels },
-  { to: '/usage', label: 'Usage', hint: 'Where the tokens went', Icon: IconUsage },
+  { to: '/models', label: 'Models', hint: 'Defaults, and where the tokens went', Icon: IconModels },
+  {
+    to: '/tools',
+    label: 'Capabilities',
+    hint: 'Toolsets, MCP servers and config',
+    Icon: IconPlug,
+  },
   { to: '/profiles', label: 'Profiles', hint: 'Named configurations', Icon: IconProfiles },
   { to: '/settings', label: 'App settings', hint: 'Theme, notifications, status', Icon: IconSettings },
 ];
@@ -91,6 +97,16 @@ export function NavDrawer() {
   // Sessions only — the drawer must not make every screen poll the kanban
   // board and the cron list just to show a number.
   const { running } = useActivity(false);
+  /**
+   * Which profile is live.
+   *
+   * Switching one swaps the model, the skills, the memory and the cron jobs
+   * together — `useSwitchProfile` invalidates the entire query cache for that
+   * reason — and until now nothing outside the Profiles screen said which one
+   * you were on. Already cached with a 30s staleTime, so this costs no request
+   * on a normal open.
+   */
+  const activeProfile = useActiveProfile();
 
   const [dragX, setDragX] = useState(0);
   const startX = useRef<number | null>(null);
@@ -151,6 +167,11 @@ export function NavDrawer() {
             <div className="drawer__title">Hermes</div>
             <div className={`drawer__conn drawer__conn--${connection === 'open' ? 'on' : 'off'}`}>
               {connection === 'open' ? 'Connected' : 'Disconnected'}
+              {/* Only when it is not the stock profile: naming `default` on
+                  every open is noise for anyone who never made a second one. */}
+              {activeProfile.data?.active && activeProfile.data.active !== 'default' && (
+                <span className="drawer__profile"> · {activeProfile.data.active}</span>
+              )}
             </div>
           </div>
           <button className="icon-btn" onClick={close} aria-label="Close menu">

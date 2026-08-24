@@ -18,6 +18,7 @@ import { Composer } from '../components/composer/Composer';
 import { CommandPalette } from '../components/composer/CommandPalette';
 import { ModelSheet } from '../components/chat/ModelSheet';
 import { ContextSheet } from '../components/chat/ContextSheet';
+import { SessionActionsSheet } from '../components/sessions/SessionActionsSheet';
 import { IconPlus, IconChevron, IconSearch, IconClose } from '../components/shared/Icons';
 import { Empty, Loader } from '../components/shared/misc';
 import { useSession } from '../store/session';
@@ -25,10 +26,11 @@ import { MenuButton } from '../components/shared/MenuButton';
 import { useUi } from '../store/ui';
 import { hermes } from '../ws/client';
 import { createSession, fetchHistory, resumeSession } from '../api/gateway';
-import { fetchSessionTitle, fetchStoredMessages } from '../api/sessions';
+import { fetchSessionTitle, fetchStoredMessages, useSessionRow } from '../api/sessions';
 import { useSlashRunner } from '../lib/useSlashRunner';
 import { takeShared } from '../lib/sharedIntake';
 import { useActivity } from '../lib/useActivity';
+import { buzz } from '../lib/haptics';
 
 export function ChatScreen() {
   const [params, setParams] = useSearchParams();
@@ -43,6 +45,7 @@ export function ChatScreen() {
   const [contextSheet, setContextSheet] = useState(false);
   const [palette, setPalette] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [commandSeed, setCommandSeed] = useState('');
   const [booting, setBooting] = useState(false);
   /**
@@ -83,6 +86,13 @@ export function ChatScreen() {
 
   const connection = useUi((s) => s.connection);
   const toast = useUi((s) => s.toast);
+
+  /**
+   * The stored row behind this conversation, fetched only once the actions
+   * sheet is asked for — an ordinary chat should not pay a request for a sheet
+   * nobody opened.
+   */
+  const actionsRow = useSessionRow(actionsOpen ? storedSessionId : null);
 
   /** A socket that is actually usable, as opposed to one that merely says so. */
   const live = online && connection === 'open';
@@ -471,6 +481,23 @@ export function ChatScreen() {
             {activityRunning}
           </button>
         )}
+        {/* Pin, archive and export, from the conversation they are about.
+            The same sheet the Sessions list opens from a row's `⋯` — which
+            was the only way in, so exporting the chat you were reading meant
+            leaving it to find its row. Hidden until there is a stored session
+            to act on. */}
+        {storedSessionId && (
+          <button
+            className="icon-btn"
+            onClick={() => {
+              buzz('tap');
+              setActionsOpen(true);
+            }}
+            aria-label="Session actions"
+          >
+            ⋯
+          </button>
+        )}
         <button
           className="icon-btn"
           onClick={() => setSearchOpen((o) => !o)}
@@ -555,6 +582,10 @@ export function ChatScreen() {
         onRun={(command) => void runCommand(command)}
         onSeed={setCommandSeed}
       />
+
+      {actionsOpen && actionsRow.data && (
+        <SessionActionsSheet session={actionsRow.data} onClose={() => setActionsOpen(false)} />
+      )}
 
       <ModelSheet open={modelSheet} onClose={() => setModelSheet(false)} />
       <ContextSheet open={contextSheet} onClose={() => setContextSheet(false)} />

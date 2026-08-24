@@ -15,6 +15,10 @@ import { resolve } from 'node:path';
 const read = (p: string) => readFileSync(resolve(__dirname, '..', p), 'utf8');
 
 const chatScreen = read('src/screens/ChatScreen.tsx');
+const app = read('src/App.tsx');
+const navDrawer = read('src/components/shared/NavDrawer.tsx');
+const slashCommands = read('src/lib/slashCommands.ts');
+const hubPage = read('src/screens/HubPage.tsx');
 const cronTab = read('src/components/hub/CronTab.tsx');
 const pushEvents = read('../server/src/push/events.ts');
 const pushCron = read('../server/src/push/cron.ts');
@@ -191,5 +195,50 @@ describe('manifest shortcuts', () => {
         );
       }
     }
+  });
+});
+
+/**
+ * Screens that moved, and the links that did not.
+ *
+ * Usage became a section of Models and Capabilities arrived as a new route.
+ * Both are the shape that breaks silently: a slash command, a `/hub?tab=` URL
+ * or a bookmark keeps pointing at the old path, nothing throws, and you land
+ * somewhere plausible instead of somewhere right — which is exactly how
+ * `/chat?session=` came to be emitted by every push payload and read by
+ * nothing (see above).
+ */
+describe('screens that moved', () => {
+  it('keeps /usage as a route, pointing into the merged screen', () => {
+    expect(app).toContain('path="/usage"');
+    expect(app).toContain('/models?tab=usage');
+  });
+
+  it('no longer offers Usage as its own drawer destination', () => {
+    expect(navDrawer).not.toContain("to: '/usage'");
+    expect(navDrawer).toContain("to: '/models'");
+  });
+
+  /**
+   * `useSlashRunner` maps every `hub-*` action to `/<rest>`, so a command whose
+   * derived path has no route is a command that navigates nowhere.
+   */
+  it('gives every hub-* slash action a route to land on', () => {
+    const actions = [...slashCommands.matchAll(/local\('hub-([a-z]+)'\)/g)].map((m) => m[1]);
+    expect(actions.length).toBeGreaterThan(4);
+    for (const action of actions) {
+      expect(app).toContain(`path="/${action}"`);
+    }
+  });
+
+  it('routes the Capabilities screen the drawer and /tools both point at', () => {
+    expect(app).toContain('path="/tools"');
+    expect(navDrawer).toContain("to: '/tools'");
+    expect(slashCommands).toContain("local('hub-tools')");
+  });
+
+  it('still answers the old /hub?tab= links', () => {
+    expect(hubPage).toContain("'usage'");
+    expect(hubPage).toContain("'models'");
   });
 });

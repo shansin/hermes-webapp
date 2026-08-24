@@ -271,3 +271,14 @@ export const IconSettings = (p: P) => (
     <circle cx="15" cy="16" r="2.3" />
   </Svg>
 );
+
+/** Capabilities. A plug — what the agent is wired up to reach, which is what
+ *  toolsets, MCP servers and the config on that screen all decide. A wrench
+ *  reads as "repair", which is the wrong verb for a page of switches. */
+export const IconPlug = (p: P) => (
+  <Svg {...p}>
+    <path d="M9 3.5v5M15 3.5v5" />
+    <path d="M6 8.5h12v2.6a6 6 0 0 1-6 6 6 6 0 0 1-6-6Z" />
+    <path d="M12 17.1v3.4" />
+  </Svg>
+);

@@ -42,6 +42,7 @@ export type LocalActionId =
   | 'hub-skills'
   | 'hub-cron'
   | 'hub-models'
+  | 'hub-tools'
   | 'hub-usage'
   | 'hub-settings';
 
@@ -128,7 +129,15 @@ const SPECS: readonly CommandSpec[] = [
     description: 'What scheduled jobs did while you were away',
     surface: local('notifications'),
   },
-  { name: '/models', description: 'Manage providers and API keys', surface: local('hub-models') },
+  { name: '/models', description: 'Default model, and where the tokens went', surface: local('hub-models') },
+  {
+    // Was `exec`, which printed a terminal-shaped table into a phone
+    // transcript — the exact thing the `local` surface exists to prevent.
+    name: '/tools',
+    description: 'Toolsets, MCP servers and config',
+    aliases: ['/mcp'],
+    surface: local('hub-tools'),
+  },
   {
     name: '/usage',
     description: 'Tokens, models and machinery over time',
@@ -213,7 +222,6 @@ const SPECS: readonly CommandSpec[] = [
   { name: '/steer', description: 'Steer the run after the next tool call', argumentMode: 'text', surface: exec() },
   { name: '/rollback', description: 'List or restore filesystem checkpoints', argumentMode: 'mixed', surface: exec() },
   { name: '/personality', description: 'Switch personality for this session', argumentMode: 'options', surface: exec() },
-  { name: '/tools', description: 'List or toggle agent tools', argumentMode: 'options', surface: exec() },
   { name: '/retry', description: 'Retry the last message', surface: exec() },
   { name: '/version', description: 'Hermes Agent version', surface: exec() },
 

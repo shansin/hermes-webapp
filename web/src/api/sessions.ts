@@ -217,6 +217,24 @@ export async function fetchSessionTitle(id: string): Promise<string | null> {
   }
 }
 
+/**
+ * One stored session row.
+ *
+ * The list screen already holds these, but the chat screen does not: it knows a
+ * session by its two ids and whatever the gateway told it, and `pinned`,
+ * `archived` and `started_at` are only on the stored record. `SessionActionsSheet`
+ * needs all three, so the conversation you are *in* can offer the same verbs as
+ * a row in the list.
+ */
+export function useSessionRow(id: string | null) {
+  return useQuery({
+    queryKey: sessionKeys.detail(id ?? ''),
+    enabled: Boolean(id),
+    staleTime: 30_000,
+    queryFn: () => api.get<SessionRow>(`/api/sessions/${encodeURIComponent(id!)}`),
+  });
+}
+
 export function useSessionMessages(id: string | null) {
   return useQuery({
     queryKey: sessionKeys.messages(id ?? ''),

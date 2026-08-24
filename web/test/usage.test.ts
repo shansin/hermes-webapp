@@ -384,15 +384,33 @@ describe('durations', () => {
 describe('where the screen lives', () => {
   const read = (rel: string) => readFileSync(resolve(__dirname, rel), 'utf8');
 
-  it('is routed and reachable from the drawer', () => {
+  /**
+   * The screen is a section of Models now, not a destination of its own. The
+   * route has to survive that: it is in the slash-command table, in
+   * `HubRedirect`, and in whatever anyone bookmarked before the merge.
+   */
+  it('keeps /usage reachable, as a redirect rather than a drawer row', () => {
     expect(read('../src/App.tsx')).toContain('path="/usage"');
-    expect(read('../src/components/shared/NavDrawer.tsx')).toContain("to: '/usage'");
+    expect(read('../src/App.tsx')).toContain('/models?tab=usage');
+    expect(read('../src/components/shared/NavDrawer.tsx')).not.toContain("to: '/usage'");
+    expect(read('../src/components/shared/NavDrawer.tsx')).toContain("to: '/models'");
   });
 
-  it('does not leave a second copy of the charts on Models', () => {
+  /**
+   * The charts weigh ~356 KB built, and Models is the screen you open to change
+   * a model. A static import here would inline all of it into that navigation
+   * without anything on screen looking different — so this checks the source
+   * for the dynamic boundary, and for the two things that would mean the
+   * report had been copied back in rather than mounted.
+   */
+  it('mounts the charts behind a dynamic import rather than inlining them', () => {
     const models = read('../src/components/hub/ModelsTab.tsx');
-    expect(models).not.toContain('recharts');
-    expect(models).not.toContain('useUsageAnalytics');
+    expect(models).toContain("import('./UsageTab')");
+    // Matched as an import rather than as the bare word: the file header names
+    // recharts as the whole reason the boundary is there, and a check that
+    // forbids saying so would be traded for a vaguer comment.
+    expect(models).not.toMatch(/from 'recharts'/);
+    expect(models).not.toMatch(/from '\.\.\/\.\.\/api\/hub'/);
   });
 
   it('still answers the old /hub?tab= links, including the new tab', () => {

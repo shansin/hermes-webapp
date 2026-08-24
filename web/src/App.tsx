@@ -20,9 +20,9 @@ import {
  *
  * The app opens on `/chat`, and a phone on Wi-Fi pays for every byte before
  * first paint. Statically importing all of these put the whole app — including
- * recharts, which only the Models tab uses, and which is one of the largest
- * things we ship — into the boot graph. Each of these now arrives on the
- * navigation that needs it.
+ * recharts, which only the usage section of Models uses, and which is one of
+ * the largest things we ship — into the boot graph. Each of these now arrives
+ * on the navigation that needs it.
  *
  * `ChatScreen` stays eager on purpose: it is the landing route, so deferring
  * it would only add a round trip to the one screen that must be instant.
@@ -52,11 +52,11 @@ const CronTab = lazy(() => import('./components/hub/CronTab').then((m) => ({ def
 const ModelsTab = lazy(() =>
   import('./components/hub/ModelsTab').then((m) => ({ default: m.ModelsTab })),
 );
-const UsageTab = lazy(() =>
-  import('./components/hub/UsageTab').then((m) => ({ default: m.UsageTab })),
-);
 const ProfilesTab = lazy(() =>
   import('./components/hub/ProfilesTab').then((m) => ({ default: m.ProfilesTab })),
+);
+const CapabilitiesTab = lazy(() =>
+  import('./components/tools/CapabilitiesTab').then((m) => ({ default: m.CapabilitiesTab })),
 );
 const SettingsTab = lazy(() =>
   import('./components/hub/SettingsTab').then((m) => ({ default: m.SettingsTab })),
@@ -226,7 +226,11 @@ export function App() {
             <Route path="/skills" element={<HubPage title="Skills"><SkillsTab /></HubPage>} />
             <Route path="/cron" element={<HubPage title="Cron"><CronTab /></HubPage>} />
             <Route path="/models" element={<HubPage title="Models"><ModelsTab /></HubPage>} />
-            <Route path="/usage" element={<HubPage title="Usage"><UsageTab /></HubPage>} />
+            {/* The usage report is a section of Models now. This stays a real
+                route because it is in the slash-command table, in `HubRedirect`,
+                and in anything anyone bookmarked. */}
+            <Route path="/usage" element={<Navigate to="/models?tab=usage" replace />} />
+            <Route path="/tools" element={<HubPage title="Capabilities"><CapabilitiesTab /></HubPage>} />
             <Route path="/profiles" element={<HubPage title="Profiles"><ProfilesTab /></HubPage>} />
             <Route path="/settings" element={<HubPage title="App settings"><SettingsTab /></HubPage>} />
             <Route path="/hub" element={<HubRedirect />} />
