@@ -16,11 +16,27 @@ export interface Skill {
   provenance: string;
 }
 
-export function useSkills() {
+/**
+ * @param profile read another profile's skills instead of the active one.
+ *   Needed wherever you are configuring a profile you are not currently
+ *   running as — pinning skills onto a cron job that belongs to `research`
+ *   must offer research's skills, not the ones in front of you.
+ *
+ * @param enabled hold the request back entirely. The cron screen only needs
+ *   this list while its create sheet is open, and firing it on every visit to
+ *   a screen that mostly reads jobs is two requests nobody asked for.
+ *
+ * The key keeps its old shape when no profile is named, so every existing
+ * caller and every `invalidateQueries(['skills'])` behaves as before — and
+ * prefix matching means those invalidations still reach the scoped copies.
+ */
+export function useSkills(profile?: string | null, enabled = true) {
   return useQuery({
-    queryKey: ['skills'],
-    queryFn: () => api.get<Skill[]>('/api/skills'),
+    queryKey: profile ? ['skills', profile] : ['skills'],
+    queryFn: () =>
+      api.get<Skill[]>(profile ? `/api/skills?profile=${encodeURIComponent(profile)}` : '/api/skills'),
     staleTime: 30_000,
+    enabled,
   });
 }
 
@@ -113,9 +129,49 @@ export interface CronJob {
    * empty.
    */
   last_error?: string | null;
+  /**
+   * Which profile's job store this came out of.
+   *
+   * A cron job is not *tagged* with a profile — it lives in that profile's own
+   * `cron/jobs.json`, and runs against that profile's home: its config, model,
+   * skills and memory. Hermes stamps every job it hands back with the store it
+   * was read from (`profile`, `profile_name`, `hermes_home`), which is the only
+   * way to tell two jobs apart in the merged listing below.
+   */
+  profile?: string;
+  profile_name?: string;
+  hermes_home?: string;
+  /** Pinned per-job, and narrower than the profile's own set. Empty/absent
+      means the job runs with whatever the profile has enabled. */
+  skills?: string[];
+  enabled_toolsets?: string[];
   [k: string]: unknown;
 }
 
+/**
+ * Add `?profile=` to a cron URL, or leave it alone.
+ *
+ * Every cron endpoint takes the profile as a query parameter, and the default
+ * differs per endpoint in a way that matters: the *list* defaults to `all`
+ * (every profile's jobs, merged), while create and the per-job actions default
+ * to whichever profile happens to be active. So an omitted parameter is not
+ * one behaviour, it is two — which is why this is a named helper with a test
+ * rather than a template string at each call site.
+ */
+export function cronUrl(path: string, profile?: string | null): string {
+  if (!profile) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}profile=${encodeURIComponent(profile)}`;
+}
+
+/**
+ * Every profile's jobs at once — which is the server's default, and worth
+ * saying out loud because it does not look like it from here.
+ *
+ * The screen renders one list, so without the `profile` stamp on each row a
+ * second profile's jobs simply appear in it, indistinguishable from the ones
+ * you were looking at.
+ */
 export function useCronJobs() {
   return useQuery({
     queryKey: ['cron'],
@@ -125,38 +181,69 @@ export function useCronJobs() {
   });
 }
 
-export function useCronRuns(jobId: string | null) {
+export function useCronRuns(jobId: string | null, profile?: string | null) {
   return useQuery({
-    queryKey: ['cron', 'runs', jobId],
+    queryKey: ['cron', 'runs', jobId, profile ?? null],
     queryFn: () =>
       api.get<{ runs?: unknown[] } | unknown[]>(
-        `/api/cron/jobs/${encodeURIComponent(jobId!)}/runs`,
+        cronUrl(`/api/cron/jobs/${encodeURIComponent(jobId!)}/runs`, profile),
       ),
     enabled: Boolean(jobId),
   });
 }
 
+/**
+ * Pause, resume or trigger.
+ *
+ * The profile is passed whenever the caller knows it, and the caller always
+ * does — it came back on the job. Without it Hermes falls back to
+ * `_find_cron_job_profile`, which walks every profile's store and matches on
+ * **id or name**: two profiles each holding a job called `morning-brief`
+ * resolve to whichever is scanned first. That is a silent wrong-job action,
+ * and it only ever happens to someone who has more than one profile.
+ */
 export function useCronAction() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, action }: { id: string; action: 'pause' | 'resume' | 'trigger' }) =>
-      api.post(`/api/cron/jobs/${encodeURIComponent(id)}/${action}`),
+    mutationFn: ({
+      id,
+      action,
+      profile,
+    }: {
+      id: string;
+      action: 'pause' | 'resume' | 'trigger';
+      profile?: string | null;
+    }) => api.post(cronUrl(`/api/cron/jobs/${encodeURIComponent(id)}/${action}`, profile)),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['cron'] }),
   });
 }
 
+/**
+ * Create a job in a named profile's store.
+ *
+ * `profile` is a query parameter, not a body field — Hermes writes the job
+ * into `<that profile's home>/cron/jobs.json`, which is what makes the job run
+ * as that agent. Omitting it silently files the job under whichever profile is
+ * active at the moment of creation, which is the behaviour every job made
+ * before this had, and the reason the picker defaults to the active one rather
+ * than to nothing.
+ */
 export function useCreateCronJob() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Record<string, unknown>) => api.post('/api/cron/jobs', body),
+    mutationFn: ({ profile, ...body }: Record<string, unknown> & { profile?: string | null }) =>
+      api.post(cronUrl('/api/cron/jobs', profile), body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['cron'] }),
   });
 }
 
+/** Same scoping argument as `useCronAction` — deleting the wrong profile's
+    same-named job is the worst version of that mistake. */
 export function useDeleteCronJob() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.del(`/api/cron/jobs/${encodeURIComponent(id)}`),
+    mutationFn: ({ id, profile }: { id: string; profile?: string | null }) =>
+      api.del(cronUrl(`/api/cron/jobs/${encodeURIComponent(id)}`, profile)),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['cron'] }),
   });
 }

@@ -1,11 +1,39 @@
 /**
  * Scheduled jobs: pause/resume/trigger, inspect runs, create new ones.
+ *
+ * ## Jobs belong to a profile
+ *
+ * A cron job is not tagged with a profile — it lives in that profile's own
+ * `cron/jobs.json` and runs against that profile's home: its config, model,
+ * skills and memory. So "make the research profile do the research run" is
+ * expressed by creating the job *in* that profile, which the RUNS AS picker
+ * below does by sending `?profile=`.
+ *
+ * Two consequences worth stating, because neither is visible from the screen:
+ *
+ * - **This list is already every profile's jobs.** Hermes' list endpoint
+ *   defaults to `profile=all` and merges the stores, so the moment a second
+ *   profile exists its jobs appear here indistinguishable from the first's.
+ *   That is what the profile badge on each row is for; it is not decoration.
+ * - **Every per-job action carries the profile.** Without it Hermes resolves
+ *   the job by scanning stores and matching on id *or name*, so two profiles
+ *   holding a `morning-brief` each will act on whichever it finds first.
+ *
+ * ## Pinning skills and toolsets
+ *
+ * Narrower than the profile, for a job that should not have the run of it: a
+ * nightly summariser has no business holding shell tools. Empty means "inherit
+ * the profile's own set", which is what every job made before this does, so
+ * the pickers are offered scoped to the *selected* profile rather than the
+ * active one — offering the skills sitting in front of you would be offering
+ * the wrong list.
  */
 import { useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Sheet } from '../shared/Sheet';
 import { ModelPicker } from '../shared/ModelPicker';
+import { MultiSelectSheet, PickerRow, type MultiSelectOption } from '../shared/MultiSelectSheet';
 import { Empty, ErrorNote, SkeletonList, relTime } from '../shared/misc';
 import { IconPlay, IconPause, IconPlus, IconTrash } from '../shared/Icons';
 import {
@@ -14,8 +42,11 @@ import {
   useCronJobs,
   useCronRuns,
   useDeleteCronJob,
+  useSkills,
   type CronJob,
 } from '../../api/hub';
+import { useToolsets } from '../../api/tools';
+import { useActiveProfile, useProfiles } from '../../api/profiles';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 import { UNDO_WINDOW_MS, scheduleUndoable } from '../../lib/undo';
@@ -79,10 +110,17 @@ const BLANK_FORM = {
   schedule: '0 9 * * *',
   model: '' as string,
   provider: '' as string,
+  /** Empty until the active profile is known — see `formProfile` below. */
+  profile: '' as string,
+  /** Empty means "whatever the profile has enabled", not "none". */
+  skills: [] as string[],
+  toolsets: [] as string[],
 };
 
 export function CronTab() {
   const { data, isLoading, error } = useCronJobs();
+  const profiles = useProfiles().data?.profiles ?? [];
+  const activeProfile = useActiveProfile().data?.active ?? '';
   const action = useCronAction();
   const del = useDeleteCronJob();
   const qc = useQueryClient();
@@ -129,7 +167,7 @@ export function CronTab() {
       const { undo } = scheduleUndoable(
         {
           commit: () => {
-            void del.mutateAsync(job.id).catch((e: unknown) => {
+            void del.mutateAsync({ id: job.id, profile: job.profile }).catch((e: unknown) => {
               restore();
               toast(e instanceof Error ? e.message : 'Delete failed', 'error');
             });
@@ -171,13 +209,45 @@ export function CronTab() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState(BLANK_FORM);
   const [pickingModel, setPickingModel] = useState(false);
+  const [picking, setPicking] = useState<'skills' | 'toolsets' | null>(null);
 
-  const runs = useCronRuns(openRuns);
+  /**
+   * Which profile the form is filling in for.
+   *
+   * Falls back to the active one rather than to nothing: creating a job with
+   * no profile is not an error, it just silently files it under whatever is
+   * active — so the picker shows that answer instead of hiding it. Resolved on
+   * read rather than seeded into state, because the active profile arrives
+   * from a query that may not have landed when the sheet opens.
+   */
+  const formProfile = form.profile || activeProfile || '';
 
-  const run = async (id: string, act: 'pause' | 'resume' | 'trigger') => {
+  /* Scoped to the profile being configured, not the one running. Both are
+     cached for 30s and only fetched while the sheet is open. */
+  const scopedSkills = useSkills(formProfile || null, creating);
+  const scopedToolsets = useToolsets(formProfile || null, creating);
+
+  const skillOptions: MultiSelectOption[] = (scopedSkills.data ?? [])
+    .filter((sk) => sk.enabled)
+    .map((sk) => ({ value: sk.name, label: sk.name, hint: sk.description, meta: sk.category }));
+
+  const toolsetOptions: MultiSelectOption[] = (scopedToolsets.data ?? []).map((t) => ({
+    value: t.name,
+    label: t.label || t.name,
+    hint: t.description,
+    meta: t.configured ? t.platform_label : 'no key',
+    dimmed: !t.configured || !t.available,
+  }));
+
+  /* Resolved before the runs query, which needs the profile: the history
+     endpoint scopes the same way every other per-job route does. */
+  const openJob = openRuns ? data?.find((j) => j.id === openRuns) : undefined;
+  const runs = useCronRuns(openRuns, openJob?.profile);
+
+  const run = async (job: CronJob, act: 'pause' | 'resume' | 'trigger') => {
     buzz('tap');
     try {
-      await action.mutateAsync({ id, action: act });
+      await action.mutateAsync({ id: job.id, action: act, profile: job.profile });
       toast(act === 'trigger' ? 'Job triggered' : `Job ${act}d`, 'success');
     } catch (e) {
       toast(e instanceof Error ? e.message : `Could not ${act}`, 'error');
@@ -188,6 +258,11 @@ export function CronTab() {
     if (!form.name.trim() || !form.prompt.trim()) return;
     try {
       await create.mutateAsync({
+        // Not a body field — a query parameter that picks which profile's job
+        // store this is written into, which is what makes the job run as that
+        // agent. Falls back to the active profile, which is what an omitted
+        // parameter would have resolved to anyway.
+        profile: formProfile || undefined,
         name: form.name.trim(),
         prompt: form.prompt.trim(),
         schedule: form.schedule.trim(),
@@ -197,10 +272,19 @@ export function CronTab() {
         ...(form.model && form.provider
           ? { model: form.model, provider: form.provider }
           : {}),
+        // Same rule, and the reason both are omitted rather than sent empty:
+        // an empty list is a narrowing to nothing on some builds, while an
+        // absent key unambiguously means "inherit the profile's own set".
+        ...(form.skills.length ? { skills: form.skills } : {}),
+        ...(form.toolsets.length ? { enabled_toolsets: form.toolsets } : {}),
       });
-      toast('Job created', 'success');
+      toast(
+        formProfile ? `Job created in ${formProfile}` : 'Job created',
+        'success',
+      );
       setForm(BLANK_FORM);
       setPickingModel(false);
+      setPicking(null);
       setCreating(false);
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Create failed', 'error');
@@ -208,7 +292,6 @@ export function CronTab() {
   };
 
   const runList = Array.isArray(runs.data) ? runs.data : (runs.data?.runs ?? []);
-  const openJob = openRuns ? data?.find((j) => j.id === openRuns) : undefined;
   const lastAttempt = epochSeconds(openJob?.last_run_at);
 
   return (
@@ -239,7 +322,28 @@ export function CronTab() {
             <div className="card" key={j.id} style={{ marginBottom: 9 }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14.5 }}>{jobName(j)}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14.5, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {jobName(j)}
+                    </div>
+                    {/* Which profile's store this came out of. Shown only once
+                        there is more than one, because until then every job in
+                        the list is from the same place and saying so on each
+                        row is noise — but the moment a second profile exists
+                        this list silently merges both, and without this there
+                        is nothing on screen that says which is which. */}
+                    {profiles.length > 1 && j.profile && (
+                      <span
+                        className="tool-pill"
+                        style={{
+                          flexShrink: 0,
+                          color: j.profile === activeProfile ? 'var(--accent)' : 'var(--text-faint)',
+                        }}
+                      >
+                        {j.profile}
+                      </span>
+                    )}
+                  </div>
                   {schedule && (
                     <div style={{ fontSize: 12, color: 'var(--text-faint)', fontFamily: 'var(--mono)', marginTop: 2 }}>
                       {schedule}
@@ -276,12 +380,21 @@ export function CronTab() {
                         {j.model}
                       </span>
                     ) : null}
+                    {/* A pinned job runs with less than its profile has, which
+                        is worth seeing from the list — it is the first thing to
+                        suspect when a job cannot do something it used to. */}
+                    {Array.isArray(j.skills) && j.skills.length > 0 && (
+                      <span>{j.skills.length} skills</span>
+                    )}
+                    {Array.isArray(j.enabled_toolsets) && j.enabled_toolsets.length > 0 && (
+                      <span>{j.enabled_toolsets.length} toolsets</span>
+                    )}
                   </div>
                 </div>
 
                 <button
                   className="icon-btn"
-                  onClick={() => void run(j.id, paused ? 'resume' : 'pause')}
+                  onClick={() => void run(j, paused ? 'resume' : 'pause')}
                   aria-label={paused ? 'Resume' : 'Pause'}
                 >
                   {paused ? <IconPlay size={17} /> : <IconPause size={17} />}
@@ -289,7 +402,7 @@ export function CronTab() {
               </div>
 
               <div style={{ display: 'flex', gap: 7, marginTop: 10 }}>
-                <button className="btn btn--sm" onClick={() => void run(j.id, 'trigger')}>
+                <button className="btn btn--sm" onClick={() => void run(j, 'trigger')}>
                   Run now
                 </button>
                 <button className="btn btn--sm" onClick={() => setOpenRuns(j.id)}>
@@ -365,6 +478,38 @@ export function CronTab() {
           onChange={(e) => setForm({ ...form, name: e.target.value })}
           style={{ marginBottom: 9 }}
         />
+        {/* Which profile's store the job goes into — see the note at the top.
+            Only shown once there is a choice to make: a single-profile install
+            has exactly one answer and a picker offering it is furniture. */}
+        {profiles.length > 1 && (
+          <>
+            <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 6 }}>
+              RUNS AS
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+              {profiles.map((pr) => (
+                <button
+                  key={pr.name}
+                  className={`chip${formProfile === pr.name ? ' chip--active' : ''}`}
+                  onClick={() => {
+                    buzz('tap');
+                    /* Changing the profile drops the pins: they name skills and
+                       toolsets belonging to the profile they were chosen from,
+                       and carrying them across would send another profile's
+                       names to a store that has never heard of them. */
+                    setForm((f) => ({ ...f, profile: pr.name, skills: [], toolsets: [] }));
+                  }}
+                >
+                  {pr.name}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
+              The job is stored in that profile and runs with its config, skills and memory.
+            </div>
+          </>
+        )}
+
         <input
           className="field"
           placeholder="Cron schedule (e.g. 0 9 * * *)"
@@ -425,6 +570,36 @@ export function CronTab() {
             )}
           </div>
         )}
+        {/* Narrowing, not enabling: these can only take away from what the
+            profile already has. Hidden while the model picker is open so the
+            sheet is never two long lists deep. */}
+        {!pickingModel && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+            <PickerRow
+              label="Skills"
+              value={
+                form.skills.length
+                  ? `${form.skills.length} pinned`
+                  : "The profile's own"
+              }
+              onOpen={() => setPicking('skills')}
+            />
+            <PickerRow
+              label="Toolsets"
+              value={
+                form.toolsets.length
+                  ? `${form.toolsets.length} pinned`
+                  : "The profile's own"
+              }
+              onOpen={() => setPicking('toolsets')}
+            />
+            <div style={{ fontSize: 11.5, color: 'var(--text-faint)', lineHeight: 1.45 }}>
+              Pin these to give one job less than the profile has — a nightly summary
+              does not need shell access.
+            </div>
+          </div>
+        )}
+
         <button
           className="btn btn--primary"
           style={{ width: '100%' }}
@@ -434,6 +609,33 @@ export function CronTab() {
           {create.isPending ? 'Creating…' : 'Create job'}
         </button>
       </Sheet>
+
+      {/* Stacked over the create sheet rather than replacing it: the form
+          behind is half-filled, and `useHistoryDismiss` nests, so back closes
+          the picker and leaves the form exactly as it was. */}
+      <MultiSelectSheet
+        open={picking === 'skills'}
+        title={formProfile ? `Skills in ${formProfile}` : 'Skills'}
+        options={skillOptions}
+        selected={form.skills}
+        onChange={(skills) => setForm((f) => ({ ...f, skills }))}
+        onClose={() => setPicking(null)}
+        loading={scopedSkills.isLoading}
+        emptyMeans="Nothing pinned — the job gets every skill this profile has enabled."
+        emptyList="This profile has no enabled skills."
+      />
+
+      <MultiSelectSheet
+        open={picking === 'toolsets'}
+        title={formProfile ? `Toolsets in ${formProfile}` : 'Toolsets'}
+        options={toolsetOptions}
+        selected={form.toolsets}
+        onChange={(toolsets) => setForm((f) => ({ ...f, toolsets }))}
+        onClose={() => setPicking(null)}
+        loading={scopedToolsets.isLoading}
+        emptyMeans="Nothing pinned — the job gets every toolset this profile has enabled."
+        emptyList="This profile reports no toolsets."
+      />
     </div>
   );
 }

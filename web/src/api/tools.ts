@@ -6,12 +6,19 @@
  * able to reach?" — and they are the settings that, until now, needed a
  * terminal.
  *
- * Every one of these endpoints takes an optional `profile`, and **none of the
- * calls below send it.** That is deliberate and it matches the rest of the app:
- * skills, cron, memory and models all address the active profile implicitly,
- * and `useSwitchProfile` invalidates the whole query cache precisely so that
- * they can. A profile argument here would make this the one screen whose idea
- * of "current" differed from every other.
+ * Every one of these endpoints takes an optional `profile`, and the calls below
+ * leave it off **when they are serving the Capabilities screen**. That is
+ * deliberate and it matches the rest of the app: skills, cron, memory and
+ * models all address the active profile implicitly, and `useSwitchProfile`
+ * invalidates the whole query cache precisely so that they can. A profile
+ * argument there would make this the one screen whose idea of "current"
+ * differed from every other.
+ *
+ * `useToolsets` takes one anyway, for the other case: *configuring* a profile
+ * you are not running as. Pinning toolsets onto a cron job that belongs to
+ * `research` has to offer research's sets — which differ from the active
+ * profile's not only in what is switched on but in what is available at all,
+ * since a set can hold credentials in one profile and none in another.
  *
  * Shapes were captured from the live backend (Hermes 0.20.4) rather than from
  * its OpenAPI document, which types these as untyped dicts. Interfaces are
@@ -51,11 +58,27 @@ export interface Toolset {
   [k: string]: unknown;
 }
 
-export function useToolsets() {
+/**
+ * @param profile read another profile's toolsets instead of the active one.
+ *   Same argument as `useSkills`: a cron job pinned to the `research` profile
+ *   has to be configured against research's sets, and which sets are even
+ *   *available* differs per profile — a set can be unconfigured in one and
+ *   ready in another.
+ *
+ * @param enabled hold the request back until it is actually needed.
+ *
+ * Unscoped callers keep the original key, and prefix invalidation from the
+ * toggle mutations still reaches the scoped copies.
+ */
+export function useToolsets(profile?: string | null, enabled = true) {
   return useQuery({
-    queryKey: toolKeys.toolsets,
-    queryFn: () => api.get<Toolset[]>('/api/tools/toolsets'),
+    queryKey: profile ? [...toolKeys.toolsets, profile] : toolKeys.toolsets,
+    queryFn: () =>
+      api.get<Toolset[]>(
+        profile ? `/api/tools/toolsets?profile=${encodeURIComponent(profile)}` : '/api/tools/toolsets',
+      ),
     staleTime: 30_000,
+    enabled,
   });
 }
 

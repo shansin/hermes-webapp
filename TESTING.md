@@ -116,6 +116,14 @@ in, wraps at both ends, returns to whatever opened it, and a sheet that demands
 an explicit choice cannot be escaped. Driven with `user-event`, since a focus
 trap only means anything as something a keyboard runs into.
 
+**`web/test/cronScope.test.ts`** — which profile a cron call addresses. A job
+created into the wrong profile looks entirely normal on the screen that created
+it and is wrong only in that it runs as the wrong agent, or never runs because
+that profile lacks the skills its prompt assumes. Worse for the per-job actions:
+with no profile parameter Hermes resolves the job by scanning every store and
+matching on id *or name*, so an unscoped delete can destroy a same-named job
+belonging to another profile.
+
 **`web/test/appBack.test.tsx`** — where the header's back arrow actually goes.
 The check is on React Router's `history.state.idx`, chosen over
 `location.key === 'default'` precisely because a redirect (`/usage` →
