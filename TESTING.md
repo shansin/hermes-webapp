@@ -116,6 +116,13 @@ in, wraps at both ends, returns to whatever opened it, and a sheet that demands
 an explicit choice cannot be escaped. Driven with `user-event`, since a focus
 trap only means anything as something a keyboard runs into.
 
+**`web/test/activity.test.ts`** — also covers which agent a row belongs to. The
+label matters, but the session link matters more: a row for another profile's
+work whose URL omits `&profile=` opens an empty chat, because the resume looks
+the id up in the active profile's store. Pins that an unassigned kanban card
+gets no borrowed owner, and that a row with no profile keeps its original
+unscoped link — that shape is every notification already sitting on a phone.
+
 **`web/test/sessionScope.test.ts`** — which profile's `state.db` a session call
 reads, and the task→session join. Sessions are per-profile and the detail route
 answers *404 Session not found* for a session that exists in another profile, so

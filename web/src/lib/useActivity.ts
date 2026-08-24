@@ -17,7 +17,8 @@
 import { useEffect, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { useActiveSessions } from '../api/sessions';
+import { useActiveSessionsAcrossProfiles } from '../api/sessions';
+import { useProfiles } from '../api/profiles';
 import { useBoard } from '../api/kanban';
 import { useCronJobs } from '../api/hub';
 import { hermes } from '../ws/client';
@@ -59,10 +60,25 @@ export function useActivity(full = true): {
   running: number;
   isLoading: boolean;
   error: unknown;
+  /** Profiles beyond the fan-out cap, which are not being polled. */
+  truncated: number;
 } {
   const qc = useQueryClient();
 
-  const sessions = useActiveSessions();
+  /**
+   * Sessions come from every profile, because the other two sources already
+   * do. The kanban board is one shared store and the cron list defaults to
+   * `profile=all`, so leaving sessions on the active profile meant this pane
+   * would show a card assigned to `research` while hiding the conversation it
+   * was running in.
+   *
+   * Until the profile list arrives the fan-out queries once with no profile,
+   * which addresses the active one — so the pane paints immediately rather
+   * than waiting on a second request to say anything at all.
+   */
+  const profileList = useProfiles().data?.profiles;
+  const names = useMemo(() => (profileList ?? []).map((p) => p.name), [profileList]);
+  const sessions = useActiveSessionsAcrossProfiles(names);
   const board = useBoard(full);
   const cron = useCronJobs();
 
@@ -82,13 +98,13 @@ export function useActivity(full = true): {
   const items = useMemo(() => {
     // One clock for the whole pass, so two rows cannot disagree about now.
     const nowS = Date.now() / 1000;
-    const groups = [fromSessions(sessions.data?.sessions ?? [])];
+    const groups = [fromSessions(sessions.sessions)];
     if (full) {
       groups.push(fromKanban(board.data?.columns, nowS));
       groups.push(fromCron(cron.data));
     }
     return mergeActivity(...groups);
-  }, [sessions.data, board.data, cron.data, full]);
+  }, [sessions.sessions, board.data, cron.data, full]);
 
   return {
     items,
@@ -98,5 +114,6 @@ export function useActivity(full = true): {
     // the cron list to say so would be slower for no gain.
     isLoading: sessions.isLoading,
     error: sessions.error,
+    truncated: sessions.truncated,
   };
 }

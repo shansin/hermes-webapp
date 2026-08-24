@@ -244,3 +244,76 @@ describe('merge', () => {
     );
   });
 });
+
+/**
+ * Which agent a row belongs to.
+ *
+ * The pane merges three sources that each span every profile — the kanban
+ * board is one shared store, the cron list defaults to `profile=all`, and
+ * sessions now fan out — so a row that cannot say whose work it is leaves the
+ * reader unable to tell the research agent from the one they are talking to.
+ *
+ * The session link matters more than the label. Sessions live in per-profile
+ * stores and a resume that does not name the profile looks the id up in the
+ * active one and finds nothing, so a row for another agent's work would open
+ * an empty chat rather than the conversation it is advertising.
+ */
+describe('activity rows carry their owner', () => {
+  const live = { is_active: true, ended_at: null, last_activity_at: 1_700_000_000 };
+
+  it('labels a session with its profile and puts it in the resume link', () => {
+    const [row] = fromSessions([
+      { id: 's1', title: 'work kanban task t_1', profile: 'research', ...live } as never,
+    ]);
+    expect(row?.owner).toBe('research');
+    expect(row?.url).toBe('/chat?session=s1&profile=research');
+  });
+
+  it('falls back to profile_name when profile is absent', () => {
+    const [row] = fromSessions([
+      { id: 's2', title: 'x', profile_name: 'fitness', ...live } as never,
+    ]);
+    expect(row?.owner).toBe('fitness');
+  });
+
+  it('leaves the link unscoped when no profile is reported', () => {
+    // An older backend, or the active profile's own store. The link has to
+    // stay exactly as it was, because that is every notification already
+    // sitting on a phone.
+    const [row] = fromSessions([{ id: 's3', title: 'x', ...live } as never]);
+    expect(row?.owner).toBeUndefined();
+    expect(row?.url).toBe('/chat?session=s3');
+  });
+
+  it('encodes a profile that would otherwise break the query', () => {
+    const [row] = fromSessions([
+      { id: 's4', title: 'x', profile: 'a&b', ...live } as never,
+    ]);
+    expect(row?.url).toBe('/chat?session=s4&profile=a%26b');
+  });
+
+  it('labels a kanban row with its assignee', () => {
+    const rows = fromKanban(
+      [{ name: 'running', tasks: [{ id: 't_1', title: 'EB5', assignee: 'research' } as never] }],
+      1_700_000_000,
+    );
+    expect(rows[0]?.owner).toBe('research');
+  });
+
+  it('leaves an unassigned kanban row without an owner', () => {
+    // Unassigned is a real and important state — the dispatcher skips those
+    // silently — so it must not be dressed up with a borrowed label.
+    const rows = fromKanban(
+      [{ name: 'ready', tasks: [{ id: 't_2', title: 'orphan', assignee: null } as never] }],
+      1_700_000_000,
+    );
+    expect(rows[0]?.owner).toBeUndefined();
+  });
+
+  it('labels a cron row with the store it came from', () => {
+    const rows = fromCron([
+      { id: 'j1', name: 'digest', profile: 'fitness', next_run_at: 1_700_000_100 } as never,
+    ]);
+    expect(rows[0]?.owner).toBe('fitness');
+  });
+});

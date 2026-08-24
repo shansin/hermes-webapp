@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
 
 export interface SessionRow {
@@ -185,6 +185,84 @@ export function useActiveSessions(limit = 25, enabled = true) {
     refetchInterval: (q) =>
       (q.state.data?.sessions ?? []).some((s) => s.is_active && !s.ended_at) ? 5_000 : 30_000,
   });
+}
+
+/**
+ * How many profiles the activity fan-out will poll.
+ *
+ * Three profiles on a 5s poll while something is running is nothing. Twenty
+ * would be twenty requests every five seconds, and the pane is a glance at
+ * what is in flight, not an audit. Past the cap the extra profiles are simply
+ * not polled and the caller is told, which is better than a screen that
+ * silently gets slower as profiles accumulate.
+ */
+export const ACTIVITY_PROFILE_CAP = 6;
+
+/**
+ * Recent sessions across every profile, merged.
+ *
+ * The Activity pane's other two sources already span profiles — the kanban
+ * board is one shared store, and the cron list endpoint defaults to
+ * `profile=all` — so sessions were the one lane showing only the active
+ * profile. The result was a screen that would list a kanban card assigned to
+ * `research` while hiding the conversation that card was running in.
+ *
+ * A picker would be wrong here, unlike on the sessions screen: this is a short
+ * unpaginated list of live work, and the point is to see everything at once.
+ * So it fans out and merges, matching what the other two sources do.
+ *
+ * Each profile's query keeps its own key and its own refetch interval, so a
+ * profile with nothing running settles to the slow poll on its own rather than
+ * being dragged along by a busy one.
+ */
+export function useActiveSessionsAcrossProfiles(
+  profiles: readonly string[],
+  limit = 25,
+  enabled = true,
+): { sessions: SessionRow[]; isLoading: boolean; error: unknown; truncated: number } {
+  const capped = Math.min(limit, MAX_SESSION_LIMIT);
+  /**
+   * An empty profile list means "we do not know them yet" — the profile query
+   * has not landed. Query once with no profile, which addresses the active
+   * one: the same request this made before fanning out, and correct whatever
+   * the active profile happens to be called. Guessing `default` would poll the
+   * wrong store for anyone whose active profile is not it.
+   */
+  const polled: (string | null)[] = profiles.length
+    ? profiles.slice(0, ACTIVITY_PROFILE_CAP)
+    : [null];
+
+  const results = useQueries({
+    queries: polled.map((profile) => ({
+      queryKey: ['sessions', 'recent', capped, profile ?? null] as const,
+      enabled,
+      queryFn: () =>
+        api.get<SessionList>(
+          sessionUrl(`/api/sessions?limit=${capped}&order=recent&archived=exclude`, profile),
+        ),
+      staleTime: 2_000,
+      refetchInterval: (q: { state: { data?: SessionList } }) =>
+        (q.state.data?.sessions ?? []).some((s) => s.is_active && !s.ended_at) ? 5_000 : 30_000,
+    })),
+  });
+
+  const sessions: SessionRow[] = [];
+  for (const r of results) {
+    for (const row of r.data?.sessions ?? []) sessions.push(row);
+  }
+
+  return {
+    sessions,
+    // Loading only while nothing has arrived yet: one slow profile must not
+    // hold back rows that are already in hand.
+    isLoading: results.length > 0 && results.every((r) => r.isLoading),
+    /* The first failure, and only while nothing succeeded. One profile's store
+       being unreadable should not blank a pane that can still report what the
+       others are doing — but a total failure has to say so rather than showing
+       an empty list that reads as "nothing is running". */
+    error: results.every((r) => r.isError) ? results.find((r) => r.error)?.error : undefined,
+    truncated: Math.max(0, profiles.length - polled.length),
+  };
 }
 
 /**

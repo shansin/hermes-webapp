@@ -45,7 +45,14 @@ vi.mock('../src/api/sessions', () => ({
   fetchStoredMessages: (...a: unknown[]) => fetchStoredMessages(...(a as [])),
   // The header's running-count pill reads this. Idle: these tests are about
   // deep links, and a pill that never appears is the right backdrop for them.
-  useActiveSessions: () => ({ data: { sessions: [] }, isLoading: false, error: null }),
+  // The pill now fans out across profiles, so this is the merged shape rather
+  // than a single query's — see `useActiveSessionsAcrossProfiles`.
+  useActiveSessionsAcrossProfiles: () => ({
+    sessions: [],
+    isLoading: false,
+    error: undefined,
+    truncated: 0,
+  }),
   // The header's `⋯` fetches this only once the actions sheet is opened, which
   // these tests never do — so an idle query is the honest stand-in.
   useSessionRow: () => ({ data: undefined, isLoading: false, error: null }),

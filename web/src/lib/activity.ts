@@ -44,6 +44,16 @@ export interface ActivityItem {
   url: string;
   /** Set on a `stalled` row: why we doubt it. */
   note?: string;
+  /**
+   * Which agent this belongs to — a profile name for a session or a cron job,
+   * the assignee for a kanban card.
+   *
+   * The pane merges three sources that each span every profile, so without
+   * this a row saying "running" cannot tell you whether it is the research
+   * agent or the one you are talking to. Undefined where the source does not
+   * say, and rendered only when there is more than one profile to tell apart.
+   */
+  owner?: string;
 }
 
 /**
@@ -97,6 +107,7 @@ export function fromSessions(sessions: readonly SessionRow[]): ActivityItem[] {
   const out: ActivityItem[] = [];
   for (const s of sessions) {
     if (!s.is_active || s.ended_at) continue;
+    const owner = text(s.profile) ?? text(s.profile_name) ?? undefined;
     out.push({
       id: `session:${s.id}`,
       kind: 'session',
@@ -104,7 +115,12 @@ export function fromSessions(sessions: readonly SessionRow[]): ActivityItem[] {
       title: text(s.title) ?? 'Untitled session',
       detail: text(s.last_activity_description),
       since: seconds(s.last_activity_at) ?? seconds(s.started_at),
-      url: `/chat?session=${encodeURIComponent(s.id)}`,
+      /* The profile rides in the link. Sessions live in per-profile stores and
+         a resume that does not name one looks the id up in the active profile
+         and finds nothing — so a row for another agent's work would open an
+         empty chat. */
+      url: `/chat?session=${encodeURIComponent(s.id)}${owner ? `&profile=${encodeURIComponent(owner)}` : ''}`,
+      ...(owner ? { owner } : {}),
     });
   }
   return out;
@@ -142,6 +158,7 @@ export function fromKanban(
         detail: text(task.latest_summary) ?? (queued ? 'Waiting for a worker' : null),
         since: seconds(task.started_at) ?? seconds(task.created_at),
         url: `/kanban?task=${encodeURIComponent(task.id)}`,
+        ...(task.assignee ? { owner: task.assignee } : {}),
         ...(stalled ? { note: 'Worker claim expired' } : {}),
       });
     }
@@ -184,7 +201,16 @@ export function fromCron(jobs: readonly CronJob[] | undefined, queuedLimit = 3):
   for (const job of jobs ?? []) {
     if (job.paused || job.enabled === false) continue;
     const title = text(job.name) ?? job.id;
-    const base = { kind: 'cron' as const, title, url: `/cron?job=${encodeURIComponent(job.id)}` };
+    // Hermes stamps every job with the store it was read from, and the list
+    // endpoint merges every profile by default — so this is populated whenever
+    // more than one profile owns jobs.
+    const owner = text(job.profile) ?? text(job.profile_name) ?? undefined;
+    const base = {
+      kind: 'cron' as const,
+      title,
+      url: `/cron?job=${encodeURIComponent(job.id)}`,
+      ...(owner ? { owner } : {}),
+    };
 
     if (cronRunning(job)) {
       running.push({

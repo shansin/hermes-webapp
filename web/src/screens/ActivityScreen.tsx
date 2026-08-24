@@ -13,6 +13,8 @@
  */
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useProfiles } from '../api/profiles';
+import { ACTIVITY_PROFILE_CAP } from '../api/sessions';
 
 import { MenuButton } from '../components/shared/MenuButton';
 import { BackButton } from '../components/shared/BackButton';
@@ -65,8 +67,11 @@ function useNowSeconds(active: boolean): number {
 
 export function ActivityScreen() {
   const navigate = useNavigate();
+  /* One profile means every row has the same owner, and a pill repeating it on
+     each line is furniture. */
+  const showOwner = (useProfiles().data?.profiles?.length ?? 1) > 1;
   const qc = useQueryClient();
-  const { items, running, isLoading, error } = useActivity(true);
+  const { items, running, isLoading, error, truncated } = useActivity(true);
   const nowS = useNowSeconds(items.length > 0);
 
   const live = items.filter((i) => i.state !== 'queued');
@@ -82,6 +87,24 @@ export function ActivityScreen() {
           {running > 0 && <span className="header__sub"> · {running} running</span>}
         </div>
       </div>
+
+      {/* Said out loud rather than left as a quiet omission: a pane whose whole
+          job is "everything in flight" must not silently stop covering some of
+          it as profiles accumulate. */}
+      {truncated > 0 && (
+        <div
+          role="status"
+          style={{
+            padding: '8px 14px',
+            fontSize: 12,
+            color: 'var(--warn)',
+            borderBottom: '1px solid var(--border-soft)',
+          }}
+        >
+          {truncated} more profile{truncated === 1 ? '' : 's'} not polled — this pane covers the
+          first {ACTIVITY_PROFILE_CAP}.
+        </div>
+      )}
 
       {isLoading && items.length === 0 ? (
         <SkeletonList n={4} h={58} />
@@ -111,6 +134,7 @@ export function ActivityScreen() {
                   key={item.id}
                   item={item}
                   nowS={nowS}
+                  showOwner={showOwner}
                   onOpen={() => {
                     buzz('tap');
                     navigate(item.url);
@@ -124,6 +148,7 @@ export function ActivityScreen() {
                   key={item.id}
                   item={item}
                   nowS={nowS}
+                  showOwner={showOwner}
                   onOpen={() => {
                     buzz('tap');
                     navigate(item.url);
@@ -142,10 +167,13 @@ function Row({
   item,
   nowS,
   onOpen,
+  showOwner,
 }: {
   item: ActivityItem;
   nowS: number;
   onOpen: () => void;
+  /** Only once there is more than one profile to tell apart. */
+  showOwner: boolean;
 }) {
   const quiet = item.state === 'running' && isQuiet(item, nowS);
   const seconds = quietFor(item, nowS);
@@ -163,6 +191,14 @@ function Row({
         <span className="activity__title">{item.title}</span>
         {item.detail && <span className="activity__detail">{item.detail}</span>}
         <span className="activity__meta">
+          {/* Which agent this is. All three sources here span profiles, so a
+              row saying "running" is close to useless when it could equally be
+              the research agent or the one you are talking to. */}
+          {showOwner && item.owner && (
+            <span className="tool-pill" style={{ marginRight: 7 }}>
+              {item.owner}
+            </span>
+          )}
           {item.state === 'queued'
             ? untilTime(item.since)
             : /* Running rows say when they last moved rather than how long
