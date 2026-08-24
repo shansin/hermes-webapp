@@ -40,11 +40,28 @@ export function useSkills(profile?: string | null, enabled = true) {
   });
 }
 
+/**
+ * @param profile toggle the skill in another profile than the active one.
+ *   The endpoint takes it in the body; without it the toggle silently lands
+ *   on whichever profile is running, which is the wrong one whenever you are
+ *   editing a profile from the profiles screen.
+ *
+ * Invalidates the whole `['skills']` prefix rather than the one scoped key,
+ * because the active profile's list and the edited profile's list can be the
+ * same list.
+ */
 export function useToggleSkill() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
-      api.put('/api/skills/toggle', { name, enabled }),
+    mutationFn: ({
+      name,
+      enabled,
+      profile,
+    }: {
+      name: string;
+      enabled: boolean;
+      profile?: string | null;
+    }) => api.put('/api/skills/toggle', { name, enabled, ...(profile ? { profile } : {}) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['skills'] }),
   });
 }

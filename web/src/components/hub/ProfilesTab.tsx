@@ -1,10 +1,12 @@
 /**
- * Profiles — switch, create, delete.
+ * Profiles — switch, create, edit, delete.
  *
- * Switching is the primary action, so a card *is* the switch button; create and
- * delete are secondary. Deleting is guarded because it removes a whole
- * configuration directory: that profile's skills, memory and cron jobs go with
- * it, which a phone tap should never do silently.
+ * Switching is the primary action, so a card *is* the switch button; the gear
+ * beside it opens `ProfileSheet`, which owns everything else about a profile.
+ * Deleting is guarded because it removes a whole configuration directory: that
+ * profile's skills, memory and cron jobs go with it, which a phone tap should
+ * never do silently — and it now lives inside the editor rather than as an
+ * icon sitting one stray tap from the switch.
  *
  * ## What creation asks for
  *
@@ -24,7 +26,8 @@
 import { useState } from 'react';
 import { Sheet } from '../shared/Sheet';
 import { Empty, ErrorNote, Loader, SkeletonList, Switch } from '../shared/misc';
-import { IconCheck, IconChevron, IconPlus, IconTrash } from '../shared/Icons';
+import { IconCheck, IconChevron, IconPlus, IconSettings } from '../shared/Icons';
+import { ProfileSheet } from './ProfileSheet';
 import { ModelPicker } from '../shared/ModelPicker';
 import {
   useActiveProfile,
@@ -64,6 +67,9 @@ export function ProfilesTab() {
   const [withSkills, setWithSkills] = useState(true);
   const [switchAfter, setSwitchAfter] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Profile | null>(null);
+  /** Which profile the editor is open on. Held by name, not by object: the
+      list refetches every 30s and a held object would go stale mid-edit. */
+  const [editing, setEditing] = useState<string | null>(null);
 
   const activeName = active.data?.active ?? active.data?.current ?? '';
   const profiles = list.data?.profiles ?? [];
@@ -225,22 +231,33 @@ export function ProfilesTab() {
                     }}
                   >
                     {p.model && <span>{p.model}</span>}
-                    <span>{p.skill_count} skills</span>
+                    {/* "installed", not "skills". This is a count of SKILL.md
+                        files on disk; disabling a skill leaves the file in
+                        place, so a profile narrowed to sixteen still reports
+                        the whole bundle here and read as untouched. The
+                        enabled count needs a per-profile request, which the
+                        editor makes and this list deliberately does not — one
+                        per row on every open. */}
+                    <span>{p.skill_count} installed</span>
                   </div>
                 </button>
 
-                {!p.is_default && (
-                  <button
-                    className="icon-btn icon-btn--danger"
-                    aria-label={`Delete ${p.name}`}
-                    onClick={() => {
-                      buzz('warn');
-                      setConfirmDelete(p);
-                    }}
-                  >
-                    <IconTrash size={16} />
-                  </button>
-                )}
+                {/* Edit rather than delete. The row itself is the switch —
+                    see the note at the top — so the only other thing it can
+                    offer is a way into everything else about the profile.
+                    Delete lives inside that sheet now: it was the single
+                    most destructive action in this screen and it sat one
+                    stray tap from the switch button. */}
+                <button
+                  className="icon-btn"
+                  aria-label={`Edit ${p.name}`}
+                  onClick={() => {
+                    buzz('tap');
+                    setEditing(p.name);
+                  }}
+                >
+                  <IconSettings size={17} />
+                </button>
               </div>
             );
           })}
@@ -418,6 +435,17 @@ export function ProfilesTab() {
           }}
         />
       </Sheet>
+
+      <ProfileSheet
+        profile={editing ? (profiles.find((p) => p.name === editing) ?? null) : null}
+        onClose={() => setEditing(null)}
+        onDelete={(p) => {
+          // Close the editor first: the confirmation is about to talk about
+          // destroying the very thing it is stacked on top of.
+          setEditing(null);
+          setConfirmDelete(p);
+        }}
+      />
 
       <Sheet
         open={confirmDelete !== null}
