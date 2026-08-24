@@ -6,20 +6,11 @@
  * tab components themselves are unchanged.
  */
 import type { ReactNode } from 'react';
-import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import { MenuButton } from '../components/shared/MenuButton';
-import { IconBack } from '../components/shared/Icons';
-import { buzz } from '../lib/haptics';
+import { BackButton } from '../components/shared/BackButton';
 
 export function HubPage({ title, children }: { title: string; children: ReactNode }) {
-  const navigate = useNavigate();
-  /**
-   * React Router names the first entry of a session `default`. Landing here
-   * directly — a bookmark, a home-screen shortcut, a push notification — means
-   * there is nothing behind us, and `navigate(-1)` would walk out of the app.
-   */
-  const isEntryPoint = useLocation().key === 'default';
-
   return (
     <div className="screen">
       <div className="header">
@@ -29,17 +20,7 @@ export function HubPage({ title, children }: { title: string; children: ReactNod
             drawer still reaches everything, so these screens were never
             stranded — but without this there was no way to simply go back to
             wherever you came from. */}
-        <button
-          className="icon-btn"
-          onClick={() => {
-            buzz('tap');
-            if (isEntryPoint) navigate('/chat');
-            else navigate(-1);
-          }}
-          aria-label="Back"
-        >
-          <IconBack size={19} />
-        </button>
+        <BackButton />
         <div className="header__title">{title}</div>
       </div>
       <div className="scroll">{children}</div>

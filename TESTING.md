@@ -116,6 +116,14 @@ in, wraps at both ends, returns to whatever opened it, and a sheet that demands
 an explicit choice cannot be escaped. Driven with `user-event`, since a focus
 trap only means anything as something a keyboard runs into.
 
+**`web/test/appBack.test.tsx`** — where the header's back arrow actually goes.
+The check is on React Router's `history.state.idx`, chosen over
+`location.key === 'default'` precisely because a redirect (`/usage` →
+`/models`, `/hub?tab=…` → `/…`) mints a fresh key without deepening the stack —
+so the old test said there was history behind a screen that had none, and back
+walked out of the app. In a `standalone` install that reads as the button being
+dead, which is not a report anyone can act on.
+
 **`web/test/approvalReach.test.tsx`** — that an approval can be answered from
 outside the chat screen. Includes a structural check that the sheet is mounted
 by the shell, because moving it back under one screen would silently make

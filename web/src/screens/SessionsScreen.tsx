@@ -23,6 +23,7 @@ import {
   type SessionRow,
 } from '../api/sessions';
 import { MenuButton } from '../components/shared/MenuButton';
+import { BackButton } from '../components/shared/BackButton';
 import { useUi } from '../store/ui';
 import { useSession } from '../store/session';
 import { collectTags, hasTag, tagHue } from '../lib/sessionTags';
@@ -287,6 +288,11 @@ export function SessionsScreen() {
         ) : (
           <>
             <MenuButton />
+            {/* Only in the resting header: in search or selection mode the
+                leading control is already a Close/Cancel, and two ways out
+                sitting side by side is how you get people pressing the wrong
+                one. */}
+            <BackButton />
             <div className="header__title">
               {showArchived ? 'Archived' : 'Sessions'}
               {/* The filtered count, not the server's total: with a lane

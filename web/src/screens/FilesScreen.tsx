@@ -18,7 +18,8 @@ import { FileViewer } from '../components/files/FileViewer';
 import { PullToRefresh } from '../components/shared/PullToRefresh';
 import { Sheet } from '../components/shared/Sheet';
 import { Empty, ErrorNote, SkeletonList } from '../components/shared/misc';
-import { IconBack, IconPlus, IconTrash } from '../components/shared/Icons';
+import { IconPlus, IconTrash } from '../components/shared/Icons';
+import { BackButton } from '../components/shared/BackButton';
 import {
   basename,
   fileKeys,
@@ -141,17 +142,15 @@ export function FilesScreen() {
     <div className="screen">
       <div className="header">
         <MenuButton />
-        <button
-          className="icon-btn"
-          disabled={!parent}
-          onClick={() => {
-            buzz('tap');
-            if (parent) setDir(parent);
-          }}
-          aria-label="Up one directory"
-        >
-          <IconBack size={19} />
-        </button>
+        {/* One arrow, two meanings, in the order a file browser has always
+            had them: up a level while there is one, and out of the screen at
+            the root. It used to sit there disabled at the top of the tree,
+            which in a PWA — no browser chrome, no back gesture — left the
+            hamburger as the only way off this screen. */}
+        <BackButton
+          label={parent ? 'Up one directory' : 'Back'}
+          onBack={parent ? () => setDir(parent) : undefined}
+        />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="header__title" style={{ fontSize: 'var(--type-title-sm)' }}>
             {dir ? basename(dir) : 'Files'}

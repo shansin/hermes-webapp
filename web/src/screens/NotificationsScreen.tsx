@@ -27,7 +27,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MenuButton } from '../components/shared/MenuButton';
-import { IconBack, IconTrash } from '../components/shared/Icons';
+import { IconTrash } from '../components/shared/Icons';
+import { BackButton } from '../components/shared/BackButton';
 import { Empty, ErrorNote, SkeletonList, dayGroup, relTime } from '../components/shared/misc';
 import {
   useClearNotifications,
@@ -110,17 +111,11 @@ export function NotificationsScreen() {
         <MenuButton />
         {/* Same reasoning as `HubPage`: installed as a PWA there is no browser
             back gesture, and a push notification lands here with nothing
-            behind it in the history stack. */}
-        <button
-          className="icon-btn"
-          onClick={() => {
-            buzz('tap');
-            navigate('/chat');
-          }}
-          aria-label="Back to chat"
-        >
-          <IconBack size={19} />
-        </button>
+            behind it in the history stack — which is exactly the case
+            `BackButton` falls back to chat for. It used to go to chat
+            *always*, so opening Updates from Activity and pressing back put
+            you on a screen you had not come from. */}
+        <BackButton />
         <div className="header__title">Updates</div>
         {data && data.length > 0 && (
           <button

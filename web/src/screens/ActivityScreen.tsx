@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { MenuButton } from '../components/shared/MenuButton';
+import { BackButton } from '../components/shared/BackButton';
 import { PullToRefresh } from '../components/shared/PullToRefresh';
 import { Empty, ErrorNote, SkeletonList, relTime } from '../components/shared/misc';
 import { useActivity } from '../lib/useActivity';
@@ -75,6 +76,7 @@ export function ActivityScreen() {
     <div className="screen">
       <div className="header">
         <MenuButton />
+        <BackButton />
         <div className="header__title">
           Activity
           {running > 0 && <span className="header__sub"> · {running} running</span>}

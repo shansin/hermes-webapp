@@ -82,6 +82,8 @@ Models carries two model settings, and they are not the same thing. **Default mo
 
 The seven system screens (Memory, Skills, Cron, Models, Usage, Profiles, Settings) are separate routes; `/hub?tab=<id>` redirects for old bookmarks.
 
+**Navigation has one back rule.** Back is `BackButton`/`useAppBack` everywhere: go back if `history.state.idx > 0`, otherwise go up to `/chat`. Do not reintroduce a `location.key === 'default'` check — a redirect replaces the entry, minting a fresh key without deepening the stack, so that test claims history a `standalone` install does not have and back leaves the app. Files overrides the action to walk up a directory while it has a parent, which is why the override exists at all.
+
 **Updates** (`/notifications`, the screen formerly called Cron Notifications) is the one channel carrying everything Hermes reports, and three writers feed it. `push/cron.ts` writes scheduled runs; `push/updates.ts` writes the agent's own announcements (`notification.show`, `background.complete`, `subagent.complete`) and the backend going up and down. All of it goes through `push/feed.ts`, which is the proxy's own record and therefore the part that survives nobody being connected — a push you did not see is gone, a row is not.
 
 Three things there are easy to get wrong:
