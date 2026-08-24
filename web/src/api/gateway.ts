@@ -65,8 +65,36 @@ export async function fetchHistory(sessionId: string): Promise<HistoryMessage[]>
   return SessionHistorySchema.parse(raw).messages;
 }
 
-export async function fetchModelOptions(): Promise<ModelOptions> {
-  const raw = await hermes.call('model.options', {}, { timeoutMs: CONTROL_TIMEOUT_MS });
+/**
+ * The provider/model catalogue behind every model picker.
+ *
+ * @param refresh re-probe every saved custom provider and bust the model
+ *   cache. Off by default, and that default is Hermes' own policy rather than
+ *   laziness: a normal open probes only the *current* custom provider, so one
+ *   unreachable saved endpoint cannot hang the picker. The cost is that a
+ *   non-current custom endpoint is served from the catalogue cached in
+ *   `config.yaml`, which goes stale the moment a model is pulled on that box —
+ *   observed with an Ollama host that had been serving two `ornith-1.5`
+ *   variants for a while and showed neither, while still listing the older
+ *   `ornith` builds so the list looked populated rather than empty.
+ *
+ * That is why refresh is a button and not something this does on open: the
+ * hang it avoids is real, and only the person looking at the picker knows
+ * whether they are waiting on a box that is switched on.
+ */
+export async function fetchModelOptions(
+  { refresh = false }: { refresh?: boolean } = {},
+): Promise<ModelOptions> {
+  const raw = await hermes.call(
+    'model.options',
+    refresh ? { refresh: true } : {},
+    {
+      // A refresh dials out to every saved custom endpoint in turn, so the
+      // 15s meant for metadata calls is not enough — one sleeping Tailscale
+      // host would fail the whole probe. Only the refresh path pays this.
+      timeoutMs: refresh ? 60_000 : CONTROL_TIMEOUT_MS,
+    },
+  );
   return ModelOptionsSchema.parse(raw);
 }
 
