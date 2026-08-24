@@ -1724,3 +1724,150 @@ button.header__sub::after {
   }
 }
 
+/* --- kanban ---------------------------------------------------------------
+   The board itself. Cards carry their own inline styling; what lives here is
+   the two things a stylesheet has to own — the swimlane layout, and the
+   pointer-only affordances that must not appear on a touch screen. */
+
+.kanban__filter {
+  display: flex;
+  gap: 6px;
+  padding: 9px 12px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-soft);
+  scrollbar-width: none;
+}
+
+.kanban__filter::-webkit-scrollbar {
+  display: none;
+}
+
+/* Lanes scroll horizontally as a set. `align-items: stretch` so every lane is
+   the full height of the board and its own list scrolls inside that, rather
+   than eight columns of different heights with one page-level scrollbar
+   serving whichever is tallest. */
+.kanban__board {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: stretch;
+}
+
+.lane {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.lane__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+
+.lane__title {
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.lane__count {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.lane__cards {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Every lane, not just the last one: the board pans horizontally, so which
+     lane sits under the FAB depends on where it has been scrolled to. */
+  padding: 10px 10px calc(76px + var(--safe-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lane__empty {
+  font-size: 12px;
+  color: var(--text-faint);
+  padding: 6px 2px;
+}
+
+/* Advance and delete for a mouse. Hidden by default and revealed on hover,
+   but only where hovering is a thing that happens: `any-hover` rather than
+   `hover` so a laptop with a touchscreen still gets them, and a phone — which
+   would otherwise show them permanently, on top of the title, next to the
+   swipes that already do the job — never does. */
+.tcard__actions {
+  display: none;
+}
+
+@media (any-hover: hover) {
+  .tcard__actions {
+    display: flex;
+    gap: 2px;
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    opacity: 0;
+    background: var(--bg-elev);
+    border-radius: var(--shape-md);
+    transition: opacity var(--motion-effects);
+  }
+
+  /* `focus-within` as well as hover: the buttons are out of the tab order, but
+     a card's own focus ring should not sit over controls painted invisible. */
+  .tcard:hover .tcard__actions,
+  .tcard:focus-within .tcard__actions {
+    opacity: 1;
+  }
+
+  .tcard__actions .icon-btn {
+    width: 30px;
+    height: 30px;
+  }
+}
+
+/* A claimed run. The dot pulses because the state it reports changes without
+   anyone touching the screen. */
+.tcard__live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tcard__live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: tcard-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tcard-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tcard__live-dot { animation: none; }
+}

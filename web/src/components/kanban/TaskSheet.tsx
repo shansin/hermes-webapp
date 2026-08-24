@@ -1,5 +1,13 @@
 /**
- * Task detail: edit fields, read run history, add comments.
+ * Task detail: edit fields, reassign, dispatch, read run history, add comments.
+ *
+ * Two of those were missing and both were the same omission — everything the
+ * *dispatcher* cares about was read-only here. A card's assignee decides
+ * whether any agent will ever claim it (see the note in `NewTaskSheet`: an
+ * unassigned card is skipped silently, for ever), and it could be set once at
+ * creation and never corrected. And a card sitting in Ready waits for the next
+ * dispatch tick with no way to say "now", which is the thing you want most
+ * from a board you are watching.
  */
 import { useEffect, useState } from 'react';
 import { Sheet } from '../shared/Sheet';
@@ -9,10 +17,12 @@ import {
   COLUMN_LABEL,
   useAddComment,
   useDeleteTask,
+  useDispatch,
   useTask,
   useUpdateTask,
   type Column,
 } from '../../api/kanban';
+import { useProfiles } from '../../api/profiles';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 
@@ -21,6 +31,8 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
   const update = useUpdateTask();
   const del = useDeleteTask();
   const addComment = useAddComment();
+  const dispatch = useDispatch();
+  const profiles = useProfiles().data?.profiles ?? [];
   const toast = useUi((s) => s.toast);
 
   const [title, setTitle] = useState('');
@@ -70,6 +82,38 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
       await update.mutateAsync({ id: task.id, priority });
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Failed', 'error');
+    }
+  };
+
+  const reassign = async (name: string) => {
+    if (!task) return;
+    buzz('tap');
+    try {
+      await update.mutateAsync({ id: task.id, assignee: name });
+      toast(`Assigned to ${name}`, 'success');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not reassign', 'error');
+    }
+  };
+
+  /**
+   * Hand this one card to the dispatcher now.
+   *
+   * Scoped to the task rather than the bare `/dispatch` sweep: from a sheet
+   * showing one card, a button that might start something else entirely is a
+   * trap. A dispatch that claims nothing is not an error — the card may be in
+   * a column the dispatcher does not draw from, or already claimed — so it is
+   * reported plainly rather than as a failure.
+   */
+  const runNow = async () => {
+    if (!task) return;
+    buzz('tap');
+    try {
+      await dispatch.mutateAsync(task.id);
+      buzz('done');
+      toast('Handed to the dispatcher', 'success');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not dispatch', 'error');
     }
   };
 
@@ -154,6 +198,56 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
               </button>
             ))}
           </div>
+
+          <Label>ASSIGNED TO</Label>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+            {/* The card's current assignee first, even when no profile by that
+                name exists any more — otherwise a card assigned to a deleted
+                profile shows nothing selected and looks unassigned, which is a
+                different and much less recoverable problem. */}
+            {[
+              ...(task.assignee && !profiles.some((p) => p.name === task.assignee)
+                ? [task.assignee]
+                : []),
+              ...profiles.map((p) => p.name),
+            ].map((name) => (
+              <button
+                key={name}
+                className={`chip${task.assignee === name ? ' chip--active' : ''}`}
+                onClick={() => void reassign(name)}
+                disabled={update.isPending}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+          {!task.assignee && (
+            /* Not a warning for its own sake: Hermes' dispatcher buckets an
+               unassigned card as `skipped_unassigned` every tick and reports
+               nothing, so this is the only place the app can say why a task
+               that looks queued will never start. */
+            <div style={{ fontSize: 12, color: 'var(--warn)', marginBottom: 14 }}>
+              Nobody is assigned — the dispatcher skips this card without reporting it.
+            </div>
+          )}
+          {task.assignee && <div style={{ marginBottom: 14 }} />}
+
+          {task.status === 'ready' ? (
+            <button
+              className="btn"
+              style={{ width: '100%', marginBottom: 14 }}
+              onClick={() => void runNow()}
+              disabled={dispatch.isPending || !task.assignee}
+            >
+              {dispatch.isPending ? 'Dispatching…' : 'Run now'}
+            </button>
+          ) : (
+            task.status !== 'running' && (
+              <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 14 }}>
+                Move this card to Ready to hand it to the dispatcher.
+              </div>
+            )
+          )}
 
           {task.last_failure_error && (
             <div

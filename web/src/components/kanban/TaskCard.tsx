@@ -1,12 +1,19 @@
 /**
  * A kanban card. Swipe right to advance a stage, left to delete.
  * Shares the axis-locking gesture approach used by the session rows.
+ *
+ * Both of those are *touch* gestures, and the swimlane layout put the same
+ * card in front of a mouse, where advancing or deleting became unreachable —
+ * you could open the card and move it with the status chips inside, but the
+ * one-gesture path the phone has simply did not exist. So the same two actions
+ * are also buttons, revealed on hover and only on a device that has one; a
+ * phone never paints them and keeps the swipes it already had.
  */
 import { memo, useRef, useState } from 'react';
 import { IconChevron, IconTrash } from '../shared/Icons';
 import { relTime } from '../shared/misc';
 import { buzz } from '../../lib/haptics';
-import type { Task } from '../../api/kanban';
+import type { Column, Task } from '../../api/kanban';
 
 const COMMIT_PX = 92;
 const MAX_PX = 124;
@@ -15,7 +22,12 @@ const PRIORITY_COLOR = ['var(--text-faint)', 'var(--info)', 'var(--warn)', 'var(
 
 interface Props {
   task: Task;
-  canAdvance: boolean;
+  /**
+   * Where advancing sends this card, or null for a column with nowhere to go.
+   * A prop rather than something the board derives at the moment of the tap:
+   * in the swimlane layout the card's own lane is the only thing that knows.
+   */
+  next: Column | null;
   nextLabel: string;
   /**
    * The handlers take the task id rather than closing over it, so the board
@@ -23,18 +35,19 @@ interface Props {
    * below would never hit: a new closure each render counts as a changed prop.
    */
   onOpen: (id: string) => void;
-  onAdvance: (id: string) => void;
+  onAdvance: (id: string, to: Column) => void;
   onDelete: (id: string) => void;
 }
 
 export const TaskCard = memo(function TaskCard({
   task,
-  canAdvance,
+  next,
   nextLabel,
   onOpen,
   onAdvance,
   onDelete,
 }: Props) {
+  const canAdvance = next !== null;
   const [dx, setDx] = useState(0);
   const startX = useRef(0);
   const startY = useRef(0);
@@ -68,7 +81,7 @@ export const TaskCard = memo(function TaskCard({
 
   const onTouchEnd = () => {
     if (dx <= -COMMIT_PX) onDelete(task.id);
-    else if (dx >= COMMIT_PX && canAdvance) onAdvance(task.id);
+    else if (dx >= COMMIT_PX && next) onAdvance(task.id, next);
     setDx(0);
     axis.current = 'none';
     armed.current = false;
@@ -113,6 +126,7 @@ export const TaskCard = memo(function TaskCard({
           buzz('tap');
           onOpen(task.id);
         }}
+        className="tcard"
         style={{
           position: 'relative',
           transform: `translateX(${dx}px)`,
@@ -125,6 +139,41 @@ export const TaskCard = memo(function TaskCard({
           cursor: 'pointer',
         }}
       >
+        {/* The pointer equivalent of the two swipes. `stopPropagation` so a
+            press here does not also open the card underneath it, and
+            `tabIndex={-1}` because the keyboard path to both actions is the
+            detail sheet, which is where they can be read before being taken —
+            two unlabelled icons in every card's tab order would make walking
+            a full board unbearable. */}
+        <div className="tcard__actions">
+          {canAdvance && (
+            <button
+              className="icon-btn"
+              tabIndex={-1}
+              aria-label={`Move to ${nextLabel}`}
+              title={`Move to ${nextLabel}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (next) onAdvance(task.id, next);
+              }}
+            >
+              <IconChevron size={16} />
+            </button>
+          )}
+          <button
+            className="icon-btn icon-btn--danger"
+            tabIndex={-1}
+            aria-label="Delete task"
+            title="Delete task"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(task.id);
+            }}
+          >
+            <IconTrash size={15} />
+          </button>
+        </div>
+
         <div style={{ fontWeight: 550, fontSize: 14.5, lineHeight: 1.35 }}>{task.title}</div>
 
         {task.latest_summary && (
@@ -156,6 +205,16 @@ export const TaskCard = memo(function TaskCard({
         >
           <span style={{ fontFamily: 'var(--mono)' }}>{task.id}</span>
           {task.assignee && <span>@{task.assignee}</span>}
+          {/* A claimed run, which is not the same as sitting in the Running
+              column: the dispatcher moves a card there before an agent picks
+              it up, and a card parked in Running with no run behind it is the
+              shape a stuck board takes. */}
+          {task.current_run_id !== null && (
+            <span className="tcard__live">
+              <span className="tcard__live-dot" aria-hidden />
+              running
+            </span>
+          )}
           {(task.comment_count ?? 0) > 0 && <span>💬 {task.comment_count}</span>}
           {failing && (
             <span style={{ color: 'var(--error)', fontWeight: 600 }}>
