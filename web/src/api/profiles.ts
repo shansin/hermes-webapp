@@ -6,8 +6,9 @@
  * server-side reload rather than a restart, but it changes what nearly every
  * other screen shows, so callers should invalidate broadly afterwards.
  */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
+import type { Skill } from './hub';
 
 export interface Profile {
   name: string;
@@ -24,8 +25,10 @@ export interface Profile {
    * and leaves the file where it is, so a profile deliberately narrowed to a
    * dozen skills still reports the whole bundle here. Rendering this as
    * "89 skills" is how a narrowed profile comes to look untouched. The
-   * The enabled count needs a per-profile fetch — `useSkills(name)` in
-   * `api/hub.ts`, which passes `?profile=`.
+   * The enabled count needs a per-profile fetch, which is what
+   * `useProfileSkillCounts` below does for the list and `useSkills(name)` in
+   * `api/hub.ts` does for a single profile. Both share one query key, so the
+   * list warms the cache the editor then reads.
    */
   skill_count: number;
   /** Whether this profile's gateway process is up. */
@@ -178,6 +181,47 @@ export function useRenameProfile() {
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: profileKeys.all }),
   });
+}
+
+/**
+ * Enabled-skill counts for a list of profiles, one request each.
+ *
+ * The profile list carries `skill_count`, but that is `SKILL.md` files on disk
+ * — disabling a skill leaves the file alone, so a profile narrowed to sixteen
+ * still reports eighty-nine. The number worth reading is what the agent will
+ * actually load, and it exists nowhere in the list payload.
+ *
+ * So this fans out. The keys and the URL match `useSkills(profile)` exactly, so
+ * the profile editor opening on a row costs nothing extra — it reads the entry
+ * this already filled — and both share one 30s stale window. With a handful of
+ * profiles that is a handful of small requests on a screen you visit rarely;
+ * it would be the wrong trade on a screen that polls.
+ *
+ * Returns a map of name → enabled count, with profiles still in flight simply
+ * absent rather than reported as zero. "Zero skills enabled" is a real and
+ * alarming state, and a loading row must not claim it.
+ */
+export function useProfileSkillCounts(names: string[]): {
+  counts: Record<string, number>;
+  loading: boolean;
+} {
+  const results = useQueries({
+    queries: names.map((name) => ({
+      queryKey: ['skills', name] as const,
+      queryFn: () => api.get<Skill[]>(`/api/skills?profile=${encodeURIComponent(name)}`),
+      staleTime: 30_000,
+    })),
+  });
+
+  const counts: Record<string, number> = {};
+  results.forEach((r, i) => {
+    const name = names[i];
+    if (name && Array.isArray(r.data)) {
+      counts[name] = r.data.filter((sk) => sk.enabled).length;
+    }
+  });
+
+  return { counts, loading: results.some((r) => r.isLoading) };
 }
 
 export function useSetProfileModel() {

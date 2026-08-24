@@ -8,18 +8,18 @@
  * instructions that say what the agent is *for* — was not visible from the app
  * at all. Every endpoint used here already existed on the backend.
  *
- * ## Why the skills number is here and not on the list
+ * ## The skills number
  *
  * `skill_count` on the profile list counts `SKILL.md` files on disk. Disabling
  * a skill writes it into the profile's `skills.disabled` and leaves the file
  * alone — so a profile deliberately narrowed to sixteen skills still reports
  * eighty-nine, and rendering that as "89 skills" makes a narrowed profile look
- * untouched. That is what the list row now calls "installed".
+ * untouched.
  *
- * The number that describes what the agent can actually do is the enabled one,
- * and it costs a request per profile, so it is paid here — once, for the
- * profile being edited — rather than on every row of a list nobody asked to
- * audit.
+ * The list now shows the enabled count on every row, fanned out by
+ * `useProfileSkillCounts`. This sheet reads the same query key for the profile
+ * it is editing, so opening a row costs no extra request — the entry is
+ * already warm.
  *
  * ## Saving
  *

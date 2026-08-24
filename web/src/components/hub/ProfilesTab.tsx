@@ -33,6 +33,7 @@ import {
   useActiveProfile,
   useCreateProfile,
   useDeleteProfile,
+  useProfileSkillCounts,
   useProfiles,
   useSwitchProfile,
   type Profile,
@@ -73,6 +74,10 @@ export function ProfilesTab() {
 
   const activeName = active.data?.active ?? active.data?.current ?? '';
   const profiles = list.data?.profiles ?? [];
+  /* What each profile will actually load, which the list payload does not
+     carry — see `useProfileSkillCounts`. One request per profile, on a screen
+     that does not poll. */
+  const { counts: enabledSkills } = useProfileSkillCounts(profiles.map((p) => p.name));
 
   const doSwitch = async (p: Profile) => {
     if (p.name === activeName) return;
@@ -231,14 +236,25 @@ export function ProfilesTab() {
                     }}
                   >
                     {p.model && <span>{p.model}</span>}
-                    {/* "installed", not "skills". This is a count of SKILL.md
-                        files on disk; disabling a skill leaves the file in
-                        place, so a profile narrowed to sixteen still reports
-                        the whole bundle here and read as untouched. The
-                        enabled count needs a per-profile request, which the
-                        editor makes and this list deliberately does not — one
-                        per row on every open. */}
-                    <span>{p.skill_count} installed</span>
+                    {/* Enabled, not installed. `skill_count` counts SKILL.md
+                        files on disk and disabling leaves the file in place, so
+                        a profile narrowed to sixteen reported eighty-nine and
+                        read as untouched — which is the number that matters
+                        least and the one that used to be here. The installed
+                        total rides along in the title, where it explains the
+                        gap without competing for the reader's eye.
+
+                        Absent while the per-profile request is in flight: a
+                        row must not flash "0 enabled", which is a real and
+                        alarming state, on its way to the truth. */}
+                    {enabledSkills[p.name] !== undefined ? (
+                      <span title={`${p.skill_count} installed in this profile`}>
+                        {enabledSkills[p.name]} skill
+                        {enabledSkills[p.name] === 1 ? '' : 's'} enabled
+                      </span>
+                    ) : (
+                      <span style={{ opacity: 0.5 }}>counting skills…</span>
+                    )}
                   </div>
                 </button>
 
