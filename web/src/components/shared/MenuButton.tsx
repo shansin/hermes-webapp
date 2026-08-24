@@ -10,6 +10,10 @@
  * time: a badge you have to open the menu to discover cannot tell you there is
  * something to discover. This button is the one piece of chrome on every
  * screen, so it is the only honest place for it.
+ *
+ * It disappears entirely on a wide window: `NavDrawer` docks itself into the
+ * layout there, so the menu is already on screen and the unread count is
+ * already legible on its own row.
  */
 import { IconMenu } from './Icons';
 import { useUi } from '../../store/ui';
@@ -21,7 +25,9 @@ export function MenuButton() {
   const unread = useUnreadCount();
   return (
     <button
-      className="icon-btn"
+      /* Hidden past the wide breakpoint, where the drawer is docked open and
+         there is nothing left for this to summon. */
+      className="icon-btn menu-btn"
       aria-label={unread ? `Open menu — ${unread} unread update${unread === 1 ? '' : 's'}` : 'Open menu'}
       style={{ flexShrink: 0, marginLeft: -4, position: 'relative' }}
       onClick={() => {

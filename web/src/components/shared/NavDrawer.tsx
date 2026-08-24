@@ -9,6 +9,21 @@
  *
  * `NavLink` handles the active state; the drawer closes on navigate, backdrop
  * tap, Escape, a leftward drag on the panel itself, or the system back button.
+ *
+ * ## Two modes
+ *
+ * Past `WIDE_QUERY` the same list is *docked*: a permanent rail, no backdrop,
+ * nothing to open or close. A modal drawer is the right answer when the panel
+ * would cover most of the screen; on a 1400px window it covers a fifth of it,
+ * and every navigation costs a tap to summon a menu there was always room to
+ * show — while the screen it hides behind is mostly the empty space the phone
+ * layout's single column leaves at that width.
+ *
+ * The mode is a render-time branch rather than a stylesheet rule because the
+ * differences are behavioural, not visual: the docked rail must not lock body
+ * scroll, must not trap Escape, must not track drags, and above all must not
+ * push a history sentinel — a permanently-open overlay registering itself as
+ * dismissable would eat the back button on every screen, for ever.
  */
 import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { NavLink } from 'react-router-dom';
@@ -34,6 +49,7 @@ import { useActiveProfile } from '../../api/profiles';
 import { useActivity } from '../../lib/useActivity';
 import { buzz } from '../../lib/haptics';
 import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
+import { useWideLayout } from '../../lib/useMediaQuery';
 
 /**
  * The Hub's six tabs used to hide behind a single "Hub" entry, which cost two
@@ -90,6 +106,7 @@ const SYSTEM = [
 const DISMISS_PX = 60;
 
 export function NavDrawer() {
+  const docked = useWideLayout();
   const open = useUi((s) => s.navOpen);
   const setOpen = useUi((s) => s.setNavOpen);
   const connection = useUi((s) => s.connection);
@@ -111,10 +128,10 @@ export function NavDrawer() {
   const [dragX, setDragX] = useState(0);
   const startX = useRef<number | null>(null);
 
-  useHistoryDismiss(open, () => setOpen(false));
+  useHistoryDismiss(open && !docked, () => setOpen(false));
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || docked) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const onKey = (e: KeyboardEvent) => {
@@ -125,31 +142,40 @@ export function NavDrawer() {
       document.body.style.overflow = prev;
       window.removeEventListener('keydown', onKey);
     };
-  }, [open, setOpen]);
+  }, [open, docked, setOpen]);
 
   // Drop any leftover drag offset so the panel reopens square.
   useEffect(() => {
     if (open) setDragX(0);
   }, [open]);
 
-  if (!open) return null;
+  if (!open && !docked) return null;
 
   const close = () => {
     buzz('tap');
     setOpen(false);
   };
 
+  /**
+   * Closing is a no-op while docked, but the rail still calls it on navigate:
+   * a window narrowed back to phone width must not reveal a drawer left open
+   * from three navigations ago.
+   */
+  const onNavigate = docked ? () => setOpen(false) : close;
+
   return (
     <>
-      <div className="drawer-backdrop" onClick={close} />
+      {!docked && <div className="drawer-backdrop" onClick={close} />}
       <nav
-        className="drawer"
-        style={dragX ? { transform: `translateX(${dragX}px)` } : undefined}
+        className={`drawer${docked ? ' drawer--docked' : ''}`}
+        style={!docked && dragX ? { transform: `translateX(${dragX}px)` } : undefined}
         aria-label="Main navigation"
         onTouchStart={(e) => {
+          if (docked) return;
           startX.current = e.touches[0]?.clientX ?? null;
         }}
         onTouchMove={(e) => {
+          if (docked) return;
           const x = e.touches[0]?.clientX;
           if (x == null || startX.current == null) return;
           // Only tracks leftward: dragging right would pull the panel off its
@@ -157,6 +183,7 @@ export function NavDrawer() {
           setDragX(Math.min(0, x - startX.current));
         }}
         onTouchEnd={() => {
+          if (docked) return;
           if (dragX < -DISMISS_PX) close();
           else setDragX(0);
           startX.current = null;
@@ -174,9 +201,12 @@ export function NavDrawer() {
               )}
             </div>
           </div>
-          <button className="icon-btn" onClick={close} aria-label="Close menu">
-            <IconClose size={19} />
-          </button>
+          {/* Nothing to close when the rail is part of the layout. */}
+          {!docked && (
+            <button className="icon-btn" onClick={close} aria-label="Close menu">
+              <IconClose size={19} />
+            </button>
+          )}
         </div>
 
         <div className="drawer__list">
@@ -188,14 +218,15 @@ export function NavDrawer() {
               hint={hint}
               Icon={Icon}
               count={badge ? unread : live ? running : 0}
-              onNavigate={close}
+              onNavigate={onNavigate}
+              replaceEntry={!docked}
             />
           ))}
 
           <div className="drawer__section">SYSTEM</div>
 
           {SYSTEM.map(({ to, label, hint, Icon }) => (
-            <Item key={to} to={to} label={label} hint={hint} Icon={Icon} compact onNavigate={close} />
+            <Item key={to} to={to} label={label} hint={hint} Icon={Icon} compact onNavigate={onNavigate} replaceEntry={!docked} />
           ))}
         </div>
       </nav>
@@ -211,6 +242,7 @@ function Item({
   compact = false,
   count = 0,
   onNavigate,
+  replaceEntry,
 }: {
   to: string;
   label: string;
@@ -220,14 +252,21 @@ function Item({
   /** Unread badge. Zero renders nothing rather than a "0" pill. */
   count?: number;
   onNavigate: () => void;
+  /** See the note on `replace` below. False for the docked rail. */
+  replaceEntry: boolean;
 }) {
   return (
     <NavLink
       to={to}
-      // `replace` lands the new route *on* the drawer's sentinel entry rather
-      // than after it. Pushing would strand the sentinel mid-stack, costing an
-      // extra, invisible back press to get out of wherever you just went.
-      replace
+      /* `replace` lands the new route *on* the drawer's sentinel entry rather
+         than after it. Pushing would strand the sentinel mid-stack, costing an
+         extra, invisible back press to get out of wherever you just went.
+
+         The docked rail pushes instead, because it has no sentinel to land on:
+         replacing there would mean navigating the whole app without ever
+         growing the history stack, and the header's back button — which reads
+         that stack — would be dead on every screen. */
+      replace={replaceEntry}
       className={({ isActive }) =>
         `drawer__item${compact ? ' drawer__item--compact' : ''}${
           isActive ? ' drawer__item--active' : ''

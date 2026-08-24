@@ -1651,3 +1651,76 @@ button.header__sub::after {
   font-size: 12px;
   white-space: nowrap;
 }
+
+/* --- wide layout ----------------------------------------------------------
+   Everything above this point is the phone layout, and it stays the default:
+   these rules only take effect past the one breakpoint where the single
+   column stops being the whole screen and starts being a stripe down the
+   middle of it.
+
+   `--breakpoint-wide` is duplicated in `lib/useMediaQuery.ts` — the drawer's
+   docked mode is a render-time decision, not a paint one, and the two have to
+   agree or the rail appears without the space reserved for it. There is no
+   way to read a custom property from `matchMedia`, so the value is written
+   twice on purpose; change both. */
+
+:root {
+  --breakpoint-wide: 1000px;
+  --rail-w: 300px;
+}
+
+@media (min-width: 1000px) {
+  /* The rail is `position: fixed`, so the shell reserves its width rather than
+     laying it out. Padding on `.app` rather than a margin on `.app__body`
+     keeps the connection banner clear of it too. */
+  .app {
+    padding-left: var(--rail-w);
+  }
+
+  .menu-btn {
+    display: none;
+  }
+
+  .drawer--docked {
+    width: var(--rail-w);
+    /* No entrance animation for something that was never absent, and no
+       shadow: it is a panel of the layout, not a sheet floating over it. */
+    animation: none;
+  }
+
+  /* A bottom sheet spanning a 1600px window is a band of chrome with a
+     sentence in the middle of it. Centred and capped, the same component
+     reads as the dialog it already behaves like — modal, focus-trapped,
+     dismissed by Escape.
+
+     Centred with auto margins rather than a transform: the drag-to-dismiss
+     handler writes `transform: translateY(...)` inline, and a translateX here
+     would be thrown away the moment anyone touched the grip. */
+  .sheet {
+    left: 0;
+    right: 0;
+    margin-inline: auto;
+    width: min(620px, 100vw - 64px);
+    bottom: 28px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    max-height: min(760px, 82dvh);
+  }
+
+  /* Toasts follow the content, not the viewport — under the rail they were
+     half-covered by it. */
+  .toasts {
+    left: calc(var(--rail-w) + 16px);
+    right: 16px;
+    align-items: flex-end;
+  }
+
+  /* Long-form configuration screens: a measure, not a stretch. 60-ish
+     characters is where a settings row stops being scannable, and every hub
+     screen is a stack of label/value rows. */
+  .scroll > * {
+    max-width: 860px;
+    margin-inline: auto;
+  }
+}
+
