@@ -99,7 +99,11 @@ const openAt = (url: string) =>
 describe('arriving from a cron notification', () => {
   it('resumes the run’s own conversation', async () => {
     openAt(`/chat?session=${CRON_ID}`);
-    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(CRON_ID));
+    // The second argument is the profile whose store holds the session.
+    // Null here on purpose: a notification written before profiles were
+    // threaded through carries no profile, and must still resume against the
+    // gateway's own launch profile exactly as it always did.
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(CRON_ID, null));
   });
 
   /**
@@ -133,9 +137,23 @@ describe('arriving from a cron notification', () => {
     );
   });
 
+  it('carries a profile through to the resume when the link names one', async () => {
+    /* Sessions live in per-profile stores, so a link from the sessions screen
+       or a kanban card to another profile's session names that profile. The
+       gateway's `session.resume` takes it; without it the id is looked up in
+       the launch profile's state.db and is simply not there — a failed resume
+       that looks like a missing session rather than a wrong store. */
+    openAt(`/chat?resume=${CRON_ID}&profile=research`);
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(CRON_ID, 'research'));
+  });
+
   it('treats ?resume= identically', async () => {
     openAt(`/chat?resume=${CRON_ID}`);
-    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(CRON_ID));
+    // The second argument is the profile whose store holds the session.
+    // Null here on purpose: a notification written before profiles were
+    // threaded through carries no profile, and must still resume against the
+    // gateway's own launch profile exactly as it always did.
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(CRON_ID, null));
   });
 });
 

@@ -8,6 +8,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
+import { sessionUrl, type SessionRow } from './sessions';
 
 const BASE = '/api/plugins/kanban';
 
@@ -155,6 +156,48 @@ export function useAddComment() {
     mutationFn: ({ id, body, author = 'web' }: { id: string; body: string; author?: string }) =>
       api.post(`${BASE}/tasks/${encodeURIComponent(id)}/comments`, { body, author }),
     onSuccess: (_d, vars) => qc.invalidateQueries({ queryKey: kanbanKeys.task(vars.id) }),
+  });
+}
+
+/**
+ * Find the session a task is running in.
+ *
+ * Hermes does not stamp `session_id` onto the task row — it stays null through
+ * a run — so this is a **correlation, not a foreign key**: the run opens a
+ * session in the assignee profile's store, sourced `kanban`, whose derived
+ * title is literally `work kanban task <id>`. Matching on that plus the source
+ * is the only join available.
+ *
+ * Which means it can be wrong in one direction and right in the other: a match
+ * is almost certainly the session (the task id is unique and appears verbatim),
+ * but no match does not prove there is no session — a retitled session, an
+ * older Hermes, or a run whose session has not been flushed to the store yet
+ * all look identical to "none". Callers must treat an empty result as "cannot
+ * tell", never as "it did not run".
+ *
+ * Scoped to the task's assignee, because that is the profile the dispatcher
+ * runs it as and therefore the only store the session can be in.
+ */
+export function useTaskSession(taskId: string | null, assignee: string | null) {
+  return useQuery({
+    queryKey: ['kanban', 'task-session', taskId, assignee ?? null],
+    enabled: Boolean(taskId),
+    // Cheap and worth being current: the session appears partway through a run.
+    refetchInterval: 15_000,
+    queryFn: async () => {
+      const res = await api.get<{ sessions?: SessionRow[] }>(
+        sessionUrl('/api/sessions?limit=100&order=recent&archived=include', assignee),
+      );
+      const rows = res.sessions ?? [];
+      return (
+        rows.find(
+          (r) =>
+            (r.source ?? '').toLowerCase() === 'kanban' &&
+            typeof r.title === 'string' &&
+            r.title.includes(taskId!),
+        ) ?? null
+      );
+    },
   });
 }
 

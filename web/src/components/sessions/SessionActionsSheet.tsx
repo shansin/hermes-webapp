@@ -29,7 +29,10 @@ export function SessionActionsSheet({ session, onClose }: Props) {
   const flag = async (flags: { pinned?: boolean; archived?: boolean }, done: string) => {
     buzz('tap');
     try {
-      await setFlags.mutateAsync({ id: session.id, ...flags });
+      /* The row carries the profile it came out of, so pin and archive land
+         in the store the session actually lives in rather than in whichever
+         profile happens to be active. */
+      await setFlags.mutateAsync({ id: session.id, profile: session.profile, ...flags });
       toast(done, 'success');
       onClose();
     } catch (e) {

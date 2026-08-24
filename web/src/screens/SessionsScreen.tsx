@@ -22,6 +22,7 @@ import {
   type SessionList,
   type SessionRow,
 } from '../api/sessions';
+import { useActiveProfile, useProfiles } from '../api/profiles';
 import { MenuButton } from '../components/shared/MenuButton';
 import { BackButton } from '../components/shared/BackButton';
 import { useUi } from '../store/ui';
@@ -65,13 +66,30 @@ export function SessionsScreen() {
   const [showArchived, setShowArchived] = useState(false);
   const [actionsFor, setActionsFor] = useState<string | null>(null);
   const [tag, setTag] = useState<string | null>(null);
+  /**
+   * Which profile's sessions to list.
+   *
+   * Sessions live in per-profile stores and every endpoint addresses one at a
+   * time; omitting the profile silently means "the active one". That was
+   * invisible until a second profile existed, at which point a kanban task
+   * running as `research` produced a live session this screen could not show
+   * and gave no hint of. Null means the active profile — the same request this
+   * screen has always made.
+   *
+   * There is no merged view: the backend rejects `profile=all`, and stitching
+   * N paginated stores whose offsets do not align would break the counts, the
+   * grouping and the infinite scroll all at once.
+   */
+  const [profile, setProfile] = useState<string | null>(null);
 
   const archivedFilter: ArchivedFilter = showArchived ? 'only' : 'exclude';
-  const { data, isLoading, error, refetch } = useSessions(undefined, archivedFilter);
+  const { data, isLoading, error, refetch } = useSessions(undefined, archivedFilter, profile);
   // Search on the settled value: every keystroke was otherwise a new query
   // key, and so a new request to the backend.
   const debouncedQuery = useDebounced(query, SEARCH_DEBOUNCE_MS);
-  const search = useSessionSearch(debouncedQuery);
+  const search = useSessionSearch(debouncedQuery, profile);
+  const profiles = useProfiles().data?.profiles ?? [];
+  const activeProfile = useActiveProfile().data?.active ?? '';
   const del = useDeleteSession();
   const bulkDel = useBulkDeleteSessions();
 
@@ -165,9 +183,15 @@ export function SessionsScreen() {
   const resume = useCallback(
     (id: string) => {
       buzz('tap');
-      navigate(`/chat?resume=${encodeURIComponent(id)}`);
+      /* The profile rides along. `session.resume` takes one — it is how the
+         gateway opens a session out of another profile's state.db — and
+         without it the resume looks up the id in the active profile's store
+         and finds nothing. */
+      navigate(
+        `/chat?resume=${encodeURIComponent(id)}${profile ? `&profile=${encodeURIComponent(profile)}` : ''}`,
+      );
     },
-    [navigate],
+    [navigate, profile],
   );
 
   /**
@@ -198,7 +222,7 @@ export function SessionsScreen() {
       const { undo } = scheduleUndoable(
         {
           commit: () => {
-            void deleteSession(id).catch((e: unknown) => {
+            void deleteSession({ id, profile }).catch((e: unknown) => {
               // Nothing is watching by now, so the row has to come back and
               // say why on its own.
               for (const [key, data] of snapshot) qc.setQueryData(key, data);
@@ -223,14 +247,14 @@ export function SessionsScreen() {
         },
       });
     },
-    [deleteSession, toast, qc],
+    [deleteSession, toast, qc, profile],
   );
 
   const removeSelected = async () => {
     const ids = [...selected];
     setSelected(new Set());
     try {
-      await bulkDel.mutateAsync(ids);
+      await bulkDel.mutateAsync({ ids, profile });
       toast(`Deleted ${ids.length} sessions`, 'success');
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Bulk delete failed', 'error');
@@ -320,6 +344,38 @@ export function SessionsScreen() {
           </>
         )}
       </div>
+
+      {/* Coarser than any of the filters below it: those narrow a list, this
+          chooses which store is read at all. Only rendered once a second
+          profile exists — before that there is one answer and a picker
+          offering it is furniture. */}
+      {!searching && !selecting && profiles.length > 1 && (
+        <div className="tag-rail">
+          {profiles.map((pr) => {
+            const on = (profile ?? activeProfile) === pr.name;
+            return (
+              <button
+                key={pr.name}
+                className={`chip${on ? ' chip--active' : ''}`}
+                onClick={() => {
+                  buzz('tap');
+                  /* The active profile is stored as null, not as its name: it
+                     is the request this screen has always made, and pinning
+                     the name would break the moment you switched profiles
+                     elsewhere in the app. */
+                  setProfile(pr.name === activeProfile ? null : pr.name);
+                  setSelected(new Set());
+                }}
+              >
+                {pr.name}
+                {pr.name === activeProfile && (
+                  <span style={{ color: 'var(--text-faint)', fontWeight: 400 }}> · active</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* The lane picker. Above the tag rail because it is the coarser cut:
           which kind of session, then which tag within it. */}

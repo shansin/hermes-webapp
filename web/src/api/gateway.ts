@@ -36,10 +36,21 @@ export async function createSession(opts: CreateOptions = {}): Promise<SessionCr
 }
 
 /** Reopen a stored session by its persistent id. */
-export async function resumeSession(storedId: string): Promise<SessionCreateResult> {
+/**
+ * @param profile the profile whose `state.db` holds this session, when it is
+ *   not the one the gateway was launched as. `session.resume` supports it
+ *   explicitly ("resume a session that lives in another local profile's
+ *   state.db"); without it the id is looked up in the launch profile's store
+ *   and simply is not there, which surfaces as a failed resume rather than as
+ *   the wrong-store lookup it actually is.
+ */
+export async function resumeSession(
+  storedId: string,
+  profile?: string | null,
+): Promise<SessionCreateResult> {
   const raw = await hermes.call(
     'session.resume',
-    { session_id: storedId, cols: 80, source: 'web' },
+    { session_id: storedId, cols: 80, source: 'web', ...(profile ? { profile } : {}) },
     { timeoutMs: CONTROL_TIMEOUT_MS },
   );
   return SessionCreateResultSchema.parse(raw);

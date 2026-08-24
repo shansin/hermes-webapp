@@ -116,6 +116,14 @@ in, wraps at both ends, returns to whatever opened it, and a sheet that demands
 an explicit choice cannot be escaped. Driven with `user-event`, since a focus
 trap only means anything as something a keyboard runs into.
 
+**`web/test/sessionScope.test.ts`** — which profile's `state.db` a session call
+reads, and the task→session join. Sessions are per-profile and the detail route
+answers *404 Session not found* for a session that exists in another profile, so
+the failure reads as "deleted" rather than "wrong store". The join is a title
+correlation, not a foreign key — Hermes leaves `session_id` null on the task row
+— so the rule that a non-kanban session merely mentioning the id must never
+match is pinned here.
+
 **`web/test/cronScope.test.ts`** — which profile a cron call addresses. A job
 created into the wrong profile looks entirely normal on the screen that created
 it and is wrong only in that it runs as the wrong agent, or never runs because

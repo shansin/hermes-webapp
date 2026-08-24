@@ -43,6 +43,18 @@ export interface SessionRow {
   cwd: string | null;
   parent_session_id: string | null;
   /**
+   * Which profile's store this row came out of.
+   *
+   * Present on every row the backend returns (alongside `profile_name` and
+   * `is_default_profile`), and the thing that has to travel with a session
+   * anywhere it is opened, deleted or flagged — those endpoints resolve the id
+   * inside one profile's `state.db` and answer 404 for a session that is
+   * simply somewhere else.
+   */
+  profile?: string | null;
+  profile_name?: string | null;
+  is_default_profile?: boolean;
+  /**
    * The list endpoint returns real booleans; the single-session endpoint
    * returns SQLite's 0/1. Read them through `isOn` rather than directly.
    */
@@ -84,24 +96,67 @@ export interface SearchHit {
   message_count?: number;
 }
 
+/**
+ * Sessions are stored **per profile**, and every endpoint here addresses one
+ * profile at a time.
+ *
+ * Omitting `profile` addresses whichever profile is active, which is why this
+ * app went years without noticing: with one profile that is the only answer.
+ * With two it is a silent filter — a kanban task running as `research` writes
+ * its session into that profile's `state.db`, and a list, a detail read or a
+ * resume that does not name the profile simply cannot see it. The detail route
+ * does not even fail loudly: it answers **404 Session not found** for a session
+ * that plainly exists.
+ *
+ * So `profile` is part of every key below. A cached list belonging to one
+ * profile must never be handed to a screen asking about another.
+ *
+ * Unlike cron, there is no `profile=all`; the backend rejects it with
+ * "Profile 'all' does not exist". Merging profiles is therefore N requests
+ * against N paginated stores whose offsets do not align, which is why the
+ * Sessions screen picks a profile rather than merging them.
+ */
 export const sessionKeys = {
   all: ['sessions'] as const,
-  list: (limit: number, archived: ArchivedFilter = 'exclude') =>
-    ['sessions', 'list', limit, archived] as const,
-  detail: (id: string) => ['sessions', 'detail', id] as const,
-  messages: (id: string) => ['sessions', 'messages', id] as const,
-  search: (q: string) => ['sessions', 'search', q] as const,
+  list: (limit: number, archived: ArchivedFilter = 'exclude', profile?: string | null) =>
+    ['sessions', 'list', limit, archived, profile ?? null] as const,
+  detail: (id: string, profile?: string | null) =>
+    ['sessions', 'detail', id, profile ?? null] as const,
+  messages: (id: string, profile?: string | null) =>
+    ['sessions', 'messages', id, profile ?? null] as const,
+  search: (q: string, profile?: string | null) =>
+    ['sessions', 'search', q, profile ?? null] as const,
   stats: ['sessions', 'stats'] as const,
 };
+
+/**
+ * Add `?profile=` to a session URL, or leave it alone.
+ *
+ * Same shape as `cronUrl` in `api/hub.ts`, and for the same reason: the
+ * parameter is optional in a way that quietly changes which store is read, so
+ * it is a named function with a test rather than a template string repeated at
+ * eight call sites.
+ */
+export function sessionUrl(path: string, profile?: string | null): string {
+  if (!profile) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}profile=${encodeURIComponent(profile)}`;
+}
 
 /** The API rejects a limit above 100, so clamp rather than 422. */
 export const MAX_SESSION_LIMIT = 100;
 
-export function useSessions(limit = MAX_SESSION_LIMIT, archived: ArchivedFilter = 'exclude') {
+export function useSessions(
+  limit = MAX_SESSION_LIMIT,
+  archived: ArchivedFilter = 'exclude',
+  profile?: string | null,
+) {
   const capped = Math.min(limit, MAX_SESSION_LIMIT);
   return useQuery({
-    queryKey: sessionKeys.list(capped, archived),
-    queryFn: () => api.get<SessionList>(`/api/sessions?limit=${capped}&archived=${archived}`),
+    queryKey: sessionKeys.list(capped, archived, profile),
+    queryFn: () =>
+      api.get<SessionList>(
+        sessionUrl(`/api/sessions?limit=${capped}&archived=${archived}`, profile),
+      ),
     staleTime: 15_000,
   });
 }
@@ -226,31 +281,41 @@ export async function fetchSessionTitle(id: string): Promise<string | null> {
  * needs all three, so the conversation you are *in* can offer the same verbs as
  * a row in the list.
  */
-export function useSessionRow(id: string | null) {
+/**
+ * @param profile required for a session belonging to any profile but the
+ *   active one. Without it this route answers 404 for a session that exists,
+ *   which reads as "deleted" rather than "you are looking in the wrong store".
+ */
+export function useSessionRow(id: string | null, profile?: string | null) {
   return useQuery({
-    queryKey: sessionKeys.detail(id ?? ''),
+    queryKey: sessionKeys.detail(id ?? '', profile),
     enabled: Boolean(id),
     staleTime: 30_000,
-    queryFn: () => api.get<SessionRow>(`/api/sessions/${encodeURIComponent(id!)}`),
+    queryFn: () =>
+      api.get<SessionRow>(sessionUrl(`/api/sessions/${encodeURIComponent(id!)}`, profile)),
   });
 }
 
-export function useSessionMessages(id: string | null) {
+export function useSessionMessages(id: string | null, profile?: string | null) {
   return useQuery({
-    queryKey: sessionKeys.messages(id ?? ''),
+    queryKey: sessionKeys.messages(id ?? '', profile),
     queryFn: () =>
-      api.get<{ messages: StoredMessage[] }>(`/api/sessions/${encodeURIComponent(id!)}/messages`),
+      api.get<{ messages: StoredMessage[] }>(
+        sessionUrl(`/api/sessions/${encodeURIComponent(id!)}/messages`, profile),
+      ),
     enabled: Boolean(id),
   });
 }
 
 /** Full-text search across stored sessions. Disabled below 2 characters. */
-export function useSessionSearch(q: string) {
+export function useSessionSearch(q: string, profile?: string | null) {
   const query = q.trim();
   return useQuery({
-    queryKey: sessionKeys.search(query),
+    queryKey: sessionKeys.search(query, profile),
     queryFn: () =>
-      api.get<{ results: SearchHit[] }>(`/api/sessions/search?q=${encodeURIComponent(query)}`),
+      api.get<{ results: SearchHit[] }>(
+        sessionUrl(`/api/sessions/search?q=${encodeURIComponent(query)}`, profile),
+      ),
     enabled: query.length >= 2,
     staleTime: 10_000,
   });
@@ -269,18 +334,29 @@ export function useSessionStats() {
   });
 }
 
+/** `profile` deletes out of another profile's `state.db`; omit for the active one. */
 export function useDeleteSession() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.del(`/api/sessions/${encodeURIComponent(id)}`),
+    mutationFn: ({ id, profile }: { id: string; profile?: string | null }) =>
+      api.del(sessionUrl(`/api/sessions/${encodeURIComponent(id)}`, profile)),
     onSuccess: () => qc.invalidateQueries({ queryKey: sessionKeys.all }),
   });
 }
 
+/**
+ * Bulk delete.
+ *
+ * The field is `ids`. It was `session_ids` here, which the backend rejects
+ * with a 422 — so selecting several sessions and deleting them has never
+ * worked, and reported itself as a generic failure rather than as a
+ * malformed request. `profile` rides in the body for this one, not the query.
+ */
 export function useBulkDeleteSessions() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (ids: string[]) => api.post('/api/sessions/bulk-delete', { session_ids: ids }),
+    mutationFn: ({ ids, profile }: { ids: string[]; profile?: string | null }) =>
+      api.post('/api/sessions/bulk-delete', { ids, ...(profile ? { profile } : {}) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: sessionKeys.all }),
   });
 }
@@ -288,8 +364,11 @@ export function useBulkDeleteSessions() {
 export function useRenameSession() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, title }: { id: string; title: string }) =>
-      api.patch(`/api/sessions/${encodeURIComponent(id)}`, { title }),
+    mutationFn: ({ id, title, profile }: { id: string; title: string; profile?: string | null }) =>
+      api.patch(`/api/sessions/${encodeURIComponent(id)}`, {
+        title,
+        ...(profile ? { profile } : {}),
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: sessionKeys.all }),
   });
 }
@@ -304,8 +383,21 @@ export function useRenameSession() {
 export function useSetSessionFlags() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...flags }: { id: string; pinned?: boolean; archived?: boolean }) =>
-      api.patch(`/api/sessions/${encodeURIComponent(id)}`, flags),
+    mutationFn: ({
+      id,
+      profile,
+      ...flags
+    }: {
+      id: string;
+      pinned?: boolean;
+      archived?: boolean;
+      profile?: string | null;
+    }) =>
+      api.patch(`/api/sessions/${encodeURIComponent(id)}`, {
+        ...flags,
+        // In the body for PATCH, unlike DELETE where it is a query parameter.
+        ...(profile ? { profile } : {}),
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: sessionKeys.all }),
   });
 }
@@ -315,9 +407,12 @@ export async function exportSessionJson(id: string): Promise<unknown> {
   return api.get(`/api/sessions/${encodeURIComponent(id)}/export`);
 }
 
-export async function fetchStoredMessages(id: string): Promise<StoredMessage[]> {
+export async function fetchStoredMessages(
+  id: string,
+  profile?: string | null,
+): Promise<StoredMessage[]> {
   const res = await api.get<{ messages: StoredMessage[] }>(
-    `/api/sessions/${encodeURIComponent(id)}/messages`,
+    sessionUrl(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
   );
   return res.messages;
 }

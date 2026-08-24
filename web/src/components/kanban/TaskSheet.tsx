@@ -19,10 +19,13 @@ import {
   useDeleteTask,
   useDispatch,
   useTask,
+  useTaskSession,
   useUpdateTask,
   type Column,
+  type Task,
 } from '../../api/kanban';
 import { useProfiles } from '../../api/profiles';
+import { useNavigate } from 'react-router-dom';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 
@@ -33,6 +36,7 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
   const addComment = useAddComment();
   const dispatch = useDispatch();
   const profiles = useProfiles().data?.profiles ?? [];
+  const navigate = useNavigate();
   const toast = useUi((s) => s.toast);
 
   const [title, setTitle] = useState('');
@@ -249,6 +253,8 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
             )
           )}
 
+          <TaskSessionLink task={task} onOpen={onClose} navigate={navigate} />
+
           {task.last_failure_error && (
             <div
               style={{
@@ -341,6 +347,71 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
         </>
       )}
     </Sheet>
+  );
+}
+
+/**
+ * "Open the conversation this task is running in."
+ *
+ * Worth its own component because the honest states outnumber the happy one.
+ * The task row carries no `session_id`, so this is a title correlation (see
+ * `useTaskSession`) — which means *not found* has to read as "nothing to show
+ * yet", never as "it never ran". A task that has plainly started and shows no
+ * session is usually a session that has not been flushed to the store yet.
+ */
+function TaskSessionLink({
+  task,
+  onOpen,
+  navigate,
+}: {
+  task: Task;
+  onOpen: () => void;
+  navigate: (to: string) => void;
+}) {
+  const { data: session, isLoading } = useTaskSession(task.id, task.assignee);
+  const started = task.started_at !== null || task.current_run_id !== null;
+
+  // Nothing has run and nothing is running: an absent session is simply the
+  // truth, and a row saying so would be noise on every fresh card.
+  if (!started && !session) return null;
+
+  return (
+    <>
+      <Label>CONVERSATION</Label>
+      <div style={{ marginBottom: 14 }}>
+        {session ? (
+          <button
+            className="btn btn--sm"
+            style={{ width: '100%', justifyContent: 'space-between' }}
+            onClick={() => {
+              buzz('tap');
+              /* The profile travels with the id. Sessions live in per-profile
+                 stores, and a resume that does not name the profile looks the
+                 id up in the active one and finds nothing. */
+              const p = session.profile ? `&profile=${encodeURIComponent(session.profile)}` : '';
+              onOpen();
+              navigate(`/chat?resume=${encodeURIComponent(session.id)}${p}`);
+            }}
+          >
+            <span style={{ color: 'var(--text-dim)' }}>
+              {session.is_active && !session.ended_at ? 'Running now' : 'Open transcript'}
+            </span>
+            <span style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>
+              {session.message_count ?? 0} messages
+            </span>
+          </button>
+        ) : (
+          <div style={{ fontSize: 12, color: 'var(--text-faint)', lineHeight: 1.45 }}>
+            {isLoading
+              ? 'Looking for the conversation…'
+              : /* Deliberately not "no session": the task row carries no session
+                   id, so this is a correlation that can miss. Saying it did not
+                   run would be asserting something we cannot know. */
+                'No matching conversation found yet. Hermes does not link a task to its session directly, so this can lag a run that has only just started.'}
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 

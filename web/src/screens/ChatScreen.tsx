@@ -117,6 +117,15 @@ export function ChatScreen() {
    * banner already sitting on a lock screen working.
    */
   const resumeId = params.get('resume') ?? params.get('session');
+  /**
+   * Which profile's store holds `resumeId`.
+   *
+   * Sessions are per-profile, so a link from the Sessions screen (or from a
+   * kanban card) to a session belonging to another profile carries the profile
+   * with it. Absent means the gateway's own launch profile, which is every
+   * link written before this existed.
+   */
+  const resumeProfile = params.get('profile');
   const wantNew = params.get('new') === '1';
   /**
    * Android share-sheet target, which reaches us in two shapes.
@@ -180,7 +189,7 @@ export function ChatScreen() {
        * carries the 15s control timeout, and a cron run with a long transcript
        * on a phone's radio is exactly the shape that hits it.
        */
-      const res = await resumeSession(storedId);
+      const res = await resumeSession(storedId, resumeProfile);
       adopt({
         sessionId: res.session_id,
         storedSessionId: res.stored_session_id ?? storedId,
