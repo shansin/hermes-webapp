@@ -168,11 +168,11 @@ export function McpSection() {
               <div className="card" key={e.name} style={{ marginBottom: 8 }}>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{e.name}</div>
-                    <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginTop: 3, lineHeight: 1.45 }}>
+                    <div style={{ fontWeight: 600, fontSize: 'var(--type-body-md)' }}>{e.name}</div>
+                    <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-dim)', marginTop: 3, lineHeight: 1.45 }}>
                       {e.description}
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 5 }}>
+                    <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginTop: 5 }}>
                       {e.transport}
                       {e.auth_type && e.auth_type !== 'none' && ` · ${e.auth_type.replace('_', ' ')}`}
                       {e.required_env.length > 0 && ` · needs ${e.required_env.join(', ')}`}
@@ -192,7 +192,7 @@ export function McpSection() {
                   )}
                 </div>
                 {!e.installed && e.auth_type === 'oauth' && (
-                  <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginTop: 8, lineHeight: 1.45 }}>
+                  <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginTop: 8, lineHeight: 1.45 }}>
                     Signs in through a browser on the machine running Hermes — installing
                     here does not finish it.
                   </div>
@@ -216,10 +216,10 @@ export function McpSection() {
           <div className="card" key={s.name} style={{ marginBottom: 8 }}>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{s.name}</div>
+                <div style={{ fontWeight: 600, fontSize: 'var(--type-body-md)' }}>{s.name}</div>
                 <div
                   style={{
-                    fontSize: 11.5,
+                    fontSize: 'var(--type-label-sm)',
                     color: 'var(--text-faint)',
                     marginTop: 3,
                     fontFamily: 'var(--mono)',
@@ -231,7 +231,7 @@ export function McpSection() {
                   {target(s)}
                 </div>
                 {s.tools?.length ? (
-                  <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>
+                  <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginTop: 4 }}>
                     {s.tools.length} tools
                   </div>
                 ) : null}

@@ -76,7 +76,7 @@ export function SessionActionsSheet({ session, onClose }: Props) {
           {busy === 'json' ? 'Preparing…' : 'Export as JSON'}
         </button>
       </div>
-      <p style={{ fontSize: 12, color: 'var(--text-faint)', margin: '12px 2px 0' }}>
+      <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', margin: '12px 2px 0' }}>
         Archiving hides a session from the list without deleting it. JSON export includes
         the system prompt and model settings; Markdown is just the transcript.
       </p>

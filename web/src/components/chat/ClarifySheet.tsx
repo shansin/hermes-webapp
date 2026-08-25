@@ -141,10 +141,10 @@ export function ClarifySheet() {
 
         return (
           <div key={key || index} style={{ marginBottom: 18 }}>
-            <p style={{ margin: '0 0 10px', fontSize: 15, lineHeight: 1.45 }}>{q.question}</p>
+            <p style={{ margin: '0 0 10px', fontSize: 'var(--type-body-lg)', lineHeight: 1.45 }}>{q.question}</p>
 
             {q.multiSelect && (
-              <p style={{ margin: '-4px 0 8px', fontSize: 12.5, color: 'var(--text-faint)' }}>
+              <p style={{ margin: '-4px 0 8px', fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>
                 Pick as many as apply.
               </p>
             )}

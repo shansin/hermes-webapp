@@ -21,6 +21,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Sheet } from './Sheet';
 import { IconCheck, IconSearch } from './Icons';
+import { SkeletonList } from './misc';
 import { buzz } from '../../lib/haptics';
 
 export interface MultiSelectOption {
@@ -109,16 +110,16 @@ export function MultiSelectSheet({
         />
       </div>
 
-      <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 10, lineHeight: 1.45 }}>
+      <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginBottom: 10, lineHeight: 1.45 }}>
         {selected.length === 0 ? emptyMeans : `${selected.length} selected.`}
       </div>
 
       {loading ? (
-        <div style={{ color: 'var(--text-faint)' }}>Loading…</div>
+        <SkeletonList n={4} h={40} />
       ) : options.length === 0 ? (
-        <div style={{ color: 'var(--text-faint)', fontSize: 13 }}>{emptyList}</div>
+        <div style={{ color: 'var(--text-faint)', fontSize: 'var(--type-detail)' }}>{emptyList}</div>
       ) : shown.length === 0 ? (
-        <div style={{ color: 'var(--text-faint)', fontSize: 13 }}>Nothing matches “{filter}”.</div>
+        <div style={{ color: 'var(--text-faint)', fontSize: 'var(--type-detail)' }}>Nothing matches “{filter}”.</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {shown.map((o) => {
@@ -146,7 +147,7 @@ export function MultiSelectSheet({
                   <span
                     style={{
                       display: 'block',
-                      fontSize: 14,
+                      fontSize: 'var(--type-body-md)',
                       color: on ? 'var(--accent)' : 'var(--text)',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
@@ -159,7 +160,7 @@ export function MultiSelectSheet({
                     <span
                       style={{
                         display: 'block',
-                        fontSize: 11.5,
+                        fontSize: 'var(--type-label-sm)',
                         color: 'var(--text-faint)',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
@@ -171,7 +172,7 @@ export function MultiSelectSheet({
                   )}
                 </span>
                 {o.meta && (
-                  <span style={{ fontSize: 11, color: 'var(--text-faint)', flexShrink: 0 }}>
+                  <span style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', flexShrink: 0 }}>
                     {o.meta}
                   </span>
                 )}

@@ -227,12 +227,12 @@ export function ProfileSheet({
           )}
         </div>
         {nameInvalid && (
-          <p style={{ fontSize: 12, color: 'var(--error)', margin: '0 2px 12px' }}>
+          <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--error)', margin: '0 2px 12px' }}>
             Lowercase letters, digits, dot, dash and underscore only.
           </p>
         )}
         {profile.is_default && (
-          <p style={{ fontSize: 11.5, color: 'var(--text-faint)', margin: '0 2px 12px' }}>
+          <p style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', margin: '0 2px 12px' }}>
             Renaming the default profile changes only how it is shown; its id stays
             <code> default</code>.
           </p>
@@ -263,7 +263,7 @@ export function ProfileSheet({
             {describeAuto.isPending ? 'Writing…' : 'Generate'}
           </button>
         </div>
-        <p style={{ fontSize: 11.5, color: 'var(--text-faint)', margin: '0 2px 14px', lineHeight: 1.45 }}>
+        <p style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', margin: '0 2px 14px', lineHeight: 1.45 }}>
           The kanban decomposer routes tasks on this text, so it is worth being specific about
           what the profile is <em>not</em> for as well.
         </p>
@@ -292,7 +292,7 @@ export function ProfileSheet({
             onOpen={() => setPickingSkills(true)}
             disabled={skills.isLoading || !skills.data}
           />
-          <p style={{ fontSize: 11.5, color: 'var(--text-faint)', margin: '6px 2px 0', lineHeight: 1.45 }}>
+          <p style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', margin: '6px 2px 0', lineHeight: 1.45 }}>
             Disabling leaves the skill installed; it just stops being loaded. That is why the
             list shows both numbers.
           </p>
@@ -302,7 +302,7 @@ export function ProfileSheet({
         {soul.isLoading ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0 14px' }}>
             <Loader size="sm" muted />
-            <span style={{ fontSize: 12.5, color: 'var(--text-faint)' }}>Loading…</span>
+            <span style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>Loading…</span>
           </div>
         ) : (
           <>
@@ -317,7 +317,7 @@ export function ProfileSheet({
                 resize: 'vertical',
                 marginBottom: 6,
                 fontFamily: 'var(--mono)',
-                fontSize: 12.5,
+                fontSize: 'var(--type-body-sm)',
                 lineHeight: 1.5,
               }}
             />
@@ -331,7 +331,7 @@ export function ProfileSheet({
             </button>
             <p
               style={{
-                fontSize: 11.5,
+                fontSize: 'var(--type-label-sm)',
                 color: 'var(--text-faint)',
                 margin: '0 2px 16px',
                 lineHeight: 1.45,

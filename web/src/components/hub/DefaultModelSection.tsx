@@ -50,7 +50,7 @@ export function DefaultModelSection() {
 
   return (
     <>
-      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
+      <div className="group-head">
         DEFAULT MODEL
       </div>
       <div className="card" style={{ marginBottom: 16 }}>
@@ -75,19 +75,19 @@ export function DefaultModelSection() {
             <div
               style={{
                 fontFamily: 'var(--mono)',
-                fontSize: 13.5,
+                fontSize: 'var(--type-detail)',
                 overflowWrap: 'anywhere',
               }}
             >
               {isLoading ? '…' : main?.model || 'Not set'}
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 2 }}>
+            <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginTop: 2 }}>
               {main?.provider ? `via ${main.provider}` : 'Hermes picks one automatically'}
             </div>
           </div>
-          <span style={{ fontSize: 13, color: 'var(--accent)' }}>Change</span>
+          <span style={{ fontSize: 'var(--type-detail)', color: 'var(--accent)' }}>Change</span>
         </button>
-        <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 9, lineHeight: 1.45 }}>
+        <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginTop: 9, lineHeight: 1.45 }}>
           Used by new chats, everywhere Hermes runs — including the terminal.
           The chat you have open keeps its own model; change that from the model
           button in the composer.
@@ -97,7 +97,7 @@ export function DefaultModelSection() {
       <Sheet open={open} onClose={() => setOpen(false)} title="Default model">
         {confirm ? (
           <div>
-            <div style={{ fontSize: 13.5, color: 'var(--text-dim)', lineHeight: 1.5, marginBottom: 14 }}>
+            <div style={{ fontSize: 'var(--type-detail)', color: 'var(--text-dim)', lineHeight: 1.5, marginBottom: 14 }}>
               {confirm.message}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -116,7 +116,7 @@ export function DefaultModelSection() {
           </div>
         ) : (
           <>
-            <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
+            <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
               Saved to Hermes' config and used by every new chat. Running chats
               are unaffected.
             </div>

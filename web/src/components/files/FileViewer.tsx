@@ -109,7 +109,7 @@ export function FileViewer({ path, onClose }: Props) {
         {file.isLoading && <Loader />}
 
         {file.error && (
-          <p style={{ color: 'var(--error)', fontSize: 13.5 }}>
+          <p style={{ color: 'var(--error)', fontSize: 'var(--type-detail)' }}>
             {file.error instanceof Error ? file.error.message : 'Could not read this file'}
           </p>
         )}
@@ -146,10 +146,10 @@ export function FileViewer({ path, onClose }: Props) {
               ) : image.data ? (
                 <img className="files__image" src={image.data.dataUrl} alt={basename(path)} />
               ) : (
-                <p style={{ color: 'var(--text-faint)', fontSize: 13 }}>Could not load the image.</p>
+                <p style={{ color: 'var(--text-faint)', fontSize: 'var(--type-detail)' }}>Could not load the image.</p>
               )
             ) : info.binary ? (
-              <p style={{ fontSize: 13.5, color: 'var(--text-dim)' }}>
+              <p style={{ fontSize: 'var(--type-detail)', color: 'var(--text-dim)' }}>
                 This is a binary file, so there's nothing readable to show.
               </p>
             ) : (
@@ -208,7 +208,7 @@ export function FileViewer({ path, onClose }: Props) {
           </>
         }
       >
-        <p style={{ fontSize: 13.5, color: 'var(--text-dim)', margin: 0 }}>
+        <p style={{ fontSize: 'var(--type-detail)', color: 'var(--text-dim)', margin: 0 }}>
           {basename(path)} has unsaved edits.
         </p>
       </Sheet>

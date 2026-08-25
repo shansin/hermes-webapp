@@ -101,7 +101,7 @@ export function ConfigSection() {
         })
       )}
 
-      <p style={{ fontSize: 12, color: 'var(--text-faint)', margin: '14px 2px 0', lineHeight: 1.5 }}>
+      <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', margin: '14px 2px 0', lineHeight: 1.5 }}>
         Read-only. A bad value here can stop Hermes starting, and there is no undo on a
         phone — edit <code>~/.hermes/config.yaml</code> where you can see it fail.
       </p>

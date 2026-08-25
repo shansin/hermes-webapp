@@ -57,7 +57,7 @@ export function ContextSheet({ open, onClose }: { open: boolean; onClose: () => 
   return (
     <Sheet open={open} onClose={onClose} title="Context window">
       <div style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 7, fontSize: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 7, fontSize: 'var(--type-body-md)' }}>
           <span style={{ color: 'var(--text-dim)' }}>
             {used.toLocaleString()} / {max.toLocaleString()} tokens
           </span>
@@ -109,15 +109,15 @@ export function ContextSheet({ open, onClose }: { open: boolean; onClose: () => 
               flexShrink: 0,
             }}
           />
-          <span style={{ flex: 1, fontSize: 14 }}>{c.label}</span>
-          <span style={{ color: 'var(--text-dim)', fontSize: 13.5, fontFamily: 'var(--mono)' }}>
+          <span style={{ flex: 1, fontSize: 'var(--type-body-md)' }}>{c.label}</span>
+          <span style={{ color: 'var(--text-dim)', fontSize: 'var(--type-detail)', fontFamily: 'var(--mono)' }}>
             {formatTokens(c.tokens)}
           </span>
         </div>
       ))}
 
       {usage && (
-        <div style={{ marginTop: 14, fontSize: 13, color: 'var(--text-faint)' }}>
+        <div style={{ marginTop: 14, fontSize: 'var(--type-detail)', color: 'var(--text-faint)' }}>
           {usage.calls != null && <div>API calls this session: {usage.calls}</div>}
           {usage.compressions ? <div>Compactions: {usage.compressions}</div> : null}
           {usage.model && <div>Model: {usage.model}</div>}

@@ -96,7 +96,7 @@ export function ActivityScreen() {
           role="status"
           style={{
             padding: '8px 14px',
-            fontSize: 12,
+            fontSize: 'var(--type-body-sm)',
             color: 'var(--warn)',
             borderBottom: '1px solid var(--border-soft)',
           }}

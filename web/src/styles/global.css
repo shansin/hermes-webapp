@@ -95,6 +95,27 @@
   --type-label-md: 12px;
   --type-label-sm: 11px;
 
+  /* Two sizes M3 does not name, both load-bearing here. `detail` is the dense
+     secondary line that fills the hub tabs — 13px, between body-sm and
+     body-md, and the single most common size in the app. `micro` is the
+     meta/badge size under label-sm. Named rather than left as bare numbers,
+     which is how the app ended up with 11.5 / 12.5 / 13.5 / 14.5 all in use
+     at once, none of them a decision anyone made. */
+  --type-detail: 13px;
+  --type-micro: 10.5px;
+
+  /* --- spacing -----------------------------------------------------------
+     A 4px grid. Existing gaps and paddings are off it (7, 9, 11px 13px) —
+     the result of every one being chosen locally. New rules use these;
+     old ones move over when the surrounding code is touched anyway, not in
+     a sweep that would reflow every screen at once for no visible gain. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 }
 
@@ -789,6 +810,20 @@ button.header__sub::after {
   color: var(--text-faint);
 }
 
+.empty--compact {
+  gap: var(--space-1);
+  padding: var(--space-4) var(--space-2);
+}
+
+.empty--compact .empty__icon {
+  font-size: 20px;
+}
+
+.empty--compact .empty__title {
+  font-weight: 550;
+  font-size: var(--type-body-sm);
+}
+
 .empty__icon {
   font-size: 40px;
   opacity: 0.5;
@@ -835,6 +870,15 @@ button.header__sub::after {
   background: var(--error);
   border-color: var(--error);
   color: #fff;
+}
+
+/* A button that has asked a question and is waiting for the answer. Warn
+   rather than error: the action is not destructive, it is permanent. */
+.btn--armed {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #000;
+  font-weight: 650;
 }
 
 .btn--ghost {
@@ -1118,9 +1162,20 @@ button.header__sub::after {
   .skeleton {
     animation: none;
   }
-  * {
+  /*
+    The iteration count is the half that is usually forgotten, and it is the
+    half that matters. Collapsing the duration alone leaves every `infinite`
+    animation in the app — the record button's pulse, the spinner, the loader,
+    the live-card dot — running flat out at 0.01ms a cycle: still moving, in
+    the jittery way reduced-motion exists to prevent, and burning a phone's
+    battery to do it. Pinned to one iteration, they settle on their end state
+    and stop.
+  */
+  *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -1309,6 +1364,32 @@ button.header__sub::after {
 
 /* --- pull to refresh ------------------------------------------------------ */
 
+/*
+  One way to head a group of rows.
+  Sessions, Skills and the hub tabs each grew their own — an inline-styled
+  uppercase caption, three sizes and two weights between them, all trying to
+  be the same thing. This is that thing.
+*/
+.group-head {
+  font-size: var(--type-label-sm);
+  font-weight: 650;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--space-2);
+}
+
+/* Sticky where the group is a run of rows in a long scroller, so the label of
+   the block you are inside stays readable while you are inside it. */
+.group-head--sticky {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+  padding: var(--space-2) 0 var(--space-1);
+  margin-bottom: var(--space-1);
+}
+
 .ptr {
   display: grid;
   place-items: center;
@@ -1316,6 +1397,12 @@ button.header__sub::after {
   color: var(--text-faint);
   font-size: 12px;
   transition: height 0.18s ease;
+}
+
+/* `.chat__list` is a gapped flex column, so the pull spacer would otherwise
+   sit 12px below the first row even at rest. */
+.chat__list > .ptr {
+  margin-bottom: -12px;
 }
 
 .spin {
@@ -1802,12 +1889,6 @@ button.header__sub::after {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.lane__empty {
-  font-size: 12px;
-  color: var(--text-faint);
-  padding: 6px 2px;
 }
 
 /* Advance and delete for a mouse. Hidden by default and revealed on hover,

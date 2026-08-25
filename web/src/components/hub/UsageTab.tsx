@@ -151,7 +151,7 @@ function RankRow({
           style={{ width: `${Math.max(2, share * 100)}%`, marginTop: 4, background: color }}
         />
         {meta && (
-          <div style={{ fontSize: 10.5, color: 'var(--text-faint)', marginTop: 3 }}>{meta}</div>
+          <div style={{ fontSize: 'var(--type-micro)', color: 'var(--text-faint)', marginTop: 3 }}>{meta}</div>
         )}
       </td>
       <td>{value}</td>
@@ -170,9 +170,9 @@ function Card({
 }) {
   return (
     <div className="card" style={{ marginBottom: 12 }}>
-      <div style={{ fontWeight: 600, fontSize: 14.5 }}>{title}</div>
+      <div style={{ fontWeight: 600, fontSize: 'var(--type-body-md)' }}>{title}</div>
       {hint && (
-        <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginTop: 2, lineHeight: 1.45 }}>
+        <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginTop: 2, lineHeight: 1.45 }}>
           {hint}
         </div>
       )}
@@ -181,7 +181,7 @@ function Card({
   );
 }
 
-const NOTHING = <div style={{ color: 'var(--text-faint)', fontSize: 13 }}>Nothing recorded.</div>;
+const NOTHING = <div style={{ color: 'var(--text-faint)', fontSize: 'var(--type-detail)' }}>Nothing recorded.</div>;
 
 export function UsageTab() {
   const [days, setDays] = useState<Period>(1);
@@ -323,10 +323,10 @@ export function UsageTab() {
 
         {/* --- the chart --- */}
         <div className="card" style={{ margin: '12px 0' }}>
-          <div style={{ fontWeight: 600, fontSize: 14.5 }}>
+          <div style={{ fontWeight: 600, fontSize: 'var(--type-body-md)' }}>
             {days === 1 ? 'Tokens by hour' : 'Tokens per day'}
           </div>
-          <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginTop: 2, lineHeight: 1.45 }}>
+          <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginTop: 2, lineHeight: 1.45 }}>
             {days === 1
               ? 'Last 24 hours, local time. A conversation counts in the hour it started, so a tall bar can be one long session.'
               : `Last ${Math.min(days, 14)} days, UTC — the backend groups by UTC date, so a late-night session may land on the next bar.`}
@@ -339,7 +339,7 @@ export function UsageTab() {
               ) : window.error ? (
                 <ErrorNote error={window.error} />
               ) : hourly.every((b) => b.total === 0) ? (
-                <div style={{ color: 'var(--text-faint)', fontSize: 13 }}>
+                <div style={{ color: 'var(--text-faint)', fontSize: 'var(--type-detail)' }}>
                   Nothing in the last 24 hours.
                 </div>
               ) : (
@@ -391,7 +391,7 @@ export function UsageTab() {
             ) : usage.isLoading ? (
               <SkeletonList n={1} h={170} />
             ) : daily.length === 0 ? (
-              <div style={{ color: 'var(--text-faint)', fontSize: 13 }}>No usage recorded yet.</div>
+              <div style={{ color: 'var(--text-faint)', fontSize: 'var(--type-detail)' }}>No usage recorded yet.</div>
             ) : (
               <>
                 {/* Identity is never colour-alone: two series, so a legend. */}
@@ -400,7 +400,7 @@ export function UsageTab() {
                     <span className="viz-legend__item" key={s.key}>
                       <span className="viz-swatch" style={{ background: s.color }} />
                       {s.label}
-                      <span style={{ color: 'var(--text-faint)', fontSize: 10.5 }}>
+                      <span style={{ color: 'var(--text-faint)', fontSize: 'var(--type-micro)' }}>
                         {s.axis === 'left' ? '(left)' : '(right)'}
                       </span>
                     </span>

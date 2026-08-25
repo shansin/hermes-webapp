@@ -57,7 +57,7 @@ export function ToolsetsSection() {
 
   return (
     <div style={{ padding: 12 }}>
-      <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
+      <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
         {on} of {data.length} on. Turning one off takes its tools away from every new
         turn — the agent stops being able to do that thing, rather than being asked not to.
       </div>
@@ -96,7 +96,7 @@ export function ToolsetsSection() {
       <Sheet open={detail != null} title={detail?.label} onClose={() => setDetail(null)}>
         {detail && (
           <>
-            <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+            <div style={{ fontSize: 'var(--type-detail)', color: 'var(--text-dim)', lineHeight: 1.5 }}>
               <code>{detail.name}</code> · {detail.platform_label}
             </div>
             <div className="tool-group__head" style={{ marginTop: 14 }}>
@@ -110,7 +110,7 @@ export function ToolsetsSection() {
               ))}
             </div>
             {!detail.configured && (
-              <p style={{ fontSize: 12.5, color: 'var(--text-faint)', marginTop: 14, lineHeight: 1.5 }}>
+              <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginTop: 14, lineHeight: 1.5 }}>
                 This set is missing configuration — usually an API key in the environment.
                 The switch will not fix that; set the value where Hermes reads its
                 environment and it becomes available.

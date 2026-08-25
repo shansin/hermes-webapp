@@ -160,7 +160,7 @@ export function ProfilesTab() {
       {switchTo.isPending && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
           <Loader size="sm" muted />
-          <span style={{ fontSize: 12.5, color: 'var(--text-faint)' }}>
+          <span style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>
             Reloading config, skills, memory and cron…
           </span>
         </div>
@@ -204,7 +204,7 @@ export function ProfilesTab() {
                       {p.name}
                     </span>
                     {p.is_default && (
-                      <span style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>default</span>
+                      <span style={{ fontSize: 'var(--type-micro)', color: 'var(--text-faint)' }}>default</span>
                     )}
                     {/* Green dot = this profile's gateway process is up. */}
                     <span
@@ -220,7 +220,7 @@ export function ProfilesTab() {
                   </div>
 
                   {p.description && (
-                    <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginTop: 3 }}>
+                    <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-dim)', marginTop: 3 }}>
                       {p.description}
                     </div>
                   )}
@@ -253,7 +253,7 @@ export function ProfilesTab() {
                         {enabledSkills[p.name] === 1 ? '' : 's'} enabled
                       </span>
                     ) : (
-                      <span style={{ opacity: 0.5 }}>counting skills…</span>
+                      <span className="skeleton" style={{ display: 'inline-block', width: 96, height: '0.9em', verticalAlign: 'text-bottom', borderRadius: 4 }} />
                     )}
                   </div>
                 </button>
@@ -321,7 +321,7 @@ export function ProfilesTab() {
           style={{ width: '100%', marginBottom: nameError ? 4 : 12 }}
         />
         {nameError && (
-          <p style={{ fontSize: 12, color: 'var(--error)', margin: '0 2px 12px' }}>{nameError}</p>
+          <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--error)', margin: '0 2px 12px' }}>{nameError}</p>
         )}
 
         <label className="field-label">Description</label>
@@ -347,7 +347,7 @@ export function ProfilesTab() {
             </option>
           ))}
         </select>
-        <p style={{ fontSize: 12, color: 'var(--text-faint)', margin: '10px 2px 14px' }}>
+        <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', margin: '10px 2px 14px' }}>
           Cloning copies the source profile's configuration and skills as a starting point.
         </p>
 
@@ -396,7 +396,7 @@ export function ProfilesTab() {
             </button>
           )}
         </div>
-        <p style={{ fontSize: 12, color: 'var(--text-faint)', margin: '0 2px 14px' }}>
+        <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', margin: '0 2px 14px' }}>
           Pinned to this profile, so switching to it switches model too.
         </p>
 
@@ -412,7 +412,7 @@ export function ProfilesTab() {
         >
           <span style={{ flex: 1 }}>
             Install the default skills
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--text-faint)' }}>
+            <span style={{ display: 'block', fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>
               Off gives an empty profile to build up deliberately.
             </span>
           </span>
@@ -430,7 +430,7 @@ export function ProfilesTab() {
         >
           <span style={{ flex: 1 }}>
             Switch to it now
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--text-faint)' }}>
+            <span style={{ display: 'block', fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>
               Reloads config, skills, memory and cron.
             </span>
           </span>
@@ -481,7 +481,7 @@ export function ProfilesTab() {
           </>
         }
       >
-        <p style={{ fontSize: 13.5, color: 'var(--text-dim)', margin: 0 }}>
+        <p style={{ fontSize: 'var(--type-detail)', color: 'var(--text-dim)', margin: 0 }}>
           This removes the profile's whole configuration directory — its skills, memory and
           cron jobs go with it. Sessions created under it are not deleted. This cannot be
           undone.

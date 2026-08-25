@@ -101,7 +101,7 @@ export const TaskCard = memo(function TaskCard({
           padding: '0 16px',
           background: dx < 0 ? 'var(--error)' : 'var(--ok)',
           color: '#fff',
-          fontSize: 13,
+          fontSize: 'var(--type-detail)',
           fontWeight: 600,
           opacity: Math.min(1, Math.abs(dx) / COMMIT_PX),
         }}
@@ -174,12 +174,12 @@ export const TaskCard = memo(function TaskCard({
           </button>
         </div>
 
-        <div style={{ fontWeight: 550, fontSize: 14.5, lineHeight: 1.35 }}>{task.title}</div>
+        <div style={{ fontWeight: 550, fontSize: 'var(--type-body-md)', lineHeight: 1.35 }}>{task.title}</div>
 
         {task.latest_summary && (
           <div
             style={{
-              fontSize: 12.5,
+              fontSize: 'var(--type-body-sm)',
               color: 'var(--text-dim)',
               marginTop: 5,
               display: '-webkit-box',
@@ -197,7 +197,7 @@ export const TaskCard = memo(function TaskCard({
             display: 'flex',
             gap: 9,
             marginTop: 8,
-            fontSize: 11.5,
+            fontSize: 'var(--type-label-sm)',
             color: 'var(--text-faint)',
             alignItems: 'center',
             flexWrap: 'wrap',

@@ -40,7 +40,7 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
     <Sheet open={open} onClose={onClose} title="Model & behavior">
       {/* Reasoning effort */}
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginBottom: 7, fontWeight: 600 }}>
+        <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginBottom: 7, fontWeight: 600 }}>
           REASONING EFFORT
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -67,7 +67,7 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
 
       {/* Approval mode */}
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginBottom: 7, fontWeight: 600 }}>
+        <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginBottom: 7, fontWeight: 600 }}>
           TOOL APPROVALS
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -93,7 +93,7 @@ export function ModelSheet({ open, onClose }: { open: boolean; onClose: () => vo
       </div>
 
       {/* Models */}
-      <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginBottom: 7, fontWeight: 600 }}>
+      <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginBottom: 7, fontWeight: 600 }}>
         MODEL
       </div>
 

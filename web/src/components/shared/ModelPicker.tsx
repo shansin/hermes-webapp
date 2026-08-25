@@ -124,14 +124,14 @@ export function ModelPicker({
           {refreshing ? 'Probing…' : 'Refresh'}
         </button>
       </div>
-      <p style={{ fontSize: 11.5, color: 'var(--text-faint)', margin: '0 2px 12px', lineHeight: 1.45 }}>
+      <p style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', margin: '0 2px 12px', lineHeight: 1.45 }}>
         A custom endpoint that is not the current provider is listed from cache. Refresh to
         re-probe it — takes a moment, and waits on hosts that may be asleep.
       </p>
 
       {isLoading && <div style={{ color: 'var(--text-faint)' }}>Loading models…</div>}
       {error && (
-        <div style={{ color: 'var(--error)', fontSize: 13.5 }}>
+        <div style={{ color: 'var(--error)', fontSize: 'var(--type-detail)' }}>
           {error instanceof Error ? error.message : 'Could not load models'}
         </div>
       )}
@@ -140,7 +140,7 @@ export function ModelPicker({
         <div key={p.slug} style={{ marginBottom: 14 }}>
           <div
             style={{
-              fontSize: 12,
+              fontSize: 'var(--type-body-sm)',
               color: 'var(--text-dim)',
               fontWeight: 600,
               marginBottom: 6,
@@ -171,14 +171,14 @@ export function ModelPicker({
                     background: active ? 'var(--accent-soft)' : 'var(--bg-elev-2)',
                     border: `1px solid ${active ? 'var(--accent)' : 'var(--border-soft)'}`,
                     color: active ? 'var(--accent)' : 'var(--text)',
-                    fontSize: 14,
+                    fontSize: 'var(--type-body-md)',
                     textAlign: 'left',
                     fontFamily: 'var(--mono)',
                   }}
                 >
                   <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{m}</span>
                   {p.capabilities?.[m]?.reasoning && (
-                    <span style={{ fontSize: 10.5, color: 'var(--text-faint)' }}>reasoning</span>
+                    <span style={{ fontSize: 'var(--type-micro)', color: 'var(--text-faint)' }}>reasoning</span>
                   )}
                   {active && <IconCheck size={15} />}
                 </button>

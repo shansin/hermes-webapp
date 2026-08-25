@@ -60,22 +60,34 @@ export function SkeletonList({ n = 5, h = 60 }: { n?: number; h?: number }) {
   );
 }
 
+/**
+ * The app's one empty state.
+ *
+ * `compact` is the same thing scaled for a slot rather than a screen — a
+ * kanban lane in the wide layout, where the full version's 48px of padding
+ * would push the neighbouring lanes' cards out of alignment. It exists so
+ * that a lane can stop rendering its own private "Empty" caption, which was
+ * how the same board came to say two different things about the same
+ * condition depending on the width of the window.
+ */
 export function Empty({
   icon = '·',
   title,
   hint,
   action,
+  compact = false,
 }: {
   icon?: ReactNode;
   title: string;
   hint?: string;
   action?: ReactNode;
+  compact?: boolean;
 }) {
   return (
-    <div className="empty">
+    <div className={`empty${compact ? ' empty--compact' : ''}`}>
       <div className="empty__icon">{icon}</div>
       <div className="empty__title">{title}</div>
-      {hint && <div style={{ fontSize: 13.5, maxWidth: 300 }}>{hint}</div>}
+      {hint && <div style={{ fontSize: 'var(--type-detail)', maxWidth: 300 }}>{hint}</div>}
       {action}
     </div>
   );
@@ -89,7 +101,7 @@ export function ErrorNote({ error }: { error: unknown }) {
         !
       </div>
       <div className="empty__title">Couldn't load</div>
-      <div style={{ fontSize: 13.5, maxWidth: 320 }}>{msg}</div>
+      <div style={{ fontSize: 'var(--type-detail)', maxWidth: 320 }}>{msg}</div>
     </div>
   );
 }

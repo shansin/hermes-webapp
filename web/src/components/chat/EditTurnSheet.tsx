@@ -56,7 +56,7 @@ export function EditTurnSheet({ turn, onClose, onSubmit }: Props) {
         rows={6}
         style={{ width: '100%', resize: 'vertical', lineHeight: 1.45 }}
       />
-      <p style={{ fontSize: 12.5, color: 'var(--text-faint)', margin: '10px 2px 0' }}>
+      <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', margin: '10px 2px 0' }}>
         Resending rewinds the conversation — this message and everything after it are
         removed, then the edited version runs in their place.
       </p>

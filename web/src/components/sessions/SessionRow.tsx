@@ -189,7 +189,7 @@ export const SessionRowItem = memo(function SessionRowItem({
           />
         )}
 
-        <span style={{ fontSize: 16, flexShrink: 0, width: 20, textAlign: 'center' }}>
+        <span style={{ fontSize: 'var(--type-body-lg)', flexShrink: 0, width: 20, textAlign: 'center' }}>
           {SOURCE_ICON[session.source ?? ''] ?? '·'}
         </span>
 
@@ -197,7 +197,7 @@ export const SessionRowItem = memo(function SessionRowItem({
           <span
             aria-label="Pinned"
             title="Pinned"
-            style={{ color: 'var(--accent)', fontSize: 13, flexShrink: 0 }}
+            style={{ color: 'var(--accent)', fontSize: 'var(--type-detail)', flexShrink: 0 }}
           >
             ★
           </span>
@@ -265,7 +265,7 @@ export const SessionRowItem = memo(function SessionRowItem({
           </div>
         </div>
 
-        <span style={{ fontSize: 11.5, color: 'var(--text-faint)', flexShrink: 0 }}>
+        <span style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', flexShrink: 0 }}>
           {relTime(session.started_at)}
         </span>
 

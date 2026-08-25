@@ -86,7 +86,7 @@ export function AuxiliaryModelSection() {
 
   return (
     <>
-      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
+      <div className="group-head">
         AUXILIARY MODEL
       </div>
       <div className="card" style={{ marginBottom: 16 }}>
@@ -108,16 +108,16 @@ export function AuxiliaryModelSection() {
           }}
         >
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: 'var(--mono)', fontSize: 13.5, overflowWrap: 'anywhere' }}>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 'var(--type-detail)', overflowWrap: 'anywhere' }}>
               {summary}
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 2 }}>
+            <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginTop: 2 }}>
               {isLoading ? '' : detail}
             </div>
           </div>
-          <span style={{ fontSize: 13, color: 'var(--accent)' }}>Change</span>
+          <span style={{ fontSize: 'var(--type-detail)', color: 'var(--accent)' }}>Change</span>
         </button>
-        <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 9, lineHeight: 1.45 }}>
+        <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginTop: 9, lineHeight: 1.45 }}>
           Titles, image reading, approval checks, context compression and the
           rest. Pointing these at a small model keeps them off your main one —
           the Usage tab shows what they cost.
@@ -127,7 +127,7 @@ export function AuxiliaryModelSection() {
       <Sheet open={open} onClose={() => setOpen(false)} title="Auxiliary model">
         {confirm ? (
           <div>
-            <div style={{ fontSize: 13.5, color: 'var(--text-dim)', lineHeight: 1.5, marginBottom: 14 }}>
+            <div style={{ fontSize: 'var(--type-detail)', color: 'var(--text-dim)', lineHeight: 1.5, marginBottom: 14 }}>
               {confirm.message}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -146,7 +146,7 @@ export function AuxiliaryModelSection() {
           </div>
         ) : (
           <>
-            <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
+            <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
               Applies to all {tasks.length || 'the'} auxiliary tasks at once, and
               is saved to Hermes' config.
             </div>
