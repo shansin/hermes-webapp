@@ -7,10 +7,30 @@ import { api } from './client';
 
 // --- skills ------------------------------------------------------------------
 
+/**
+ * Add `?profile=` to a path, or leave it alone.
+ *
+ * Every profile-scoped Hermes endpoint takes the name this way, and an omitted
+ * parameter is never "no profile" — it is "whichever profile happens to be
+ * active", which is the wrong one exactly when you are looking at another
+ * profile's screen and cannot see that you are. Hence a named helper with a
+ * test rather than a template string at each call site.
+ */
+export function withProfile(path: string, profile?: string | null): string {
+  if (!profile) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}profile=${encodeURIComponent(profile)}`;
+}
+
 export interface Skill {
   name: string;
   description: string;
-  category: string;
+  /**
+   * Null on skills the agent wrote itself — Hermes only fills a category in
+   * for the bundled set. Anything grouping or rendering this has to survive
+   * that; `SkillsTab` did not, and one such skill blanked the whole app.
+   */
+  category: string | null;
   enabled: boolean;
   usage: number;
   provenance: string;
@@ -33,8 +53,7 @@ export interface Skill {
 export function useSkills(profile?: string | null, enabled = true) {
   return useQuery({
     queryKey: profile ? ['skills', profile] : ['skills'],
-    queryFn: () =>
-      api.get<Skill[]>(profile ? `/api/skills?profile=${encodeURIComponent(profile)}` : '/api/skills'),
+    queryFn: () => api.get<Skill[]>(withProfile('/api/skills', profile)),
     staleTime: 30_000,
     enabled,
   });
@@ -70,26 +89,42 @@ export interface HubSkill {
   name: string;
   description?: string;
   source?: string;
+  /**
+   * What install actually takes — `skills-sh/anthropics/skills/pdf`, not the
+   * bare name. One search for `pdf` returns the same `name` from three
+   * different repos, so the name identifies nothing: it is the display label
+   * and this is the address.
+   */
+  identifier?: string;
+  repo?: string;
   installed?: boolean;
 }
 
-export function useSkillHubSearch(q: string) {
+/**
+ * @param profile which profile's hub to search. It decides where a subsequent
+ *   install lands, and the `installed` flags come back relative to it.
+ */
+export function useSkillHubSearch(q: string, profile?: string | null) {
   const query = q.trim();
   return useQuery({
-    queryKey: ['skills', 'hub', query],
+    queryKey: profile ? ['skills', 'hub', query, profile] : ['skills', 'hub', query],
     queryFn: () =>
       api.get<{ results?: HubSkill[]; skills?: HubSkill[] }>(
-        `/api/skills/hub/search?q=${encodeURIComponent(query)}`,
+        withProfile(`/api/skills/hub/search?q=${encodeURIComponent(query)}`, profile),
       ),
     enabled: query.length >= 2,
   });
 }
 
+/**
+ * The body field is `identifier`, and the endpoint rejects anything else —
+ * this used to post `{ name, source }`, which is a 422 every time.
+ */
 export function useInstallSkill() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; source?: string }) =>
-      api.post('/api/skills/hub/install', body),
+    mutationFn: ({ identifier, profile }: { identifier: string; profile?: string | null }) =>
+      api.post(withProfile('/api/skills/hub/install', profile), { identifier }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['skills'] }),
   });
 }
@@ -166,20 +201,14 @@ export interface CronJob {
 }
 
 /**
- * Add `?profile=` to a cron URL, or leave it alone.
- *
- * Every cron endpoint takes the profile as a query parameter, and the default
- * differs per endpoint in a way that matters: the *list* defaults to `all`
- * (every profile's jobs, merged), while create and the per-job actions default
- * to whichever profile happens to be active. So an omitted parameter is not
- * one behaviour, it is two — which is why this is a named helper with a test
- * rather than a template string at each call site.
+ * `withProfile` under the name the cron screen calls it, kept because the cron
+ * defaults are the sharpest case of why the parameter is never optional in
+ * practice: the *list* endpoint defaults to `all` (every profile's jobs,
+ * merged) while create and the per-job actions default to whichever profile
+ * happens to be active. So an omitted parameter there is not one behaviour,
+ * it is two.
  */
-export function cronUrl(path: string, profile?: string | null): string {
-  if (!profile) return path;
-  const sep = path.includes('?') ? '&' : '?';
-  return `${path}${sep}profile=${encodeURIComponent(profile)}`;
-}
+export const cronUrl = withProfile;
 
 /**
  * Every profile's jobs at once — which is the server's default, and worth

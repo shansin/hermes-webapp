@@ -1,4 +1,14 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+  type QueryKey,
+} from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { api } from './client';
 
 export interface SessionRow {
@@ -120,6 +130,8 @@ export const sessionKeys = {
   all: ['sessions'] as const,
   list: (limit: number, archived: ArchivedFilter = 'exclude', profile?: string | null) =>
     ['sessions', 'list', limit, archived, profile ?? null] as const,
+  pages: (archived: ArchivedFilter = 'exclude', profile?: string | null) =>
+    ['sessions', 'pages', archived, profile ?? null] as const,
   detail: (id: string, profile?: string | null) =>
     ['sessions', 'detail', id, profile ?? null] as const,
   messages: (id: string, profile?: string | null) =>
@@ -162,6 +174,124 @@ export function useSessions(
 }
 
 /**
+ * The sessions screen's list, one page at a time.
+ *
+ * The endpoint caps `limit` at 100 and the screen asked for exactly that once,
+ * with no way to ask again — so a machine past its hundredth conversation had
+ * older ones that existed, were counted in the header's total, and could not
+ * be reached from any screen in the app. Search found them; nothing else did.
+ *
+ * Pages are 100 rows, which is the cap and also what the screen already loaded
+ * on open, so first paint costs exactly what it did before and the only change
+ * is that there is now a second page to ask for.
+ *
+ * Offset paging over a list ordered by recency has the usual hazard: a session
+ * created between two fetches shifts every row down one, so a page boundary
+ * can repeat a row or skip one. Repeats are deduplicated on the way out — a
+ * duplicate React key is a real bug, where a row briefly missing until the
+ * next refetch is not.
+ */
+export function useSessionPages(
+  archived: ArchivedFilter = 'exclude',
+  profile?: string | null,
+) {
+  const query = useInfiniteQuery({
+    queryKey: sessionKeys.pages(archived, profile),
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      api.get<SessionList>(
+        sessionUrl(
+          `/api/sessions?limit=${MAX_SESSION_LIMIT}&offset=${pageParam}&archived=${archived}`,
+          profile,
+        ),
+      ),
+    /**
+     * A short page is the end of the list, and it is the only end signal
+     * trusted here: `total` counts what the backend has, which after the
+     * screen's own optimistic delete is not what it just returned. Paging on
+     * a stale total asks for an offset past the end and gets an empty page
+     * that reads as "no more" anyway — but only after a wasted round trip.
+     */
+    getNextPageParam: (last, all) =>
+      (last.sessions?.length ?? 0) < MAX_SESSION_LIMIT
+        ? undefined
+        : all.reduce((n, p) => n + (p.sessions?.length ?? 0), 0),
+    staleTime: 15_000,
+  });
+
+  const data = useMemo(() => {
+    if (!query.data) return undefined;
+    const seen = new Set<string>();
+    const sessions: SessionRow[] = [];
+    for (const page of query.data.pages) {
+      for (const row of page.sessions ?? []) {
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        sessions.push(row);
+      }
+    }
+    return { sessions, total: query.data.pages[0]?.total ?? sessions.length };
+  }, [query.data]);
+
+  return {
+    data,
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    hasMore: query.hasNextPage,
+    loadingMore: query.isFetchingNextPage,
+    loadMore: query.fetchNextPage,
+  };
+}
+
+/** What `hideSessions` hands back, to be given to `restoreSessions`. */
+export type SessionCacheSnapshot = [QueryKey, unknown][];
+
+/**
+ * Take rows out of every cached session list, and remember how it was.
+ *
+ * The undo toasts hide a row before the delete is sent (see `lib/undo.ts`), so
+ * something has to edit the cache in place. It lives here rather than in the
+ * screen because there are now two shapes under the `['sessions']` prefix —
+ * the plain lists and the paged list's `{ pages: [...] }` — and a setter that
+ * knew about only one of them silently did nothing to the other. That failure
+ * is invisible: the delete still happens, the row just does not disappear
+ * until the next refetch, which looks like the tap missing.
+ */
+export function hideSessions(
+  qc: QueryClient,
+  ids: ReadonlySet<string>,
+): SessionCacheSnapshot {
+  const snapshot = qc.getQueriesData({ queryKey: sessionKeys.all });
+
+  const drop = (rows: SessionRow[] | undefined) =>
+    rows ? rows.filter((s) => !ids.has(s.id)) : rows;
+
+  qc.setQueriesData({ queryKey: sessionKeys.all }, (old: unknown) => {
+    if (!old || typeof old !== 'object') return old;
+    if (Array.isArray((old as SessionList).sessions)) {
+      const list = old as SessionList;
+      return { ...list, sessions: drop(list.sessions) };
+    }
+    const infinite = old as InfiniteData<SessionList>;
+    if (Array.isArray(infinite.pages)) {
+      return {
+        ...infinite,
+        pages: infinite.pages.map((p) => ({ ...p, sessions: drop(p.sessions) ?? [] })),
+      };
+    }
+    return old;
+  });
+
+  return snapshot;
+}
+
+/** Put back exactly what `hideSessions` found, whatever shape it was. */
+export function restoreSessions(qc: QueryClient, snapshot: SessionCacheSnapshot): void {
+  for (const [key, data] of snapshot) qc.setQueryData(key, data);
+}
+
+/**
  * Sessions ordered by latest activity, for the Activity pane.
  *
  * `order=recent` is the point: a session with work in flight is by definition
@@ -170,21 +300,43 @@ export function useSessions(
  * `hermes_cli/web_routers/sessions.py`), so a small recent page is both
  * cheaper and more reliable than a large one ordered by creation.
  *
- * `refetchInterval` is a function of the data: once nothing is active there is
- * nothing to watch, and an idle phone should not poll for ever. A running turn
- * updates its progress line every few seconds, so 5s is what makes the
- * iteration counter move.
+ * `refetchInterval` is a function of the data and of the socket — see
+ * `activePollMs`.
  */
-export function useActiveSessions(limit = 25, enabled = true) {
+export function useActiveSessions(limit = 25, enabled = true, socketLive = false) {
   const capped = Math.min(limit, MAX_SESSION_LIMIT);
   return useQuery({
     queryKey: ['sessions', 'recent', capped],
     enabled,
     queryFn: () => api.get<SessionList>(`/api/sessions?limit=${capped}&order=recent&archived=exclude`),
     staleTime: 2_000,
-    refetchInterval: (q) =>
-      (q.state.data?.sessions ?? []).some((s) => s.is_active && !s.ended_at) ? 5_000 : 30_000,
+    refetchInterval: (q) => activePollMs(q.state.data, socketLive),
   });
+}
+
+/**
+ * How often to ask again, given what came back and whether the socket is up.
+ *
+ * Three cases, and the middle one is new.
+ *
+ *  - Nothing active: 30s. There is nothing to watch and an idle phone should
+ *    not poll for ever.
+ *  - Something active, socket open: 15s. Every event that changes this picture
+ *    — a turn starting or ending, a delegation, a cron nudge — already
+ *    invalidates these queries the moment it arrives (`lib/useActivity.ts`),
+ *    so the poll is not what makes the pane move; it is the backstop for work
+ *    that started while the app was closed and for the progress counters,
+ *    which tick without emitting an event. At six profiles the old rate was
+ *    twelve requests a minute to re-fetch a picture the socket had already
+ *    corrected.
+ *  - Something active, no socket: 5s, unchanged. With nothing invalidating
+ *    early the poll *is* the liveness, and this is the case the 5s was chosen
+ *    for in the first place.
+ */
+function activePollMs(data: SessionList | undefined, socketLive: boolean): number {
+  const active = (data?.sessions ?? []).some((s) => s.is_active && !s.ended_at);
+  if (!active) return 30_000;
+  return socketLive ? 15_000 : 5_000;
 }
 
 /**
@@ -219,6 +371,8 @@ export function useActiveSessionsAcrossProfiles(
   profiles: readonly string[],
   limit = 25,
   enabled = true,
+  /** Whether the gateway socket is open and invalidating these queries. */
+  socketLive = false,
 ): { sessions: SessionRow[]; isLoading: boolean; error: unknown; truncated: number } {
   const capped = Math.min(limit, MAX_SESSION_LIMIT);
   /**
@@ -242,7 +396,7 @@ export function useActiveSessionsAcrossProfiles(
         ),
       staleTime: 2_000,
       refetchInterval: (q: { state: { data?: SessionList } }) =>
-        (q.state.data?.sessions ?? []).some((s) => s.is_active && !s.ended_at) ? 5_000 : 30_000,
+        activePollMs(q.state.data, socketLive),
     })),
   });
 
@@ -341,9 +495,14 @@ export function useSessionsSince(since: number, enabled = true) {
  * would otherwise sit on its "New chat" placeholder. Returns null when the
  * session has no title yet or the lookup fails; the caller keeps its fallback.
  */
-export async function fetchSessionTitle(id: string): Promise<string | null> {
+export async function fetchSessionTitle(
+  id: string,
+  profile?: string | null,
+): Promise<string | null> {
   try {
-    const row = await api.get<Partial<SessionRow>>(`/api/sessions/${encodeURIComponent(id)}`);
+    const row = await api.get<Partial<SessionRow>>(
+      sessionUrl(`/api/sessions/${encodeURIComponent(id)}`, profile),
+    );
     return row.title ?? null;
   } catch {
     return null;
@@ -382,6 +541,19 @@ export function useSessionMessages(id: string | null, profile?: string | null) {
         sessionUrl(`/api/sessions/${encodeURIComponent(id!)}/messages`, profile),
       ),
     enabled: Boolean(id),
+    /**
+     * A stored transcript is not a live one.
+     *
+     * On the 10s default this refetched a whole conversation's messages every
+     * time the tab regained focus or the component remounted — over the same
+     * URL Workbox serves StaleWhileRevalidate, so each of those was two
+     * fetches: the cached copy handed straight back, then a network round trip
+     * behind it, for a document that had not changed. New messages in a
+     * session being watched arrive over the socket and land in `store/session`,
+     * not here; this is the *stored* copy, which only moves when a turn
+     * completes.
+     */
+    staleTime: 60_000,
   });
 }
 

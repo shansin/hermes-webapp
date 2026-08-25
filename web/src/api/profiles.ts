@@ -4,7 +4,8 @@
  * A profile is a whole Hermes configuration — its own model, skills, memory,
  * cron jobs and MCP servers, rooted at its own directory. Switching is a
  * server-side reload rather than a restart, but it changes what nearly every
- * other screen shows, so callers should invalidate broadly afterwards.
+ * other screen shows — see `PROFILE_SCOPED_KEYS` for exactly which, and for
+ * why that is a list rather than "the whole cache".
  */
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
@@ -70,17 +71,58 @@ export function useActiveProfile() {
 }
 
 /**
+ * Everything whose answer depends on which profile is active.
+ *
+ * Switching reloads config, skills, memory, cron and models server-side, so
+ * all of these genuinely are stale afterwards. What is *not* stale is
+ * everything else, and that is the point of the list: a bare
+ * `invalidateQueries()` refetches the whole cache, including the kanban board
+ * (one shared store, identical before and after), the profile list itself, the
+ * updates feed, the health check, the file browser, the analytics the Usage
+ * screen just spent three requests assembling — a burst of a dozen or more
+ * requests on a phone, to re-fetch answers that had not changed, at the exact
+ * moment the app is also re-establishing the gateway session.
+ *
+ * Listed as prefixes rather than exact keys, because each of these domains
+ * fans out per profile, per id, per day window — `['sessions']` has to catch
+ * the paged list, the search, every detail and every message set.
+ *
+ * The rule for adding to it: does the backend answer this differently after a
+ * switch? Sessions do (a different `state.db`), the board does not (one store,
+ * spanning profiles), cron does not fully (the list endpoint defaults to
+ * `profile=all`) — but the *create* and per-job defaults follow the active
+ * profile, so it stays in.
+ */
+const PROFILE_SCOPED_KEYS = [
+  ['sessions'],
+  ['skills'],
+  ['cron'],
+  ['model'],
+  ['model-options'],
+  ['config'],
+  ['memory'],
+  ['fs'],
+  ['files'],
+  ['commands'],
+  ['analytics'],
+] as const;
+
+/**
  * Switch the active profile.
  *
- * This reloads config, skills, memory, cron and models server-side, so every
- * cached domain is stale afterwards — hence clearing the whole query cache
- * rather than a targeted invalidation.
+ * Invalidates the domains above and leaves the rest of the cache alone.
  */
 export function useSwitchProfile() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (name: string) => api.post('/api/profiles/active', { name }),
-    onSuccess: () => qc.invalidateQueries(),
+    onSuccess: () => {
+      // The active-profile marker itself, which every scoped query reads.
+      void qc.invalidateQueries({ queryKey: profileKeys.active });
+      for (const queryKey of PROFILE_SCOPED_KEYS) {
+        void qc.invalidateQueries({ queryKey });
+      }
+    },
   });
 }
 

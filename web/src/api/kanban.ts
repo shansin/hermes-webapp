@@ -178,15 +178,50 @@ export function useAddComment() {
  * Scoped to the task's assignee, because that is the profile the dispatcher
  * runs it as and therefore the only store the session can be in.
  */
-export function useTaskSession(taskId: string | null, assignee: string | null) {
+export function useTaskSession(
+  taskId: string | null,
+  assignee: string | null,
+  /**
+   * Whether the task could still acquire a session. Only a card that is
+   * running or waiting to run can, and for anything else this is a one-shot
+   * lookup rather than a poll.
+   */
+  live = true,
+) {
   return useQuery({
     queryKey: ['kanban', 'task-session', taskId, assignee ?? null],
     enabled: Boolean(taskId),
-    // Cheap and worth being current: the session appears partway through a run.
-    refetchInterval: 15_000,
+    /**
+     * The poll stops the moment there is an answer, and never starts for a
+     * card that cannot get one.
+     *
+     * This was a flat 15s, which meant an open task sheet pulled a hundred
+     * session rows off the backend four times a minute for the whole time it
+     * sat there — including for a `done` card, whose session was found on the
+     * first request and cannot change, and for which every subsequent fetch
+     * returned the identical row. The session appears partway through a run,
+     * so polling is only ever useful in the window between the run starting
+     * and the row landing.
+     */
+    refetchInterval: (q) => (live && q.state.data == null ? 15_000 : false),
+    // A remount — reopening the sheet, or the board refetching under it — is
+    // not a reason to go and ask again straight away.
+    staleTime: 10_000,
     queryFn: async () => {
+      /**
+       * `order=recent` and a page rather than the whole store. A session that
+       * belongs to a task open on screen is by construction one of the most
+       * recently active in that profile: it is either running now or it ran
+       * when the card last did. Fifty is roomy for that and half the rows of
+       * the hundred this used to pull on every tick.
+       *
+       * The cost of guessing that window wrong is already the documented cost
+       * of this whole lookup — no match means "cannot tell", never "did not
+       * run" — so a miss degrades to the answer the caller already has to
+       * handle rather than to a wrong one.
+       */
       const res = await api.get<{ sessions?: SessionRow[] }>(
-        sessionUrl('/api/sessions?limit=100&order=recent&archived=include', assignee),
+        sessionUrl('/api/sessions?limit=50&order=recent&archived=include', assignee),
       );
       const rows = res.sessions ?? [];
       return (

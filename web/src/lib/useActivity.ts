@@ -19,6 +19,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { useActiveSessionsAcrossProfiles } from '../api/sessions';
 import { useProfiles } from '../api/profiles';
+import { useUi } from '../store/ui';
 import { useBoard } from '../api/kanban';
 import { useCronJobs } from '../api/hub';
 import { hermes } from '../ws/client';
@@ -78,7 +79,15 @@ export function useActivity(full = true): {
    */
   const profileList = useProfiles().data?.profiles;
   const names = useMemo(() => (profileList ?? []).map((p) => p.name), [profileList]);
-  const sessions = useActiveSessionsAcrossProfiles(names);
+  /**
+   * Whether the early-invalidation half of this hook is actually working.
+   *
+   * The poll below slows down when it is, and only when it is: with the
+   * socket down nothing invalidates these queries and the poll is the sole
+   * source of liveness, which is what the fast rate was chosen for.
+   */
+  const socketLive = useUi((s) => s.connection) === 'open';
+  const sessions = useActiveSessionsAcrossProfiles(names, 25, true, socketLive);
   const board = useBoard(full);
   const cron = useCronJobs();
 
