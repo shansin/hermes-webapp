@@ -18,12 +18,15 @@
  * selecting (long-press, then tap to build a range to copy or share).
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { splitStableMarkdown } from '../../lib/streamingMarkdown';
+import { splitAttachedImages } from '../../lib/localImages';
 import { useNavigate } from 'react-router-dom';
 import { Markdown } from './MarkdownAsync';
 import { ToolCallCard } from './ToolCallCard';
 import { ClarifyCard } from './ClarifyCard';
 import { ThinkingBlock } from './ThinkingBlock';
 import { SubagentCard } from './SubagentCard';
+import { LocalImage } from './LocalImage';
 import { EditTurnSheet } from './EditTurnSheet';
 import { MessageActions } from './MessageActions';
 import { ChatSearchBar } from './ChatSearchBar';
@@ -605,8 +608,24 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
 
   const body = (() => {
     if (m.kind === 'user') {
+      /**
+       * An image you sent is persisted as an `@image:<path>` line appended to
+       * your own message — Hermes' own directive form, which every client is
+       * expected to lift out. Rendered raw it was a stray line of file path
+       * under the caption, and the picture itself never appeared at all.
+       */
+      const { text: caption, images } = splitAttachedImages(m.displayText ?? m.text);
+      const label = caption || (images.length === 1 ? '1 image' : `${images.length} images`);
+
       return (
         <>
+          {images.length > 0 && (
+            <div className="msg__images">
+              {images.map((path) => (
+                <LocalImage key={path} path={path} />
+              ))}
+            </div>
+          )}
           {/* A skill command shows its invocation, not the expanded
               prompt the model was actually handed. */}
           <button
@@ -624,7 +643,7 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
             // a screen reader. `aria-expanded` carries the affordance.
             aria-expanded={p.openActions}
           >
-            {m.displayText ?? m.text}
+            {label}
           </button>
 
           {m.failed && (
@@ -654,7 +673,8 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
               >
                 Edit &amp; resend
               </button>
-              <MessageActions getText={() => m.displayText ?? m.text} title="Hermes" />
+              {/* Copy what the bubble shows: the refs are plumbing. */}
+              <MessageActions getText={() => caption} title="Hermes" />
             </div>
           )}
         </>
@@ -705,7 +725,7 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
               >
                 {p.voice === 'pending' ? (
                   <>
-                    <span className="spin" style={{ fontSize: 11 }}>
+                    <span className="spin" style={{ fontSize: 'var(--type-label-sm)' }}>
                       ◌
                     </span>
                     Preparing…
@@ -761,6 +781,45 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
 });
 
 /**
+ * The streaming reply, parsed once per block instead of once per tick.
+ *
+ * `Markdown` re-parses everything it is given, and the tail hands it the whole
+ * accumulated message ten times a second — so the cost of watching a reply
+ * arrive grows with the reply, and by the last paragraph of a long answer most
+ * of the work is re-parsing text that finished minutes ago and cannot change.
+ *
+ * `splitStableMarkdown` finds the boundary between the finished blocks and the
+ * one still being written (its own file, with the reasoning and the tests for
+ * where that boundary may legally fall). The finished half is handed to a
+ * separate, memoized `Markdown` whose `children` string is identical between
+ * ticks, so React skips it entirely; only the open block is re-parsed. What is
+ * re-parsed per tick becomes a function of the current paragraph rather than
+ * of the whole message.
+ *
+ * The alternative was rendering the tail as plain text until `message.complete`
+ * and parsing once at the end. It is cheaper still and was rejected: the reply
+ * would arrive as unformatted markdown source — visible asterisks, unrendered
+ * fences — and snap into shape at the end, which is worse to watch than a
+ * little parsing.
+ */
+function StreamingMarkdown({ text }: { text: string }) {
+  const { stable, open } = useMemo(() => splitStableMarkdown(text), [text]);
+
+  if (!stable) return <Markdown>{open}</Markdown>;
+
+  return (
+    <>
+      {/* The class restores the bottom margin `.md > *:last-child` removes —
+          the finished half is no longer the end of the message. */}
+      <div className="md-stable">
+        <Markdown>{stable}</Markdown>
+      </div>
+      <Markdown>{open}</Markdown>
+    </>
+  );
+}
+
+/**
  * The live turn — the only thing in the chat that re-renders per token.
  *
  * This is deliberately a separate component from the transcript. Both read the
@@ -782,6 +841,18 @@ const StreamingTail = memo(function StreamingTail({ onGrow }: { onGrow: () => vo
 
   const text = useThrottled(streamingText, STREAM_RENDER_MS);
   const reasoning = useThrottled(streamingReasoning, STREAM_RENDER_MS);
+  /**
+   * Throttled like the other two, and for exactly the same reason.
+   *
+   * `thinking.delta` arrives at the same 30–60/s as the text deltas and the
+   * store writes the hint on every one of them. Read raw, it re-rendered this
+   * component at the full event rate through the entire pre-answer phase —
+   * the phase where the two values that *were* throttled are both empty, so
+   * the throttling bought nothing and this was the only thing driving the
+   * renders. Same 10fps ceiling: a decorative "pondering…" line has no claim
+   * to a higher frame rate than the answer.
+   */
+  const hint = useThrottled(thinkingHint, STREAM_RENDER_MS);
 
   // Same frame as the new content, so the tail never visibly lags the tokens.
   useLayoutEffect(() => {
@@ -795,7 +866,7 @@ const StreamingTail = memo(function StreamingTail({ onGrow }: { onGrow: () => vo
       {reasoning && <ThinkingBlock text={reasoning} streaming />}
       {text ? (
         <div className="msg__body">
-          <Markdown>{text}</Markdown>
+          <StreamingMarkdown text={text} />
         </div>
       ) : (
         // Shown for the whole pre-answer phase now, reasoning or not. It used
@@ -804,7 +875,7 @@ const StreamingTail = memo(function StreamingTail({ onGrow }: { onGrow: () => vo
         // by default now, so without this the wait before the first token had
         // nothing moving in it at all.
         <div className="status-line">
-          {statusLine || thinkingHint || 'Working…'}
+          {statusLine || hint || 'Working…'}
           <span className="caret" />
         </div>
       )}
