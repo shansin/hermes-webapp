@@ -11,7 +11,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Sheet } from '../shared/Sheet';
-import { relTime } from '../shared/misc';
+import { relTime, SkeletonList } from '../shared/misc';
 import {
   COLUMNS,
   COLUMN_LABEL,
@@ -25,6 +25,7 @@ import {
   type Task,
 } from '../../api/kanban';
 import { useProfiles } from '../../api/profiles';
+import { ProfileField } from '../shared/ProfileSelect';
 import { useNavigate } from 'react-router-dom';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
@@ -146,7 +147,7 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
   return (
     <Sheet open onClose={onClose} title={task ? task.id : 'Task'}>
       {isLoading || !task ? (
-        <div style={{ color: 'var(--text-faint)' }}>Loading…</div>
+        <SkeletonList n={4} h={44} />
       ) : (
         <>
           <input
@@ -204,33 +205,32 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
           </div>
 
           <Label>ASSIGNED TO</Label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
-            {/* The card's current assignee first, even when no profile by that
-                name exists any more — otherwise a card assigned to a deleted
-                profile shows nothing selected and looks unassigned, which is a
-                different and much less recoverable problem. */}
-            {[
-              ...(task.assignee && !profiles.some((p) => p.name === task.assignee)
-                ? [task.assignee]
-                : []),
-              ...profiles.map((p) => p.name),
-            ].map((name) => (
-              <button
-                key={name}
-                className={`chip${task.assignee === name ? ' chip--active' : ''}`}
-                onClick={() => void reassign(name)}
-                disabled={update.isPending}
-              >
-                {name}
-              </button>
-            ))}
+          <div style={{ marginBottom: 6 }}>
+            {/* The card's current assignee is offered even when no profile by
+                that name exists any more — otherwise a card assigned to a
+                deleted profile shows nothing selected and looks unassigned,
+                which is a different and much less recoverable problem. */}
+            <ProfileField
+              label="Assignee"
+              title="Assigned to"
+              placeholder="Nobody"
+              value={task.assignee ?? ''}
+              onChange={(name) => void reassign(name)}
+              disabled={update.isPending}
+              options={[
+                ...(task.assignee && !profiles.some((p) => p.name === task.assignee)
+                  ? [{ value: task.assignee, label: task.assignee, hint: 'No profile by this name' }]
+                  : []),
+                ...profiles.map((p) => ({ value: p.name, label: p.name })),
+              ]}
+            />
           </div>
           {!task.assignee && (
             /* Not a warning for its own sake: Hermes' dispatcher buckets an
                unassigned card as `skipped_unassigned` every tick and reports
                nothing, so this is the only place the app can say why a task
                that looks queued will never start. */
-            <div style={{ fontSize: 12, color: 'var(--warn)', marginBottom: 14 }}>
+            <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--warn)', marginBottom: 14 }}>
               Nobody is assigned — the dispatcher skips this card without reporting it.
             </div>
           )}
@@ -247,7 +247,7 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
             </button>
           ) : (
             task.status !== 'running' && (
-              <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 14 }}>
+              <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginBottom: 14 }}>
                 Move this card to Ready to hand it to the dispatcher.
               </div>
             )
@@ -262,7 +262,7 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
                 border: '1px solid var(--error)',
                 borderRadius: 'var(--radius-sm)',
                 padding: 10,
-                fontSize: 12.5,
+                fontSize: 'var(--type-body-sm)',
                 marginBottom: 14,
                 fontFamily: 'var(--mono)',
                 whiteSpace: 'pre-wrap',
@@ -285,7 +285,7 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
                       alignItems: 'center',
                       padding: '7px 0',
                       borderBottom: '1px solid var(--border-soft)',
-                      fontSize: 13,
+                      fontSize: 'var(--type-detail)',
                     }}
                   >
                     <span
@@ -305,7 +305,7 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
                     <span style={{ flex: 1, minWidth: 0 }}>
                       {r.summary || r.outcome || r.status}
                     </span>
-                    <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>
+                    <span style={{ color: 'var(--text-faint)', fontSize: 'var(--type-label-sm)' }}>
                       {relTime(r.started_at)}
                     </span>
                   </div>
@@ -318,10 +318,10 @@ export function TaskSheet({ taskId, onClose }: { taskId: string | null; onClose:
           <div style={{ marginBottom: 10 }}>
             {data.comments.map((c) => (
               <div key={c.id} style={{ padding: '7px 0', borderBottom: '1px solid var(--border-soft)' }}>
-                <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginBottom: 2 }}>
+                <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginBottom: 2 }}>
                   {c.author} · {relTime(c.created_at)}
                 </div>
-                <div style={{ fontSize: 13.5, whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                <div style={{ fontSize: 'var(--type-detail)', whiteSpace: 'pre-wrap' }}>{c.body}</div>
               </div>
             ))}
           </div>
@@ -368,7 +368,13 @@ function TaskSessionLink({
   onOpen: () => void;
   navigate: (to: string) => void;
 }) {
-  const { data: session, isLoading } = useTaskSession(task.id, task.assignee);
+  const { data: session, isLoading } = useTaskSession(
+    task.id,
+    task.assignee,
+    // Only a card that is running or queued can still acquire a session;
+    // anything else is looked up once and left alone.
+    task.status === 'running' || task.status === 'ready' || task.status === 'scheduled',
+  );
   const started = task.started_at !== null || task.current_run_id !== null;
 
   // Nothing has run and nothing is running: an absent session is simply the
@@ -396,12 +402,12 @@ function TaskSessionLink({
             <span style={{ color: 'var(--text-dim)' }}>
               {session.is_active && !session.ended_at ? 'Running now' : 'Open transcript'}
             </span>
-            <span style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>
+            <span style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)' }}>
               {session.message_count ?? 0} messages
             </span>
           </button>
         ) : (
-          <div style={{ fontSize: 12, color: 'var(--text-faint)', lineHeight: 1.45 }}>
+          <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', lineHeight: 1.45 }}>
             {isLoading
               ? 'Looking for the conversation…'
               : /* Deliberately not "no session": the task row carries no session
@@ -417,7 +423,7 @@ function TaskSessionLink({
 
 function Label({ children }: { children: string }) {
   return (
-    <div style={{ fontSize: 12, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 6 }}>
+    <div className="group-head">
       {children}
     </div>
   );

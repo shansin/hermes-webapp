@@ -12,17 +12,18 @@ import { PullToRefresh } from '../components/shared/PullToRefresh';
 import { Empty, ErrorNote, SkeletonList, dayGroup } from '../components/shared/misc';
 import { IconSearch, IconClose, IconTrash, IconPlus } from '../components/shared/Icons';
 import {
+  hideSessions,
   isOn,
+  restoreSessions,
   sessionKeys,
   useBulkDeleteSessions,
   useDeleteSession,
+  useSessionPages,
   useSessionSearch,
-  useSessions,
   type ArchivedFilter,
-  type SessionList,
   type SessionRow,
 } from '../api/sessions';
-import { useActiveProfile, useProfiles } from '../api/profiles';
+import { ProfileFilter } from '../components/shared/ProfileSelect';
 import { MenuButton } from '../components/shared/MenuButton';
 import { BackButton } from '../components/shared/BackButton';
 import { useUi } from '../store/ui';
@@ -83,13 +84,14 @@ export function SessionsScreen() {
   const [profile, setProfile] = useState<string | null>(null);
 
   const archivedFilter: ArchivedFilter = showArchived ? 'only' : 'exclude';
-  const { data, isLoading, error, refetch } = useSessions(undefined, archivedFilter, profile);
+  const { data, isLoading, error, refetch, hasMore, loadingMore, loadMore } = useSessionPages(
+    archivedFilter,
+    profile,
+  );
   // Search on the settled value: every keystroke was otherwise a new query
   // key, and so a new request to the backend.
   const debouncedQuery = useDebounced(query, SEARCH_DEBOUNCE_MS);
   const search = useSessionSearch(debouncedQuery, profile);
-  const profiles = useProfiles().data?.profiles ?? [];
-  const activeProfile = useActiveProfile().data?.active ?? '';
   const del = useDeleteSession();
   const bulkDel = useBulkDeleteSessions();
 
@@ -179,6 +181,7 @@ export function SessionsScreen() {
    * object it comes from does not.
    */
   const deleteSession = del.mutateAsync;
+  const bulkDelete = bulkDel.mutateAsync;
 
   const resume = useCallback(
     (id: string) => {
@@ -212,12 +215,7 @@ export function SessionsScreen() {
     (id: string) => {
       // Hide it everywhere it is listed, and keep the copies so Undo can put
       // them back exactly as they were rather than waiting on a refetch.
-      const snapshot = qc.getQueriesData<SessionList>({ queryKey: sessionKeys.all });
-      qc.setQueriesData<SessionList>({ queryKey: sessionKeys.all }, (old) =>
-        old?.sessions
-          ? { ...old, sessions: old.sessions.filter((sn) => sn.id !== id) }
-          : old,
-      );
+      const snapshot = hideSessions(qc, new Set([id]));
 
       const { undo } = scheduleUndoable(
         {
@@ -225,13 +223,11 @@ export function SessionsScreen() {
             void deleteSession({ id, profile }).catch((e: unknown) => {
               // Nothing is watching by now, so the row has to come back and
               // say why on its own.
-              for (const [key, data] of snapshot) qc.setQueryData(key, data);
+              restoreSessions(qc, snapshot);
               toast(e instanceof Error ? e.message : 'Delete failed', 'error');
             });
           },
-          revert: () => {
-            for (const [key, data] of snapshot) qc.setQueryData(key, data);
-          },
+          revert: () => restoreSessions(qc, snapshot),
         },
         UNDO_WINDOW_MS,
       );
@@ -250,16 +246,46 @@ export function SessionsScreen() {
     [deleteSession, toast, qc, profile],
   );
 
-  const removeSelected = async () => {
+  /**
+   * The same bargain as `removeOne`, and it matters more here.
+   *
+   * A bulk delete is one tap that destroys an arbitrary number of
+   * conversations, and it was the only destructive action left in the app
+   * with nothing behind it — a mis-tap on the trash in selection mode was
+   * final. The rows go now, the request waits out the toast, and Undo puts
+   * every one of them back without the backend ever having heard about it.
+   */
+  const removeSelected = useCallback(() => {
     const ids = [...selected];
+    if (ids.length === 0) return;
     setSelected(new Set());
-    try {
-      await bulkDel.mutateAsync({ ids, profile });
-      toast(`Deleted ${ids.length} sessions`, 'success');
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Bulk delete failed', 'error');
-    }
-  };
+
+    const snapshot = hideSessions(qc, new Set(ids));
+
+    const { undo } = scheduleUndoable(
+      {
+        commit: () => {
+          void bulkDelete({ ids, profile }).catch((e: unknown) => {
+            restoreSessions(qc, snapshot);
+            toast(e instanceof Error ? e.message : 'Bulk delete failed', 'error');
+          });
+        },
+        revert: () => restoreSessions(qc, snapshot),
+      },
+      UNDO_WINDOW_MS,
+    );
+
+    toast(`Deleted ${ids.length} session${ids.length === 1 ? '' : 's'}`, 'success', {
+      durationMs: UNDO_WINDOW_MS,
+      action: {
+        label: 'Undo',
+        onAction: () => {
+          buzz('tap');
+          undo();
+        },
+      },
+    });
+  }, [selected, bulkDelete, profile, qc, toast]);
 
   const toggle = useCallback((id: string) => {
     setSelected((prev) => {
@@ -345,42 +371,20 @@ export function SessionsScreen() {
         )}
       </div>
 
-      {/* Coarser than any of the filters below it: those narrow a list, this
-          chooses which store is read at all. Only rendered once a second
-          profile exists — before that there is one answer and a picker
-          offering it is furniture. */}
-      {!searching && !selecting && profiles.length > 1 && (
-        <div className="tag-rail">
-          {profiles.map((pr) => {
-            const on = (profile ?? activeProfile) === pr.name;
-            return (
-              <button
-                key={pr.name}
-                className={`chip${on ? ' chip--active' : ''}`}
-                onClick={() => {
-                  buzz('tap');
-                  /* The active profile is stored as null, not as its name: it
-                     is the request this screen has always made, and pinning
-                     the name would break the moment you switched profiles
-                     elsewhere in the app. */
-                  setProfile(pr.name === activeProfile ? null : pr.name);
-                  setSelected(new Set());
-                }}
-              >
-                {pr.name}
-                {pr.name === activeProfile && (
-                  <span style={{ color: 'var(--text-faint)', fontWeight: 400 }}> · active</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
       {/* The lane picker. Above the tag rail because it is the coarser cut:
           which kind of session, then which tag within it. */}
       {!searching && !selecting && (
         <div className="tag-rail">
+          {/* Coarser than the lane chips beside it: those narrow a list, this
+              chooses which store is read at all. It leads the rail for that
+              reason, and renders nothing at all on a single-profile install. */}
+          <ProfileFilter
+            value={profile}
+            onChange={(next) => {
+              setProfile(next);
+              setSelected(new Set());
+            }}
+          />
           {visibleFilters.map((f) => {
             const on = filter === f;
             const count = f === 'all' ? undefined : kindCounts[f];
@@ -440,30 +444,27 @@ export function SessionsScreen() {
           <div className="has-fab" style={{ padding: '8px 12px 16px' }}>
             {showingSearch ? (
               <>
-                {search.isLoading && <div style={{ color: 'var(--text-faint)', padding: 12 }}>Searching…</div>}
+                {search.isLoading && <SkeletonList n={4} h={52} />}
                 {search.data?.results.length === 0 && (
                   <Empty icon="🔍" title="No matches" hint={`Nothing found for "${query}".`} />
                 )}
                 {search.data?.results.map((hit, i) => (
                   <button
                     key={`${hit.session_id}-${i}`}
+                    className="card"
                     onClick={() => resume(hit.session_id)}
                     style={{
                       display: 'block',
                       width: '100%',
                       textAlign: 'left',
-                      background: 'var(--bg-elev)',
-                      border: '1px solid var(--border-soft)',
-                      borderRadius: 'var(--radius-sm)',
-                      padding: '11px 13px',
                       marginBottom: 8,
                     }}
                   >
-                    <div style={{ fontWeight: 550, fontSize: 14.5, marginBottom: 3 }}>
+                    <div style={{ fontWeight: 550, fontSize: 'var(--type-body-md)', marginBottom: 3 }}>
                       {hit.title || 'Untitled'}
                     </div>
                     <div
-                      style={{ fontSize: 12.5, color: 'var(--text-dim)' }}
+                      style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-dim)' }}
                       // The API marks matches with >>>…<<<; render them as bold.
                       dangerouslySetInnerHTML={{
                         __html: escapeAndMark(hit.snippet),
@@ -514,18 +515,7 @@ export function SessionsScreen() {
             ) : (
               groups.map((g) => (
                 <div key={g.label} style={{ marginBottom: 14 }}>
-                  <div
-                    style={{
-                      fontSize: 11.5,
-                      fontWeight: 650,
-                      color: 'var(--text-faint)',
-                      letterSpacing: '0.04em',
-                      textTransform: 'uppercase',
-                      padding: '6px 3px',
-                    }}
-                  >
-                    {g.label}
-                  </div>
+                  <div className="group-head">{g.label}</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                     {g.items.map((s) => (
                       <SessionRowItem
@@ -545,6 +535,31 @@ export function SessionsScreen() {
                   </div>
                 </div>
               ))
+            )}
+
+            {/* A row rather than infinite scroll on purpose. The list uses CSS
+                containment instead of windowing (see `global.css`), so every
+                page loaded stays in the DOM — and a scroll that keeps fetching
+                would grow it without anyone deciding to. A button asks. It is
+                hidden during search and while a filter is on, where "more"
+                would fetch a page the current filter may drop entirely and so
+                appear to do nothing. */}
+            {!showingSearch && hasMore && filter === 'all' && !tag && (
+              <button
+                className="btn"
+                style={{ width: '100%', marginTop: 8 }}
+                disabled={loadingMore}
+                onClick={() => {
+                  buzz('tap');
+                  void loadMore();
+                }}
+              >
+                {loadingMore
+                  ? 'Loading…'
+                  : `Show older${
+                      data ? ` · ${Math.max(0, data.total - data.sessions.length)} more` : ''
+                    }`}
+              </button>
             )}
           </div>
         </PullToRefresh>

@@ -17,6 +17,7 @@ import { Sheet } from '../shared/Sheet';
 import { Switch } from '../shared/misc';
 import { useCreateTask } from '../../api/kanban';
 import { useProfiles } from '../../api/profiles';
+import { ProfileField } from '../shared/ProfileSelect';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 
@@ -95,35 +96,24 @@ export function NewTaskSheet({ open, onClose, onCreated }: Props) {
         style={{ resize: 'vertical', marginBottom: 12 }}
       />
 
-      <div style={{ fontSize: 12, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 6 }}>
+      <div className="group-head">
         RUN AS
       </div>
       {profiles.length > 0 ? (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
-          {profiles.map((p) => (
-            <button
-              key={p.name}
-              className={`chip${assignee === p.name ? ' chip--active' : ''}`}
-              onClick={() => {
-                buzz('tap');
-                setAssignee(p.name);
-              }}
-            >
-              {p.name}
-            </button>
-          ))}
+        <div style={{ marginBottom: 14 }}>
+          <ProfileField label="Assignee" title="Run as" value={assignee ?? ''} onChange={setAssignee} />
         </div>
       ) : (
         /* No picker to show, and saying so matters: an unassigned task is the
            one that silently never runs. */
-        <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginBottom: 14 }}>
+        <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginBottom: 14 }}>
           {profilesLoading
             ? 'Loading profiles…'
             : 'No profiles found — the task will use the server default.'}
         </div>
       )}
 
-      <div style={{ fontSize: 12, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 6 }}>
+      <div className="group-head">
         PRIORITY
       </div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>

@@ -47,10 +47,11 @@ import {
 } from '../../api/hub';
 import { useToolsets } from '../../api/tools';
 import { useActiveProfile, useProfiles } from '../../api/profiles';
+import { ProfileField } from '../shared/ProfileSelect';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 import { UNDO_WINDOW_MS, scheduleUndoable } from '../../lib/undo';
-import { humanCron } from '../../lib/cronText';
+import { cronError, humanCron } from '../../lib/cronText';
 
 function jobName(j: CronJob): string {
   return j.name ?? j.id;
@@ -239,6 +240,10 @@ export function CronTab() {
    */
   const formProfile = form.profile || activeProfile || '';
 
+  /** What is wrong with the schedule, and what it says when nothing is. */
+  const scheduleError = cronError(form.schedule);
+  const scheduleSentence = scheduleError ? null : humanCron(form.schedule.trim());
+
   /* Scoped to the profile being configured, not the one running. Both are
      cached for 30s and only fetched while the sheet is open. */
   const scopedSkills = useSkills(formProfile || null, creating);
@@ -272,7 +277,7 @@ export function CronTab() {
   };
 
   const submit = async () => {
-    if (!form.name.trim() || !form.prompt.trim()) return;
+    if (!form.name.trim() || !form.prompt.trim() || scheduleError) return;
     try {
       await create.mutateAsync({
         // Not a body field — a query parameter that picks which profile's job
@@ -340,7 +345,7 @@ export function CronTab() {
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14.5, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ fontWeight: 600, fontSize: 'var(--type-body-md)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {jobName(j)}
                     </div>
                     {/* Which profile's store this came out of. Shown only once
@@ -364,7 +369,7 @@ export function CronTab() {
                   {schedule.text && (
                     <div
                       style={{
-                        fontSize: 12,
+                        fontSize: 'var(--type-body-sm)',
                         color: 'var(--text-faint)',
                         // Monospace only when it is still an expression. A
                         // sentence set in mono reads as a machine string.
@@ -381,7 +386,7 @@ export function CronTab() {
                   {j.prompt && (
                     <div
                       style={{
-                        fontSize: 12.5,
+                        fontSize: 'var(--type-body-sm)',
                         color: 'var(--text-dim)',
                         marginTop: 5,
                         display: '-webkit-box',
@@ -393,7 +398,7 @@ export function CronTab() {
                       {j.prompt}
                     </div>
                   )}
-                  <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginTop: 6, display: 'flex', gap: 10 }}>
+                  <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginTop: 6, display: 'flex', gap: 10 }}>
                     {failed ? (
                       <span style={{ color: 'var(--error)' }}>failed</span>
                     ) : paused ? (
@@ -452,7 +457,7 @@ export function CronTab() {
       )}
 
       <Sheet open={Boolean(openRuns)} onClose={() => setOpenRuns(null)} title="Run history">
-        {runs.isLoading && <div style={{ color: 'var(--text-faint)' }}>Loading…</div>}
+        {runs.isLoading && <SkeletonList n={3} h={46} />}
         {/* An empty history is not always "nothing happened": a job refused
             before it started never gets a run row, and `last_error` is then the
             only record that it was refused at all. Saying "no runs" and
@@ -460,13 +465,13 @@ export function CronTab() {
         {runList.length === 0 && !runs.isLoading && (
           typeof openJob?.last_error === 'string' && openJob.last_error ? (
             <div>
-              <div style={{ fontSize: 13.5, color: 'var(--error)' }}>
+              <div style={{ fontSize: 'var(--type-detail)', color: 'var(--error)' }}>
                 Did not run
               </div>
-              <div style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>
+              <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)' }}>
                 {lastAttempt ? relTime(lastAttempt) : 'last attempt'}
               </div>
-              <div style={{ fontSize: 12, color: 'var(--error)', marginTop: 5, lineHeight: 1.45, overflowWrap: 'anywhere' }}>
+              <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--error)', marginTop: 5, lineHeight: 1.45, overflowWrap: 'anywhere' }}>
                 {openJob.last_error}
               </div>
             </div>
@@ -478,14 +483,14 @@ export function CronTab() {
           const row = r as Record<string, unknown>;
           return (
             <div key={i} style={{ padding: '9px 0', borderBottom: '1px solid var(--border-soft)' }}>
-              <div style={{ fontSize: 13.5 }}>
+              <div style={{ fontSize: 'var(--type-detail)' }}>
                 {String(row.status ?? row.outcome ?? 'run')}
               </div>
-              <div style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>
+              <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)' }}>
                 {relTime(epochSeconds(row.started_at ?? row.created_at) ?? 0)}
               </div>
               {typeof row.error === 'string' && row.error && (
-                <div style={{ fontSize: 12, color: 'var(--error)', marginTop: 3 }}>{row.error}</div>
+                <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--error)', marginTop: 3 }}>{row.error}</div>
               )}
             </div>
           );
@@ -512,40 +517,57 @@ export function CronTab() {
             has exactly one answer and a picker offering it is furniture. */}
         {profiles.length > 1 && (
           <>
-            <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 6 }}>
+            <div className="group-head">
               RUNS AS
             </div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
-              {profiles.map((pr) => (
-                <button
-                  key={pr.name}
-                  className={`chip${formProfile === pr.name ? ' chip--active' : ''}`}
-                  onClick={() => {
-                    buzz('tap');
-                    /* Changing the profile drops the pins: they name skills and
-                       toolsets belonging to the profile they were chosen from,
-                       and carrying them across would send another profile's
-                       names to a store that has never heard of them. */
-                    setForm((f) => ({ ...f, profile: pr.name, skills: [], toolsets: [] }));
-                  }}
-                >
-                  {pr.name}
-                </button>
-              ))}
+            <div style={{ marginBottom: 4 }}>
+              <ProfileField
+                label="Profile"
+                title="Runs as"
+                value={formProfile}
+                onChange={(name) =>
+                  /* Changing the profile drops the pins: they name skills and
+                     toolsets belonging to the profile they were chosen from,
+                     and carrying them across would send another profile's
+                     names to a store that has never heard of them. */
+                  setForm((f) => ({ ...f, profile: name, skills: [], toolsets: [] }))
+                }
+              />
             </div>
-            <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
+            <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
               The job is stored in that profile and runs with its config, skills and memory.
             </div>
           </>
         )}
 
+        {/* The schedule is the one field on this form whose mistakes are
+            silent: a job with a bad expression saved fine and simply never
+            ran, and the only sign was a run history that stayed empty. Name
+            and prompt already gate the button; this now does too, and says
+            what is wrong beside the field rather than in a toast after the
+            round trip. The sentence underneath is the other half — reading
+            back what the expression means is how a typo that is *valid*
+            gets caught. */}
         <input
           className="field"
           placeholder="Cron schedule (e.g. 0 9 * * *)"
           value={form.schedule}
           onChange={(e) => setForm({ ...form, schedule: e.target.value })}
-          style={{ marginBottom: 9, fontFamily: 'var(--mono)' }}
+          aria-invalid={Boolean(scheduleError)}
+          aria-describedby="cron-schedule-note"
+          style={{ marginBottom: 4, fontFamily: 'var(--mono)' }}
         />
+        <div
+          id="cron-schedule-note"
+          style={{
+            fontSize: 'var(--type-body-sm)',
+            color: scheduleError ? 'var(--error)' : 'var(--text-faint)',
+            margin: '0 2px 9px',
+            lineHeight: 1.45,
+          }}
+        >
+          {scheduleError ?? scheduleSentence ?? '\u00a0'}
+        </div>
         <textarea
           className="field"
           placeholder="What should the agent do?"
@@ -593,7 +615,7 @@ export function CronTab() {
                 Unpin
               </button>
             ) : (
-              <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginTop: 6, lineHeight: 1.45 }}>
+              <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginTop: 6, lineHeight: 1.45 }}>
                 An unpinned job may be skipped after the global model changes.
               </div>
             )}
@@ -622,7 +644,7 @@ export function CronTab() {
               }
               onOpen={() => setPicking('toolsets')}
             />
-            <div style={{ fontSize: 11.5, color: 'var(--text-faint)', lineHeight: 1.45 }}>
+            <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', lineHeight: 1.45 }}>
               Pin these to give one job less than the profile has — a nightly summary
               does not need shell access.
             </div>
@@ -633,7 +655,9 @@ export function CronTab() {
           className="btn btn--primary"
           style={{ width: '100%' }}
           onClick={submit}
-          disabled={!form.name.trim() || !form.prompt.trim() || create.isPending}
+          disabled={
+            !form.name.trim() || !form.prompt.trim() || Boolean(scheduleError) || create.isPending
+          }
         >
           {create.isPending ? 'Creating…' : 'Create job'}
         </button>

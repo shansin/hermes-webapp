@@ -36,6 +36,8 @@ import {
 } from '../api/kanban';
 import { useUi } from '../store/ui';
 import { buzz } from '../lib/haptics';
+import { UNDO_WINDOW_MS, scheduleUndoable } from '../lib/undo';
+import { SelectChip, SelectSheet } from '../components/shared/SelectSheet';
 import { MenuButton } from '../components/shared/MenuButton';
 import { BackButton } from '../components/shared/BackButton';
 import { useWideLayout } from '../lib/useMediaQuery';
@@ -51,7 +53,7 @@ const NEXT_STAGE: Partial<Record<Column, Column>> = {
   review: 'done',
 };
 
-/** The chip that means "no assignee filter". Leading space: never a real name. */
+/** The option that means "no assignee filter". Leading space: never a real name. */
 const ALL = ' all';
 
 export function KanbanScreen() {
@@ -71,6 +73,16 @@ export function KanbanScreen() {
    * at the foot of every card, to be assembled by eye.
    */
   const [assignee, setAssignee] = useState<string>(ALL);
+  const [pickingAssignee, setPickingAssignee] = useState(false);
+  /**
+   * Cards deleted a moment ago, still inside their Undo window.
+   *
+   * Held here rather than edited out of the cached board, because the board
+   * refetches every 10s and the Undo toast stands for 8 — a card removed from
+   * the cache would reappear under the toast offering to bring it back. A
+   * filter applied on the way to the screen cannot be overwritten by a poll.
+   */
+  const [pendingDelete, setPendingDelete] = useState<ReadonlySet<string>>(() => new Set());
 
   const qc = useQueryClient();
   const toast = useUi((s) => s.toast);
@@ -90,11 +102,13 @@ export function KanbanScreen() {
     for (const c of data?.columns ?? []) {
       byName.set(
         c.name,
-        assignee === ALL ? c.tasks : c.tasks.filter((t) => t.assignee === assignee),
+        c.tasks.filter(
+          (t) => !pendingDelete.has(t.id) && (assignee === ALL || t.assignee === assignee),
+        ),
       );
     }
     return byName;
-  }, [data, assignee]);
+  }, [data, assignee, pendingDelete]);
 
   const counts = useMemo(() => {
     const m = new Map<string, number>();
@@ -141,15 +155,54 @@ export function KanbanScreen() {
     [updateTask, toast],
   );
 
+  /**
+   * Delete a card, with a window to take it back.
+   *
+   * The same bargain Sessions and Cron already make (see `lib/undo.ts`): the
+   * card goes now, the request waits out the toast. Deleting a task is a
+   * single tap on a card whose whole point is being dragged around under a
+   * thumb, and Hermes has no restore — so the only honest Undo is one that
+   * gets in before the request is sent.
+   */
   const removeById = useCallback(
-    async (id: string) => {
+    (id: string) => {
       buzz('warn');
-      try {
-        await deleteTask(id);
-        toast('Task deleted', 'success');
-      } catch (e) {
-        toast(e instanceof Error ? e.message : 'Delete failed', 'error');
-      }
+      setPendingDelete((prev) => new Set(prev).add(id));
+
+      const unhide = () =>
+        setPendingDelete((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+
+      const { undo } = scheduleUndoable(
+        {
+          commit: () => {
+            void deleteTask(id)
+              // The row is gone for real now; drop it from the filter so the
+              // set does not grow for the life of the screen.
+              .then(unhide)
+              .catch((e: unknown) => {
+                unhide();
+                toast(e instanceof Error ? e.message : 'Delete failed', 'error');
+              });
+          },
+          revert: unhide,
+        },
+        UNDO_WINDOW_MS,
+      );
+
+      toast('Task deleted', 'success', {
+        durationMs: UNDO_WINDOW_MS,
+        action: {
+          label: 'Undo',
+          onAction: () => {
+            buzz('tap');
+            undo();
+          },
+        },
+      });
     },
     [deleteTask, toast],
   );
@@ -184,31 +237,29 @@ export function KanbanScreen() {
         </div>
       </div>
 
-      {/* One chip per agent, and only once there is more than one to tell
-          apart. A filter offering a single choice is furniture. */}
+      {/* Which agent's cards, as one dropdown rather than a chip per agent:
+          the list is however many profiles exist, and it grows. Only once
+          there is more than one to tell apart — a filter offering a single
+          choice is furniture. */}
       {assignees.length > 1 && (
         <div className="kanban__filter">
-          <button
-            className={`chip${assignee === ALL ? ' chip--active' : ''}`}
-            onClick={() => {
-              buzz('tap');
-              setAssignee(ALL);
-            }}
-          >
-            Everyone
-          </button>
-          {assignees.map((a) => (
-            <button
-              key={a}
-              className={`chip${assignee === a ? ' chip--active' : ''}`}
-              onClick={() => {
-                buzz('tap');
-                setAssignee(a);
-              }}
-            >
-              @{a}
-            </button>
-          ))}
+          <SelectChip
+            label="Cards for"
+            value={assignee === ALL ? 'Everyone' : `@${assignee}`}
+            active={assignee !== ALL}
+            onOpen={() => setPickingAssignee(true)}
+          />
+          <SelectSheet
+            open={pickingAssignee}
+            title="Whose cards"
+            options={[
+              { value: ALL, label: 'Everyone', hint: 'Every card on the board' },
+              ...assignees.map((a) => ({ value: a, label: `@${a}` })),
+            ]}
+            value={assignee}
+            onChange={setAssignee}
+            onClose={() => setPickingAssignee(false)}
+          />
         </div>
       )}
 
@@ -336,7 +387,7 @@ function Lane({
       </header>
       <div className="lane__cards">
         {tasks.length === 0 ? (
-          <div className="lane__empty">Empty</div>
+          <Empty compact icon="—" title={`Nothing in ${COLUMN_LABEL[column]}`} />
         ) : (
           tasks.map((t) => (
             <TaskCard
