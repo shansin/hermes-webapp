@@ -234,6 +234,34 @@ function lastIndexOf<T>(items: T[], pred: (item: T) => boolean): number {
   return -1;
 }
 
+/**
+ * Replace one message, from the end, and touch nothing else.
+ *
+ * The events that update a message in place — a tool finishing, a subagent
+ * reporting — used to `map` the whole array, calling the predicate on every
+ * historical message and allocating a new one of them per event. In a long
+ * tool-heavy session that is O(transcript) work per tool call, on the same
+ * socket handler as the token deltas.
+ *
+ * Searching backwards is what makes the common case cheap rather than merely
+ * cheaper: the thing being updated is nearly always the last tool card or the
+ * one before it, so the scan stops within a few steps of the end regardless of
+ * how long the transcript is.
+ *
+ * Returns the original array when nothing matches, so `set` is handed the same
+ * reference and every subscriber's identity check holds. That matters here:
+ * a `tool.complete` for a tool card this client never saw (a resume mid-run,
+ * a duplicate frame) previously rewrote the array anyway and re-rendered the
+ * whole transcript to change nothing.
+ */
+function replaceLast<T>(items: T[], pred: (item: T) => boolean, update: (item: T) => T): T[] {
+  const idx = lastIndexOf(items, pred);
+  if (idx === -1) return items;
+  const next = items.slice();
+  next[idx] = update(items[idx]!);
+  return next;
+}
+
 type Get = () => SessionState;
 type Set = (partial: Partial<SessionState>) => void;
 
@@ -507,16 +535,16 @@ export const useSession = create<SessionState>((set, get) => ({
         }
 
         set({
-          messages: s.messages.map((m) =>
-            m.kind === 'tool' && m.toolId === p.data.tool_id
-              ? {
-                  ...m,
-                  status: 'done' as const,
-                  args: p.data.args,
-                  result: p.data.result,
-                  durationS: p.data.duration_s,
-                }
-              : m,
+          messages: replaceLast(
+            s.messages,
+            (m) => m.kind === 'tool' && m.toolId === p.data.tool_id,
+            (m) => ({
+              ...m,
+              status: 'done' as const,
+              args: p.data.args,
+              result: p.data.result,
+              durationS: p.data.duration_s,
+            }),
           ),
         });
         return;
@@ -616,29 +644,33 @@ export const useSession = create<SessionState>((set, get) => ({
         }
 
         set({
-          messages: s.messages.map((m) => {
-            if (m.kind !== 'subagent' || m.agentId !== agentId) return m;
-            if (type === 'subagent.complete') {
+          messages: replaceLast(
+            s.messages,
+            (m) => m.kind === 'subagent' && m.agentId === agentId,
+            (m) => {
+              if (m.kind !== 'subagent') return m;
+              if (type === 'subagent.complete') {
+                return {
+                  ...m,
+                  status: 'done' as const,
+                  activity: undefined,
+                  summary: d.summary || d.text || m.summary,
+                  durationS: d.duration_seconds ?? m.durationS,
+                  tokens:
+                    d.input_tokens != null || d.output_tokens != null
+                      ? (d.input_tokens ?? 0) + (d.output_tokens ?? 0)
+                      : m.tokens,
+                  filesWritten: d.files_written ?? m.filesWritten,
+                };
+              }
               return {
                 ...m,
-                status: 'done' as const,
-                activity: undefined,
-                summary: d.summary || d.text || m.summary,
-                durationS: d.duration_seconds ?? m.durationS,
-                tokens:
-                  d.input_tokens != null || d.output_tokens != null
-                    ? (d.input_tokens ?? 0) + (d.output_tokens ?? 0)
-                    : m.tokens,
-                filesWritten: d.files_written ?? m.filesWritten,
+                goal: d.goal || m.goal,
+                model: d.model ?? m.model,
+                activity: d.tool_name ?? d.text ?? m.activity,
               };
-            }
-            return {
-              ...m,
-              goal: d.goal || m.goal,
-              model: d.model ?? m.model,
-              activity: d.tool_name ?? d.text ?? m.activity,
-            };
-          }),
+            },
+          ),
         });
         return;
       }
@@ -731,8 +763,10 @@ export const useSession = create<SessionState>((set, get) => ({
       set((st) => ({
         running: false,
         error: err instanceof Error ? err.message : 'submit failed',
-        messages: st.messages.map((m) =>
-          m.id === id && m.kind === 'user' ? { ...m, failed: true } : m,
+        messages: replaceLast(
+          st.messages,
+          (m) => m.id === id && m.kind === 'user',
+          (m) => ({ ...m, failed: true }),
         ),
       }));
     }
