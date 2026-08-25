@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { visualizer } from 'rollup-plugin-visualizer';
 import { resolve } from 'node:path';
 import { execSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
@@ -113,6 +114,30 @@ export default defineConfig({
   plugins: [
     emitBuildStamp(),
     react(),
+    /**
+     * Behind a flag, because it is a diagnostic and not part of a deploy.
+     *
+     * `ANALYZE=1 pnpm build` writes `web/dist/stats.html` — a treemap of what
+     * ended up in each chunk and which module put it there. Off by default:
+     * it costs build time, and `start.sh` builds on every launch.
+     *
+     * The reason it exists at all is that every size decision in this config
+     * was previously argued from a guess. The `manualChunks` note above is the
+     * cautionary tale — a change made to shrink the entry that measurably
+     * enlarged what the phone downloaded before first paint, and which took a
+     * hand-read of the emitted HTML to notice. `pnpm size` prints the numbers;
+     * this says who is responsible for them.
+     */
+    ...(process.env.ANALYZE
+      ? [
+          visualizer({
+            filename: resolve(__dirname, 'dist', 'stats.html'),
+            template: 'treemap',
+            gzipSize: true,
+            brotliSize: true,
+          }),
+        ]
+      : []),
     VitePWA({
       registerType: 'autoUpdate',
       // Dev-mode SW registration off: it only confuses the HTTP dev loop.

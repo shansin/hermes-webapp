@@ -7,6 +7,23 @@
  * optional fields) — a Hermes upgrade that adds a field must not break the app,
  * and an unknown event type is surfaced in the dev panel rather than thrown.
  */
+/**
+ * A note on zod's weight, from the bundle audit.
+ *
+ * zod is ~130KB raw / ~13KB gzipped and sits in the **entry** chunk, third
+ * behind react-dom and the app's own source. It was a candidate for a lazy
+ * boundary and is not one: these schemas validate gateway frames, the socket
+ * opens in `App.tsx` on mount, and the first frame can arrive before a
+ * dynamic import would resolve — so deferring it would mean either dropping
+ * frames or hand-writing a second validator for the boot window, which is the
+ * cost it was meant to save twice over.
+ *
+ * The reason it is large is that zod 3 does not tree-shake: the whole builder
+ * API ships whether or not a schema uses it. Shrinking it means changing what
+ * validates, not where it loads — `zod/mini`, or hand-rolled predicates —
+ * which is a bigger decision than a chunk boundary and has not been made.
+ * `pnpm analyze` reproduces the measurement.
+ */
 import { z } from 'zod';
 
 // --- envelopes ---------------------------------------------------------------

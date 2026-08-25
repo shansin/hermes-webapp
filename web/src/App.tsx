@@ -64,7 +64,8 @@ const SettingsTab = lazy(() =>
 import { NavDrawer } from './components/shared/NavDrawer';
 import { ApprovalSheet } from './components/chat/ApprovalSheet';
 import { ClarifySheet } from './components/chat/ClarifySheet';
-import { Toasts } from './components/shared/misc';
+import { SkeletonList, Toasts } from './components/shared/misc';
+import { MenuButton } from './components/shared/MenuButton';
 import { useUi } from './store/ui';
 import { preloadMarkdown } from './components/chat/MarkdownAsync';
 import { hermes, defaultWsUrl } from './ws/client';
@@ -209,7 +210,7 @@ export function App() {
       )}
 
       <div className="app__body">
-        <Suspense fallback={<div className="route-pending" aria-busy="true" />}>
+        <Suspense fallback={<RoutePending />}>
           <Routes>
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="/chat" element={<ChatScreen />} />
@@ -259,6 +260,45 @@ export function App() {
           from whatever screen you wandered off to. */}
       <ClarifySheet />
       <Toasts />
+    </div>
+  );
+}
+
+/**
+ * What a route looks like while its chunk is in flight.
+ *
+ * Blank, then a skeleton. Over the LAN a lazy chunk arrives in a few
+ * milliseconds and anything drawn in that window is a flash — which is why
+ * this was a blank div. But the app is also reached over Tailscale and through
+ * a Cloudflare tunnel, where the same chunk can take a second or more, and
+ * there a blank div is a dead screen: no header, no title, nothing that says
+ * the tap registered. So the blank is kept for exactly as long as it is
+ * honest, and after that the screen admits it is loading.
+ *
+ * The header bar is drawn empty rather than skipped, because it is the part
+ * that makes the shape read as a screen rather than as a crash.
+ */
+const ROUTE_SKELETON_DELAY_MS = 300;
+
+function RoutePending() {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setShow(true), ROUTE_SKELETON_DELAY_MS);
+    return () => clearTimeout(t);
+  }, []);
+
+  if (!show) return <div className="route-pending" aria-busy="true" />;
+
+  return (
+    <div className="screen route-pending" aria-busy="true">
+      <div className="header">
+        <MenuButton />
+        <div className="header__title">
+          <span className="skeleton" style={{ display: 'block', width: 120, height: '0.9em', borderRadius: 4 }} />
+        </div>
+      </div>
+      <SkeletonList n={5} h={54} />
     </div>
   );
 }
