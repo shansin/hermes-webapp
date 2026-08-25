@@ -26,11 +26,14 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { MenuButton } from '../components/shared/MenuButton';
-import { IconTrash } from '../components/shared/Icons';
+import { IconRefresh, IconTrash } from '../components/shared/Icons';
+import { PullToRefresh } from '../components/shared/PullToRefresh';
 import { BackButton } from '../components/shared/BackButton';
 import { Empty, ErrorNote, SkeletonList, dayGroup, relTime } from '../components/shared/misc';
 import {
+  notificationKeys,
   useClearNotifications,
   useMarkNotificationsRead,
   useNotifications,
@@ -81,6 +84,7 @@ const SEVERITY_COLOR: Record<NotificationEntry['severity'], string> = {
 
 export function NotificationsScreen() {
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const toast = useUi((s) => s.toast);
   const { data, isLoading, error } = useNotifications();
   const clear = useClearNotifications();
@@ -117,6 +121,19 @@ export function NotificationsScreen() {
             you on a screen you had not come from. */}
         <BackButton />
         <div className="header__title">Updates</div>
+        {/* The feed polls once a minute and is invalidated over the socket, so
+            this is not how you normally see a new row — it is for the case
+            where you doubt that, and for the pointer that cannot pull. */}
+        <button
+          className="icon-btn"
+          onClick={() => {
+            buzz('tap');
+            void qc.invalidateQueries({ queryKey: notificationKeys.all });
+          }}
+          aria-label="Refresh updates"
+        >
+          <IconRefresh size={17} />
+        </button>
         {data && data.length > 0 && (
           <button
             className="icon-btn"
@@ -136,7 +153,12 @@ export function NotificationsScreen() {
         )}
       </div>
 
-      <div className="chat__list">
+      <PullToRefresh
+        className="chat__list"
+        onRefresh={async () => {
+          await qc.invalidateQueries({ queryKey: notificationKeys.all });
+        }}
+      >
         {isLoading ? (
           <SkeletonList n={4} h={54} />
         ) : error ? (
@@ -157,7 +179,7 @@ export function NotificationsScreen() {
             </div>
           ))
         )}
-      </div>
+      </PullToRefresh>
 
       {/* Where the composer would be. Saying so is worth the strip of height:
           without it, a chat-shaped screen with nothing to type into reads as a
@@ -167,7 +189,7 @@ export function NotificationsScreen() {
           padding: '10px 14px calc(10px + env(safe-area-inset-bottom))',
           borderTop: '1px solid var(--border-soft)',
           color: 'var(--text-faint)',
-          fontSize: 12.5,
+          fontSize: 'var(--type-body-sm)',
           textAlign: 'center',
         }}
       >
@@ -281,11 +303,11 @@ function Entry({ entry, onOpen }: { entry: NotificationEntry; onOpen: () => void
             alignItems: 'baseline',
             gap: 6,
             fontWeight: 600,
-            fontSize: 13,
+            fontSize: 'var(--type-detail)',
             color: 'var(--text-dim)',
           }}
         >
-          <span aria-label={chip.label} title={chip.label} style={{ fontSize: 12 }}>
+          <span aria-label={chip.label} title={chip.label} style={{ fontSize: 'var(--type-body-sm)' }}>
             {chip.icon}
           </span>
           <span>{entry.title}</span>
