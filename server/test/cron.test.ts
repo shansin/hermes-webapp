@@ -7,7 +7,7 @@
  * gateway; the settle delay in front of it is the scheduler's business, not
  * this pass's.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,20 +45,28 @@ let routes: Record<string, unknown>;
 /** Paths that should answer with a status instead of a body. */
 let statuses: Record<string, number>;
 let requested: string[];
+/** Same calls, with the query string — where the profile travels. */
+let requestedUrls: string[];
 
 beforeEach(async () => {
+  // Feed writes are debounced, so the previous module instance may be holding
+  // a timer pointed at its own state — see the same note in `feed.test.ts`.
+  feed?.flushFeed();
   rmSync(join(dir, '.hermes-cron-feed.json'), { force: true });
   routes = {};
   statuses = {};
   requested = [];
+  requestedUrls = [];
   devices = 1;
   sendPush.mockClear();
   clearToken.mockClear();
   vi.resetModules();
 
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname;
+    const parsed = new URL(url);
+    const path = parsed.pathname;
     requested.push(path);
+    requestedUrls.push(path + parsed.search);
     const status = statuses[path];
     if (status) return new Response(null, { status });
     if (!(path in routes)) return new Response(null, { status: 404 });
@@ -546,5 +554,132 @@ describe('malformed gateway payloads', () => {
     routes['/api/sessions/run-1/messages'] = { messages: [null, 42, { role: 'assistant' }] };
     await cron.reconcile();
     expect(feed.listEntries()[0]!.body).toBe('Nightly digest finished');
+  });
+});
+
+/**
+ * A job in another profile.
+ *
+ * The list endpoint defaults to `profile=all`, so these arrive here mixed in
+ * with the active profile's own — but every read *about* one of them is
+ * profile-scoped, and both ways of getting it wrong are silent. An unqualified
+ * runs call is resolved by Hermes against every store, matching on id or name;
+ * an unqualified messages call 404s, which does not suppress the notification,
+ * it just empties it of the one thing worth reading.
+ */
+describe('a job belonging to another profile', () => {
+  beforeEach(async () => {
+    jobs(job({ id: 'job-2', name: 'Suggested training today', profile: 'fitness' }));
+    runs('job-2');
+    await seed();
+  });
+
+  it('asks for that profile\'s run history, not whatever matches the name first', async () => {
+    requestedUrls.length = 0;
+    await cron.reconcile();
+    expect(requestedUrls).toContain('/api/cron/jobs/job-2/runs?profile=fitness');
+  });
+
+  /**
+   * The tap target. `ChatScreen` resumes against the active profile unless the
+   * link names one, so a link without it reaches a store that has never heard
+   * of this session and reports it as missing — the notification arrives and
+   * then goes nowhere, which is worse than not arriving.
+   */
+  it('points the row at the session in its own profile', async () => {
+    runs('job-2', run({ id: 'run-9' }));
+    messages('run-9', { role: 'assistant', content: '6 miles easy.' });
+
+    await cron.reconcile();
+
+    expect(feed.listEntries()[0]!.url).toBe('/chat?session=run-9&profile=fitness');
+  });
+
+  it('reads the reply out of that profile\'s session store', async () => {
+    runs('job-2', run({ id: 'run-9', title: 'Suggested training today · Aug 25 06:30' }));
+    messages('run-9', { role: 'assistant', content: '6 miles easy.' });
+
+    await cron.reconcile();
+
+    expect(requestedUrls).toContain('/api/sessions/run-9/messages?profile=fitness');
+    expect(feed.listEntries()[0]).toMatchObject({
+      title: 'Suggested training today',
+      body: '6 miles easy.',
+    });
+  });
+
+  /**
+   * The single-profile install, and the active profile on any other: an
+   * omitted `profile` has always meant "the active one" and the endpoints are
+   * addressed bare, exactly as before this existed.
+   */
+  it('leaves a job with no profile addressed bare', async () => {
+    jobs(job());
+    runs('job-1', run());
+    messages('run-1', { role: 'assistant', content: 'ok' });
+    requestedUrls.length = 0;
+
+    await cron.reconcile();
+
+    expect(requestedUrls).toContain('/api/cron/jobs/job-1/runs');
+    expect(requestedUrls.every((u) => !u.includes('profile='))).toBe(true);
+    expect(feed.listEntries()[0]!.url).toBe('/chat?session=run-1');
+  });
+});
+
+/**
+ * The sweep.
+ *
+ * `cron.changed` is stat-ed off the *active* profile's `cron/jobs.json`, so a
+ * run in any other profile moves no watched file and produces no signal at
+ * all. The timer is the only thing that makes those runs arrive — and it is
+ * wired to the same settle-delayed scheduler, so a sweep landing next to a
+ * real signal collapses into one pass rather than two.
+ */
+describe('the sweep', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    cron.stopCronSweep();
+    vi.useRealTimers();
+  });
+
+  it('reconciles without any signal', async () => {
+    jobs(job({ id: 'job-2', profile: 'fitness' }));
+    runs('job-2');
+    await cron.reconcile();
+
+    cron.startCronSweep();
+    runs('job-2', run({ id: 'run-9' }));
+    messages('run-9', { role: 'assistant', content: 'Tempo, 4 miles.' });
+
+    await vi.advanceTimersByTimeAsync(3 * 60_000 + 2_500);
+    await vi.waitFor(() => expect(feed.listEntries()).toHaveLength(1));
+    expect(feed.listEntries()[0]).toMatchObject({ runId: 'run-9', body: 'Tempo, 4 miles.' });
+  });
+
+  it('stops when the proxy is shutting down', async () => {
+    jobs(job());
+    runs('job-1');
+    await cron.reconcile();
+
+    cron.startCronSweep();
+    cron.stopCronSweep();
+
+    runs('job-1', run());
+    messages('run-1', { role: 'assistant', content: 'ok' });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(feed.listEntries()).toEqual([]);
+  });
+
+  it('is idempotent — a second start does not double the passes', async () => {
+    cron.startCronSweep();
+    cron.startCronSweep();
+    cron.stopCronSweep();
+    // Nothing is scheduled once stopped, whatever the start count was.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(feed.listEntries()).toEqual([]);
   });
 });

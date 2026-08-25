@@ -30,6 +30,32 @@
  * Two passes, not one. A job that fails *before* running produces no session
  * and therefore no run record at all, so the run history cannot see it — see
  * `reportFailedExecution`, which reads the job record instead.
+ *
+ * ## Jobs in another profile, which is most of the ways this goes quiet
+ *
+ * `cron.changed` is not emitted by whatever ran the job. It is a one-second
+ * file watcher inside the gateway's socket server (`tui_gateway/server.py`)
+ * stat-ing `<active profile home>/cron/jobs.json` — process-wide, one home. So
+ * a job living in `profiles/fitness/cron/jobs.json` moves a file nothing is
+ * watching: it runs on time, writes its output, and this module is never told.
+ * No amount of gateway wiring fixes that from the outside, which is why the
+ * signal cannot be the only trigger — `startCronSweep` re-runs the pass on a
+ * timer, and the timer is what makes a non-active profile's runs arrive at
+ * all. It also closes a second hole the signal always had: runs that finished
+ * while the proxy was down are picked up on the next sweep instead of waiting
+ * for the next unrelated `cron.changed`.
+ *
+ * Two of the three reads then have to carry the profile, and the merged job
+ * list is where it comes from (`/api/cron/jobs` defaults to `profile=all`, so
+ * every profile's jobs are already here, each tagged):
+ *
+ *   - the runs endpoint, because Hermes otherwise resolves a job by scanning
+ *     every store and matching id **or name** — two profiles holding a
+ *     `morning-brief` would report each other's history;
+ *   - the session's messages, because sessions are per-profile stores and an
+ *     unqualified read 404s. That one fails quietly in the worst way: the
+ *     notification still goes out, with the fallback "<job> finished" where
+ *     the agent's actual reply should be.
  */
 import { clearToken, getToken, resolveToken, upstreamHttp, upstreamHost } from '../config.js';
 import { log } from '../log.js';
@@ -48,7 +74,18 @@ import { listSubscriptions } from './store.js';
  */
 const SETTLE_MS = 2500;
 
+/**
+ * How often to look without being asked.
+ *
+ * Slow on purpose: this is the backstop for what the signal cannot see, not
+ * the primary path. Each pass is one job list plus a runs call per job, and a
+ * run's reply is only fetched for a run this module has never seen — so the
+ * steady state is a couple of cheap requests every few minutes.
+ */
+const SWEEP_MS = 3 * 60_000;
+
 let timer: ReturnType<typeof setTimeout> | null = null;
+let sweep: ReturnType<typeof setInterval> | null = null;
 let running = false;
 /** Set again if a signal lands mid-pass, so the pass is not missed. */
 let dirty = false;
@@ -65,6 +102,8 @@ interface GatewayRun {
 interface GatewayJob {
   id?: unknown;
   name?: unknown;
+  /** Which profile's store the job came out of; absent on a single-profile install. */
+  profile?: unknown;
   last_status?: unknown;
   last_error?: unknown;
   last_run_at?: unknown;
@@ -90,6 +129,16 @@ async function gatewayGet<T>(path: string): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Address a profile-scoped endpoint. An absent profile means "the active one",
+ * which is the request this module always made and the right one for a
+ * single-profile install.
+ */
+function withProfile(path: string, profile: string | null): string {
+  if (!profile) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}profile=${encodeURIComponent(profile)}`;
 }
 
 function str(value: unknown): string | null {
@@ -120,9 +169,9 @@ function jobNameFromTitle(title: string | null, fallback: string | null): string
  * back down at send time — storing the 140-character version here is what used
  * to make a digest unreadable in the one place there was room to read it.
  */
-async function replyOf(runId: string): Promise<string | null> {
+async function replyOf(runId: string, profile: string | null): Promise<string | null> {
   const body = await gatewayGet<{ messages?: unknown[] } | unknown[]>(
-    `/api/sessions/${encodeURIComponent(runId)}/messages`,
+    withProfile(`/api/sessions/${encodeURIComponent(runId)}/messages`, profile),
   );
   const messages = Array.isArray(body) ? body : (body?.messages ?? []);
 
@@ -256,6 +305,27 @@ export function scheduleCronReconcile(): void {
 }
 
 /**
+ * Start looking on a timer as well as on a signal.
+ *
+ * The first pass is left to the signal or the first interval: a sweep the
+ * moment the proxy starts would race the push listener's own connect, and
+ * nothing is lost by waiting one interval for news that is already on disk.
+ */
+export function startCronSweep(): void {
+  if (sweep) return;
+  sweep = setInterval(() => scheduleCronReconcile(), SWEEP_MS);
+  // A periodic look at the cron log is never a reason to keep the process up.
+  sweep.unref?.();
+}
+
+export function stopCronSweep(): void {
+  if (sweep) clearInterval(sweep);
+  sweep = null;
+  if (timer) clearTimeout(timer);
+  timer = null;
+}
+
+/**
  * One reconcile pass. Exported so it can be driven directly — the scheduler
  * above wraps it in a settle delay that a test would otherwise have to fake.
  */
@@ -284,11 +354,12 @@ export async function reconcile(): Promise<void> {
       const job = raw as GatewayJob;
       const jobId = str(job.id);
       if (!jobId) continue;
+      const profile = str(job.profile);
 
       await reportFailedExecution(job, jobId, seeding);
 
       const runsBody = await gatewayGet<{ runs?: unknown[] } | unknown[]>(
-        `/api/cron/jobs/${encodeURIComponent(jobId)}/runs`,
+        withProfile(`/api/cron/jobs/${encodeURIComponent(jobId)}/runs`, profile),
       );
       if (!runsBody) continue;
       const runs = Array.isArray(runsBody) ? runsBody : (runsBody.runs ?? []);
@@ -309,7 +380,7 @@ export async function reconcile(): Promise<void> {
         const jobName = jobNameFromTitle(str(run.title), str(job.name) ?? jobId);
         const endReason = str(run.end_reason);
         const failed = looksFailed(endReason);
-        const reply = failed ? null : await replyOf(runId);
+        const reply = failed ? null : await replyOf(runId, profile);
 
         /**
          * The reply is the headline when there is one. A run that produced no
@@ -322,7 +393,17 @@ export async function reconcile(): Promise<void> {
           kind: 'cron.changed',
           title: jobName,
           body,
-          url: `/chat?session=${encodeURIComponent(runId)}`,
+          /**
+           * The profile travels with the session id, or the tap lands on
+           * "session not found".
+           *
+           * A cron session is stored in the profile the job ran in, and
+           * `ChatScreen`'s resume addresses the active profile when the link
+           * does not say otherwise — so a fitness run's notification opened a
+           * lookup in `default`, which 404s. The row is the one thing standing
+           * between the notification and the transcript, so it has to carry it.
+           */
+          url: withProfile(`/chat?session=${encodeURIComponent(runId)}`, profile),
           jobId,
           jobName,
           runId,

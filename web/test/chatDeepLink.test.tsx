@@ -154,6 +154,27 @@ describe('arriving from a cron notification', () => {
     await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(CRON_ID, 'research'));
   });
 
+  /**
+   * The shape a cron notification actually has. `?session=` is the alias every
+   * push and feed row uses, and a run belonging to another profile is exactly
+   * the case that reaches "session not found" without the profile beside it.
+   */
+  it('carries a profile named on the ?session= alias', async () => {
+    openAt(`/chat?session=${CRON_ID}&profile=fitness`);
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(CRON_ID, 'fitness'));
+  });
+
+  /**
+   * The REST reads after the resume are per-profile too, and all of them are
+   * best-effort — so getting this wrong costs the offline copy and leaves the
+   * conversation under a placeholder title, with nothing on screen to say why.
+   */
+  it('addresses the stored reads to that profile as well', async () => {
+    openAt(`/chat?session=${CRON_ID}&profile=fitness`);
+    await waitFor(() => expect(fetchSessionTitle).toHaveBeenCalledWith(CRON_ID, 'fitness'));
+    expect(fetchStoredMessages).toHaveBeenCalledWith(CRON_ID, 'fitness');
+  });
+
   it('treats ?resume= identically', async () => {
     openAt(`/chat?resume=${CRON_ID}`);
     // The second argument is the profile whose store holds the session.

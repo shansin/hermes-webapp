@@ -87,13 +87,6 @@ export function ChatScreen() {
   const connection = useUi((s) => s.connection);
   const toast = useUi((s) => s.toast);
 
-  /**
-   * The stored row behind this conversation, fetched only once the actions
-   * sheet is asked for — an ordinary chat should not pay a request for a sheet
-   * nobody opened.
-   */
-  const actionsRow = useSessionRow(actionsOpen ? storedSessionId : null);
-
   /** A socket that is actually usable, as opposed to one that merely says so. */
   const live = online && connection === 'open';
 
@@ -126,6 +119,17 @@ export function ChatScreen() {
    * link written before this existed.
    */
   const resumeProfile = params.get('profile');
+
+  /**
+   * The stored row behind this conversation, fetched only once the actions
+   * sheet is asked for — an ordinary chat should not pay a request for a sheet
+   * nobody opened.
+   *
+   * Below `resumeProfile` because it needs it: the row lives in the profile
+   * the link named, and asking the active profile for another one's session
+   * answers 404.
+   */
+  const actionsRow = useSessionRow(actionsOpen ? storedSessionId : null, resumeProfile);
   const wantNew = params.get('new') === '1';
   /**
    * Android share-sheet target, which reaches us in two shapes.
@@ -222,7 +226,7 @@ export function ChatScreen() {
 
         if (needsAnswers) {
           try {
-            restoreClarifyAnswers(await fetchStoredMessages(storedIdForRest));
+            restoreClarifyAnswers(await fetchStoredMessages(storedIdForRest, resumeProfile));
           } catch {
             // The questions are on screen; only the answers are missing.
           }
@@ -241,7 +245,7 @@ export function ChatScreen() {
       // without this the REST mirror the service worker caches would never be
       // requested while online — and would therefore never be there when it
       // is the only thing that can answer.
-      void fetchStoredMessages(storedIdForRest).catch(() => {});
+      void fetchStoredMessages(storedIdForRest, resumeProfile).catch(() => {});
 
       // Restore the stored title: `session.title` only fires when the agent
       // names a conversation, so a resumed one would keep the placeholder.
@@ -252,7 +256,7 @@ export function ChatScreen() {
         if (typeof carried === 'string' && carried) {
           setTitle(carried);
         } else {
-          const stored = await fetchSessionTitle(storedIdForRest);
+          const stored = await fetchSessionTitle(storedIdForRest, resumeProfile);
           if (stored) setTitle(stored);
         }
       } catch {

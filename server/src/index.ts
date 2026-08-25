@@ -33,6 +33,8 @@ import { pushRouter } from './routers/push.js';
 import { shareRouter } from './routers/share.js';
 import { notificationsRouter } from './routers/notifications.js';
 import { startPushListener, stopPushListener } from './push/events.js';
+import { startCronSweep, stopCronSweep } from './push/cron.js';
+import { flushFeed } from './push/feed.js';
 import { pushPublicKey } from './push/send.js';
 import { attachWsProxy } from './routers/wsProxy.js';
 import { staticRouter, hasBuiltWeb, webBuildId, initStatic } from './static.js';
@@ -236,11 +238,18 @@ attachWsProxy(server as unknown as Parameters<typeof attachWsProxy>[0]);
 // Held open for the life of the process: push exists to deliver when no
 // browser is connected, so it cannot depend on a client socket being up.
 startPushListener();
+// And a periodic look on top of the socket's signals: `cron.changed` only ever
+// fires for the active profile's job file, so a job in any other profile is
+// invisible to the listener — see the note in `push/cron.ts`.
+startCronSweep();
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
     log.info(`${signal} — shutting down`);
     stopPushListener();
+    stopCronSweep();
+    // The feed's writes are debounced, so the last one may still be pending.
+    flushFeed();
     server.close(() => process.exit(0));
     // Don't let a wedged keep-alive socket hold the process open forever.
     setTimeout(() => process.exit(0), 3000).unref();
