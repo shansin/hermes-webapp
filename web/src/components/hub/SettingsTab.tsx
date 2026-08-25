@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useHealth } from '../../api/hub';
 import { ACCENTS, useUi, type Accent, type Theme } from '../../store/ui';
-import { Switch } from '../shared/misc';
+import { Skeleton, Switch } from '../shared/misc';
 import { hermes } from '../../ws/client';
 import { buzz } from '../../lib/haptics';
 import {
@@ -81,7 +81,27 @@ function NotificationsSection() {
    */
   const needsInstall = isIosSafari() && !isStandalone();
 
-  if (state === 'loading') return null;
+  /**
+   * A placeholder while the push status resolves, not nothing.
+   *
+   * `pushStatus()` reads the service worker registration and the current
+   * subscription, which on a cold start is slow enough to see — and rendering
+   * `null` meant the NOTIFICATIONS heading and its card appeared a beat after
+   * everything else, shoving the BUILD section down the screen under a thumb
+   * already reaching for it.
+   */
+  if (state === 'loading') {
+    return (
+      <>
+        <div className="group-head">
+          NOTIFICATIONS
+        </div>
+        <div className="card" style={{ marginBottom: 16 }}>
+          <Skeleton h={38} mb={0} />
+        </div>
+      </>
+    );
+  }
   if (state === 'unsupported' && !needsInstall) return null;
 
   /**
@@ -94,7 +114,7 @@ function NotificationsSection() {
 
   return (
     <>
-      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
+      <div className="group-head">
         NOTIFICATIONS
       </div>
       <div className="card" style={{ marginBottom: 16 }}>
@@ -121,7 +141,7 @@ function NotificationsSection() {
         </div>
 
         {needsInstall && (
-          <div style={{ fontSize: 12.5, color: 'var(--warn)', marginTop: 10 }}>
+          <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--warn)', marginTop: 10 }}>
             On iPhone and iPad, notifications only work once the app is added to
             the Home Screen — Safari tabs never get them. Share → Add to Home
             Screen, then open it from there.
@@ -129,7 +149,7 @@ function NotificationsSection() {
         )}
 
         {state === 'denied' && (
-          <div style={{ fontSize: 12.5, color: 'var(--warn)', marginTop: 10 }}>
+          <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--warn)', marginTop: 10 }}>
             Blocked. The browser won't ask again — allow notifications for this
             site in its own settings, then come back.
           </div>
@@ -155,7 +175,7 @@ function NotificationsSection() {
               border: '1px solid var(--border-soft)',
               borderRadius: 8,
               color: 'var(--text)',
-              fontSize: 13,
+              fontSize: 'var(--type-detail)',
               padding: '8px 12px',
             }}
           >
@@ -284,7 +304,7 @@ function DevPanel() {
   return (
     <div className="card" style={{ marginTop: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 9 }}>
-        <div style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>Raw WS frames</div>
+        <div style={{ fontWeight: 600, fontSize: 'var(--type-body-md)', flex: 1 }}>Raw WS frames</div>
         <button className="btn btn--sm" onClick={() => setPaused((p) => !p)}>
           {paused ? 'Resume' : 'Pause'}
         </button>
@@ -297,7 +317,7 @@ function DevPanel() {
           maxHeight: 320,
           overflowY: 'auto',
           fontFamily: 'var(--mono)',
-          fontSize: 10.5,
+          fontSize: 'var(--type-micro)',
           lineHeight: 1.45,
         }}
       >
@@ -369,7 +389,7 @@ export function SettingsTab() {
     <div style={{ padding: 12 }}>
       <div
         onClick={onHeadingTap}
-        style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}
+        className="group-head"
       >
         APPEARANCE
       </div>
@@ -392,7 +412,7 @@ export function SettingsTab() {
               background: theme === t.id ? 'var(--accent-soft)' : 'var(--bg-elev)',
               border: `1px solid ${theme === t.id ? 'var(--accent)' : 'var(--border-soft)'}`,
               color: theme === t.id ? 'var(--accent)' : 'var(--text)',
-              fontSize: 13,
+              fontSize: 'var(--type-detail)',
               fontWeight: 550,
             }}
           >
@@ -444,7 +464,7 @@ export function SettingsTab() {
 
       <NotificationsSection />
 
-      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
+      <div className="group-head">
         BUILD
       </div>
       <div className="card" style={{ marginBottom: 16 }}>
@@ -459,7 +479,7 @@ export function SettingsTab() {
         )}
       </div>
 
-      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
+      <div className="group-head">
         BACKEND
       </div>
       <div className="card" style={{ marginBottom: 16 }}>
@@ -480,7 +500,7 @@ export function SettingsTab() {
       {!(typeof window !== 'undefined' && window.isSecureContext) && (
         <div
           className="card"
-          style={{ marginBottom: 16, borderColor: 'var(--warn)', fontSize: 13, color: 'var(--text-dim)' }}
+          style={{ marginBottom: 16, borderColor: 'var(--warn)', fontSize: 'var(--type-detail)', color: 'var(--text-dim)' }}
         >
           Running over plain HTTP, so install-to-home-screen, offline caching,
           push notifications and <strong>voice input</strong> stay dormant — the
@@ -503,7 +523,7 @@ export function SettingsTab() {
         </div>
       )}
 
-      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
+      <div className="group-head">
         OPEN ON ANOTHER PHONE
       </div>
       <div className="card" style={{ textAlign: 'center', marginBottom: 16 }}>
@@ -513,7 +533,7 @@ export function SettingsTab() {
         <div
           style={{
             fontFamily: 'var(--mono)',
-            fontSize: 12.5,
+            fontSize: 'var(--type-body-sm)',
             color: 'var(--text-dim)',
             marginTop: 9,
             overflowWrap: 'anywhere',
@@ -566,9 +586,9 @@ function Row({
           ? 'var(--error)'
           : 'var(--text-dim)';
   return (
-    <div style={{ display: 'flex', padding: '5px 0', fontSize: 13.5 }}>
+    <div style={{ display: 'flex', padding: '5px 0', fontSize: 'var(--type-detail)' }}>
       <span style={{ flex: 1, color: 'var(--text-faint)' }}>{label}</span>
-      <span style={{ color, fontFamily: 'var(--mono)', fontSize: 12.5 }}>{value}</span>
+      <span style={{ color, fontFamily: 'var(--mono)', fontSize: 'var(--type-body-sm)' }}>{value}</span>
     </div>
   );
 }

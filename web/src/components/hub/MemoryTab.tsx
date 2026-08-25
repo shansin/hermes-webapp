@@ -7,6 +7,7 @@
  */
 import { useEffect, useState } from 'react';
 import { IconChevron } from '../shared/Icons';
+import { Skeleton } from '../shared/misc';
 import { useMemoryProviders, useTextFile, useWriteTextFile } from '../../api/hub';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
@@ -62,17 +63,17 @@ function FileCard({ path, label, hint }: { path: string; label: string; hint: st
           <IconChevron size={15} />
         </span>
         <span style={{ flex: 1 }}>
-          <div style={{ fontWeight: 600, fontSize: 14.5, fontFamily: 'var(--mono)' }}>{label}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>{hint}</div>
+          <div style={{ fontWeight: 600, fontSize: 'var(--type-body-md)', fontFamily: 'var(--mono)' }}>{label}</div>
+          <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>{hint}</div>
         </span>
-        {dirty && <span style={{ color: 'var(--accent)', fontSize: 11.5, fontWeight: 600 }}>edited</span>}
+        {dirty && <span style={{ color: 'var(--accent)', fontSize: 'var(--type-label-sm)', fontWeight: 600 }}>edited</span>}
       </button>
 
       {open && (
         <div style={{ padding: '0 13px 13px' }}>
-          {isLoading && <div style={{ color: 'var(--text-faint)', fontSize: 13 }}>Loading…</div>}
+          {isLoading && <Skeleton h={220} mb={9} />}
           {error && (
-            <div style={{ color: 'var(--text-faint)', fontSize: 13 }}>
+            <div style={{ color: 'var(--text-faint)', fontSize: 'var(--type-detail)' }}>
               This file doesn't exist yet — saving will create it.
             </div>
           )}
@@ -81,7 +82,7 @@ function FileCard({ path, label, hint }: { path: string; label: string; hint: st
             value={draft ?? ''}
             onChange={(e) => setDraft(e.target.value)}
             rows={12}
-            style={{ fontFamily: 'var(--mono)', fontSize: 13, resize: 'vertical', lineHeight: 1.5 }}
+            style={{ fontFamily: 'var(--mono)', fontSize: 'var(--type-detail)', resize: 'vertical', lineHeight: 1.5 }}
             placeholder="# Empty"
           />
           <button
@@ -109,16 +110,16 @@ export function MemoryTab() {
 
       {data && (
         <div className="card" style={{ marginTop: 4 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-faint)', fontWeight: 650, marginBottom: 8 }}>
+          <div className="group-head">
             MEMORY BACKEND
           </div>
-          <div style={{ fontSize: 14, marginBottom: 8 }}>
+          <div style={{ fontSize: 'var(--type-body-md)', marginBottom: 8 }}>
             {data.active || 'Built-in (files only)'}
           </div>
           {data.providers
             .filter((p) => p.status === 'available' || p.name === data.active)
             .map((p) => (
-              <div key={p.name} style={{ fontSize: 12.5, color: 'var(--text-dim)', padding: '3px 0' }}>
+              <div key={p.name} style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-dim)', padding: '3px 0' }}>
                 {p.name} — {p.status}
               </div>
             ))}

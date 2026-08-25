@@ -71,6 +71,34 @@ export function FilesScreen() {
   /** Path whose destructive action is currently revealed. */
   const [armed, setArmed] = useState<string | null>(null);
 
+  /**
+   * An armed row disarms itself on the next thing you do.
+   *
+   * Revealing the trash icon is a mode, and a mode with no way out is a trap:
+   * tapping anywhere else, scrolling the listing away, or backgrounding the
+   * app all used to leave a red delete button sitting under a thumb until
+   * some other row happened to be armed. Anything that is not a touch inside
+   * the armed row itself ends the mode.
+   */
+  useEffect(() => {
+    if (armed === null) return;
+    const disarm = (e: Event) => {
+      const t = e.target;
+      if (t instanceof Element && t.closest('[data-armed]')) return;
+      setArmed(null);
+    };
+    // Capture, so a scroll inside the listing container is seen too — scroll
+    // does not bubble to the document.
+    document.addEventListener('pointerdown', disarm, true);
+    document.addEventListener('scroll', disarm, true);
+    window.addEventListener('blur', disarm);
+    return () => {
+      document.removeEventListener('pointerdown', disarm, true);
+      document.removeEventListener('scroll', disarm, true);
+      window.removeEventListener('blur', disarm);
+    };
+  }, [armed]);
+
   const defaultCwd = useDefaultCwd();
   const listing = useDirectory(dir);
   const git = useGitStatus(dir);
@@ -226,6 +254,7 @@ export function FilesScreen() {
                     stands behind it. */}
                 {armed === entry.path ? (
                   <button
+                    data-armed
                     className="icon-btn icon-btn--danger"
                     aria-label={`Delete ${entry.name}`}
                     onClick={() => {
@@ -316,7 +345,7 @@ export function FilesScreen() {
           </>
         }
       >
-        <p style={{ fontSize: 13.5, color: 'var(--text-dim)', margin: 0 }}>
+        <p style={{ fontSize: 'var(--type-detail)', color: 'var(--text-dim)', margin: 0 }}>
           {confirmDelete?.isDirectory
             ? 'This folder and everything inside it will be deleted from disk. This cannot be undone.'
             : 'This file will be deleted from disk. This cannot be undone.'}
