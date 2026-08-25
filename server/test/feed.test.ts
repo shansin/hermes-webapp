@@ -44,6 +44,18 @@ const entry = (over: Partial<Parameters<Feed['appendEntry']>[0]> = {}) => ({
 });
 
 beforeEach(async () => {
+  /**
+   * Settle the previous test's module before discarding it.
+   *
+   * Writes are debounced now (see `persist`), so a module instance can be
+   * holding a `setTimeout` that still points at its own state. `resetModules`
+   * does not cancel it: it would fire a quarter of a second later, write the
+   * old test's feed back over the file this one just deleted, and hand the
+   * *next* test whatever the last one happened to leave behind. Exactly the
+   * shutdown case `flushFeed` exists for, which is why the export is reused
+   * here rather than a test-only hatch being added.
+   */
+  feed?.flushFeed();
   rmSync(FILE, { force: true });
   vi.resetModules();
   feed = await import('../src/push/feed.js');
@@ -369,5 +381,66 @@ describe('read tracking', () => {
     feed.appendEntry(entry({ runId: 'r1', at: 1_000 }));
     feed.clearEntries();
     expect(feed.unreadCount()).toBe(0);
+  });
+});
+
+/**
+ * Writing to disk, now that writes are debounced.
+ *
+ * The debounce exists to keep bursts off the event loop (`persist` in
+ * `feed.ts`), and it is only safe because it fires on the leading edge — the
+ * first write of a burst goes out synchronously, so "appended" and "on disk"
+ * remain the same statement for every caller that is not already in a burst.
+ * These pin that, because getting it wrong is the kind of bug that only shows
+ * up as a feed missing the row explaining why the proxy stopped.
+ */
+describe('persistence', () => {
+  it('writes the first append straight through', () => {
+    feed.appendEntry(entry({ runId: 'r1' }));
+    const onDisk = JSON.parse(readFileSync(FILE, 'utf8')) as { entries: unknown[] };
+    expect(onDisk.entries).toHaveLength(1);
+  });
+
+  it('collapses a burst into fewer writes than appends', () => {
+    // The case this exists for: `cron.changed` arrives about four times a run,
+    // and a catch-up on restart appends a run at a time.
+    feed.appendEntry(entry({ runId: 'r1' }));
+    const first = statSync(FILE).mtimeMs;
+    for (let i = 2; i <= 20; i++) feed.appendEntry(entry({ runId: `r${i}` }));
+
+    // Still the first write's file: the other nineteen are waiting.
+    const onDisk = JSON.parse(readFileSync(FILE, 'utf8')) as { entries: unknown[] };
+    expect(onDisk.entries).toHaveLength(1);
+    expect(statSync(FILE).mtimeMs).toBe(first);
+
+    // …and in memory nothing was lost.
+    expect(feed.listEntries()).toHaveLength(20);
+  });
+
+  it('flushes what a burst left pending', () => {
+    // What shutdown calls. Without it a proxy stopping inside the cooldown
+    // drops the rows it had queued — most likely including the one saying why.
+    for (let i = 1; i <= 5; i++) feed.appendEntry(entry({ runId: `r${i}` }));
+    feed.flushFeed();
+    const onDisk = JSON.parse(readFileSync(FILE, 'utf8')) as { entries: unknown[] };
+    expect(onDisk.entries).toHaveLength(5);
+  });
+
+  it('is a no-op to flush when nothing is pending', () => {
+    feed.appendEntry(entry({ runId: 'r1' }));
+    expect(() => {
+      feed.flushFeed();
+      feed.flushFeed();
+    }).not.toThrow();
+    expect((JSON.parse(readFileSync(FILE, 'utf8')) as { entries: unknown[] }).entries).toHaveLength(1);
+  });
+
+  it('survives a reload with everything flushed', async () => {
+    for (let i = 1; i <= 5; i++) feed.appendEntry(entry({ runId: `r${i}` }));
+    feed.flushFeed();
+
+    vi.resetModules();
+    feed = await import('../src/push/feed.js');
+    expect(feed.listEntries()).toHaveLength(5);
   });
 });

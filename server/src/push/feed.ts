@@ -156,7 +156,12 @@ function load(): FileShape {
   return state;
 }
 
-function persist(): void {
+function writeNow(): void {
+  pending = null;
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
   const tmp = `${FILE}.tmp`;
   try {
     writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
@@ -168,6 +173,70 @@ function persist(): void {
     } catch {
       // Nothing further to do; the rename already failed.
     }
+  }
+}
+
+/**
+ * How long writes are allowed to pile up before one goes out.
+ *
+ * Short enough that "wrote it down" is true by the time anything asks — the
+ * feed is read over HTTP, which is milliseconds away at best — and long
+ * enough to collapse the bursts this actually sees. `cron.changed` arrives
+ * about four times per run and each arrival can touch the feed; a backend
+ * flapping writes a row per attempt; a catch-up on restart appends a run at a
+ * time. Each of those was a separate `writeFileSync` plus `renameSync` on the
+ * event loop, which is where the proxy is also piping response bodies and
+ * bridging a WebSocket.
+ */
+const PERSIST_DEBOUNCE_MS = 250;
+
+let timer: ReturnType<typeof setTimeout> | null = null;
+let pending: null | true = null;
+
+/**
+ * Write now if nothing was written recently; otherwise write once, shortly.
+ *
+ * Leading edge, not trailing, and that is the whole design. A feed that is
+ * mutated once — the ordinary case, and every case a reader cares about — is
+ * on disk before the call returns, exactly as it was before: "appended" and
+ * "recorded" stay the same statement. What the debounce removes is the
+ * *burst*, where the same second's worth of `cron.changed` nudges, or a
+ * catch-up appending a run at a time, each paid for their own `writeFileSync`
+ * plus `renameSync` on the event loop the proxy is also using to pipe response
+ * bodies and bridge a WebSocket.
+ *
+ * The loss window is therefore one cooldown interval, and only for writes that
+ * arrived while another was already going out — over a store capped at 300
+ * entries, failing in the direction the feed already tolerates: an entry that
+ * was pushed but not recorded, which is indistinguishable from one that
+ * happened while the proxy was down. Shutdown calls `flushFeed`.
+ */
+function persist(): void {
+  if (timer) {
+    pending = true;
+    return;
+  }
+  writeNow();
+  timer = setTimeout(() => {
+    timer = null;
+    if (pending) writeNow();
+  }, PERSIST_DEBOUNCE_MS);
+  // The cooldown must never be the reason the process stays alive.
+  timer.unref?.();
+}
+
+/**
+ * Write anything outstanding right now.
+ *
+ * Called on shutdown. Without it the `unref` above means a proxy stopping
+ * inside the debounce window drops whatever it was about to write — which is
+ * most likely to be the row explaining why it stopped.
+ */
+export function flushFeed(): void {
+  if (pending) writeNow();
+  else if (timer) {
+    clearTimeout(timer);
+    timer = null;
   }
 }
 
