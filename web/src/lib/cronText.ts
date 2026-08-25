@@ -166,3 +166,109 @@ function ordinal(n: number): string {
       return `${n}th`;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Validation
+   -------------------------------------------------------------------------- */
+
+/**
+ * Is this expression definitely wrong?
+ *
+ * Deliberately the inverse of `humanCron`'s job, and it obeys the same rule
+ * from the other side: that one only speaks when it is certain it understands,
+ * this one only complains when it is certain it does not. Cron dialects differ
+ * — `L`, `W`, `#`, `?`, six-field forms with seconds, name abbreviations — and
+ * Hermes' scheduler is the authority on which of them it takes. A validator
+ * that guessed would block a schedule the backend would have accepted, which
+ * is a worse failure than the one it is here to prevent: refusing to save a
+ * job is visible and infuriating, while `0 9 * * 8` silently never running is
+ * neither.
+ *
+ * So this rejects only what no dialect accepts: the wrong number of fields, an
+ * unknown macro, syntax that is not a cron field at all, and numbers outside
+ * their field's range. Everything exotic passes through to the backend, which
+ * still answers with a toast if it disagrees.
+ *
+ * Returns a sentence to show under the field, or null when there is nothing to
+ * say.
+ */
+export function cronError(expression: string): string | null {
+  const expr = expression.trim();
+  if (!expr) return null; // Empty is "not filled in yet", not "wrong".
+
+  if (expr.startsWith('@')) {
+    const macros = [
+      '@yearly', '@annually', '@monthly', '@weekly',
+      '@daily', '@midnight', '@hourly', '@reboot',
+    ];
+    return macros.includes(expr.toLowerCase())
+      ? null
+      : `${expr} isn't a known shorthand. Try @daily, @hourly or @weekly — or write it out, e.g. 0 9 * * *.`;
+  }
+
+  const fields = expr.split(/\s+/);
+  // Five is standard; six is the seconds-first form some schedulers take, and
+  // is not this app's business to rule on.
+  if (fields.length !== 5 && fields.length !== 6) {
+    return `A cron schedule has 5 fields — minute hour day month weekday — and this has ${fields.length}. For example, 0 9 * * * is every day at 9am.`;
+  }
+
+  const [minute, hour, dom, month, dow] =
+    fields.length === 6 ? fields.slice(1) : fields;
+
+  const specs: [string, string, number, number, readonly string[]][] = [
+    ['minute', minute!, 0, 59, []],
+    ['hour', hour!, 0, 23, []],
+    ['day of month', dom!, 1, 31, []],
+    ['month', month!, 1, 12, MONTH_NAMES],
+    // 0 and 7 both mean Sunday, everywhere.
+    ['weekday', dow!, 0, 7, DAY_NAMES],
+  ];
+
+  for (const [label, field, min, max, names] of specs) {
+    const bad = fieldError(field, min, max, names);
+    if (bad) return `The ${label} field (${field}) ${bad}`;
+  }
+  return null;
+}
+
+const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'] as const;
+const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
+
+/**
+ * One field, or why it cannot be one.
+ *
+ * Anything carrying the dialect-specific characters is waved through whole:
+ * `L`, `W`, `#` and `?` mean different things in different schedulers and
+ * checking them here would be inventing a dialect.
+ */
+function fieldError(
+  field: string,
+  min: number,
+  max: number,
+  names: readonly string[],
+): string | null {
+  if (/[LW#?]/i.test(field)) return null;
+
+  for (const part of field.split(',')) {
+    if (!part) return 'has an empty entry — a stray comma.';
+
+    const [range, stepStr, ...rest] = part.split('/');
+    if (rest.length) return 'has more than one step (only one / per entry).';
+    if (stepStr !== undefined) {
+      if (!/^\d+$/.test(stepStr) || Number(stepStr) === 0) {
+        return `has an invalid step "/${stepStr}".`;
+      }
+    }
+    if (range === '*') continue;
+
+    for (const bound of range!.split('-')) {
+      if (names.includes(bound.toLowerCase() as never)) continue;
+      if (!/^\d+$/.test(bound)) return `isn't a number or a range.`;
+      const n = Number(bound);
+      if (n < min || n > max) return `must be between ${min} and ${max}, not ${n}.`;
+    }
+    if (range!.split('-').length > 2) return 'has a malformed range.';
+  }
+  return null;
+}

@@ -8,7 +8,7 @@
  * caller show the expression, and that is what most of these cases pin.
  */
 import { describe, it, expect } from 'vitest';
-import { humanCron } from '../src/lib/cronText';
+import { cronError, humanCron } from '../src/lib/cronText';
 
 describe('humanCron — the shapes on this install', () => {
   it('renders the real jobs', () => {
@@ -123,5 +123,96 @@ describe('humanCron — refuses rather than guesses', () => {
   it('rejects non-strings', () => {
     expect(humanCron(null)).toBeNull();
     expect(humanCron(undefined)).toBeNull();
+  });
+});
+
+/**
+ * The validator behind the create form's inline error.
+ *
+ * Its contract runs the opposite way to `humanCron`'s and matters just as
+ * much: a false complaint blocks a schedule Hermes would have accepted, so
+ * every exotic-but-real dialect form below must come back clean. The cases
+ * that must be *caught* are the ones that used to save happily and then never
+ * run.
+ */
+describe('cronError', () => {
+  it('says nothing about an empty field', () => {
+    // Not filled in yet is not the same as wrong; the submit button already
+    // handles "nothing typed".
+    expect(cronError('')).toBeNull();
+    expect(cronError('   ')).toBeNull();
+  });
+
+  it('accepts the ordinary shapes', () => {
+    for (const expr of [
+      '0 9 * * *',
+      '*/15 * * * *',
+      '30 6 * * 1',
+      '0 0 1 1 *',
+      '0 9,17 * * 1-5',
+      '0 */2 * * *',
+      '15 14 1 * *',
+      '0 22 * * 1-5',
+      '5 0 * 8 *',
+    ]) {
+      expect(cronError(expr), expr).toBeNull();
+    }
+  });
+
+  it('accepts both spellings of Sunday', () => {
+    expect(cronError('0 9 * * 0')).toBeNull();
+    expect(cronError('0 9 * * 7')).toBeNull();
+  });
+
+  it('accepts month and weekday names', () => {
+    expect(cronError('0 9 * JAN *')).toBeNull();
+    expect(cronError('0 9 * * mon-fri')).toBeNull();
+  });
+
+  it('accepts the known macros, and only those', () => {
+    expect(cronError('@daily')).toBeNull();
+    expect(cronError('@REBOOT')).toBeNull();
+    expect(cronError('@fortnightly')).toMatch(/shorthand/);
+  });
+
+  it('accepts a six-field form rather than ruling on it', () => {
+    // Seconds-first is a real dialect and the backend is the authority on
+    // whether this scheduler takes it. Refusing here would block a job that
+    // would have run.
+    expect(cronError('0 0 9 * * *')).toBeNull();
+  });
+
+  it('waves through the dialect-specific characters', () => {
+    // L, W, # and ? mean different things in different schedulers; checking
+    // them here would be inventing a dialect.
+    expect(cronError('0 9 L * *')).toBeNull();
+    expect(cronError('0 9 ? * 6#3')).toBeNull();
+    expect(cronError('0 9 15W * *')).toBeNull();
+  });
+
+  it('catches the wrong number of fields', () => {
+    expect(cronError('0 9 * *')).toMatch(/5 fields/);
+    expect(cronError('0 9 * * * * *')).toMatch(/5 fields/);
+  });
+
+  it('catches out-of-range values, naming the field', () => {
+    expect(cronError('60 9 * * *')).toMatch(/minute/);
+    expect(cronError('0 24 * * *')).toMatch(/hour/);
+    expect(cronError('0 9 32 * *')).toMatch(/day of month/);
+    expect(cronError('0 9 * 13 *')).toMatch(/month/);
+    // The one that motivated this: a plausible typo for Sunday that no
+    // scheduler will ever fire.
+    expect(cronError('0 9 * * 8')).toMatch(/weekday/);
+  });
+
+  it('catches things that are not cron fields at all', () => {
+    expect(cronError('every day at 9')).not.toBeNull();
+    expect(cronError('0 9 * * abc')).not.toBeNull();
+  });
+
+  it('catches malformed steps and stray commas', () => {
+    expect(cronError('*/0 * * * *')).toMatch(/step/);
+    expect(cronError('*/a * * * *')).toMatch(/step/);
+    expect(cronError('0 9,, * * *')).toMatch(/comma/);
   });
 });
