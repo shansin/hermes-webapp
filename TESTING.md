@@ -66,11 +66,21 @@ properties the feed gained when it widened past cron: a file written by the
 older shape still loads (it is somebody's history, and warning-and-starting-
 empty would discard it), and the unread watermark is the newest entry's
 timestamp rather than the clock, so a run finishing as the screen opens is
-still news.
+still news. Since the writes were debounced it also pins what that debounce is
+allowed to change: the first append of a burst still lands on disk before the
+call returns — leading edge, so "appended" and "recorded" remain the same
+statement — while a burst is collapsed, and `flushFeed()` gets out whatever is
+still queued. That last one is what shutdown calls, and without it a proxy
+stopping inside the cooldown drops the row explaining why it stopped.
 
 **`server/test/cron.test.ts`** — the reconcile pass, driven against a stubbed
 gateway. Mostly about telling a person exactly once: seeding, dedupe by run id,
-failures that never produced a run, and a gateway that is not answering.
+failures that never produced a run, and a gateway that is not answering. Also
+the profile dimension, where all three failures are silent: a job in another
+profile produces no `cron.changed` at all (hence the sweep, tested with the
+timer faked), an unqualified runs call is resolved against every store by id or
+name, and an unqualified messages call 404s into a notification that fires with
+the reply missing rather than not firing.
 
 **`server/test/events.test.ts`** — which gateway events are worth waking a phone
 for, and which must stay silent.
@@ -147,6 +157,24 @@ with no profile parameter Hermes resolves the job by scanning every store and
 matching on id *or name*, so an unscoped delete can destroy a same-named job
 belonging to another profile.
 
+**`web/test/skillScope.test.tsx`** — which profile a skills call addresses, and
+what install actually posts. Skills are per-profile in both directions: the
+files live in one profile's `skills/` directory and the enabled set is that
+profile's `skills.disabled`. Before the screen had a picker it could only be
+right by accident, and wrong invisibly — a switch flipped while looking at
+`research` reported success and edited `default`. The install body is pinned
+here too because its required field is `identifier`
+(`skills-sh/anthropics/skills/pdf`), not the display `name`: one search for
+`pdf` returns that name from three different repos, so the name addresses
+nothing and the endpoint 422s.
+
+**`web/test/skills.test.ts`** — grouping the installed list by category, where
+the category is server-supplied and can be null. Hermes reads a skill's
+category from its parent directory, so one the agent wrote itself, filed at the
+top level, arrives as `category: null`; grouping on that key and rendering the
+heading with `.replace()` threw during render, and with no error boundary in
+the app that blanked every screen, not just this one.
+
 **`web/test/appBack.test.tsx`** — where the header's back arrow actually goes.
 The check is on React Router's `history.state.idx`, chosen over
 `location.key === 'default'` precisely because a redirect (`/usage` →
@@ -213,6 +241,51 @@ all failure cases, because the success is two `postMessage`s and the failures
 are what a person hits: a reload of a spent `?share=`, a page no worker
 controls, a worker that never answers. Each must end in "no share" rather than
 a promise the chat screen waits on forever.
+
+**`web/test/streamingMarkdown.test.ts`** — where the streaming bubble is allowed
+to cut a half-written markdown document in half so the finished part can be
+parsed once instead of ten times a second. Both ways of being wrong are
+invisible: splitting too eagerly corrupts the message — two unterminated fences
+out of one, an ordered list that restarts at 1 halfway down — and only while a
+reply is streaming, the state hardest to catch and impossible to reproduce from
+a saved transcript; splitting too timidly renders perfectly and silently gives
+the whole optimisation back. So the refusals and the splits are pinned
+separately.
+
+**`web/test/localImages.test.ts`** and **`web/test/chatImages.test.tsx`** — the
+two ways a picture reaches the transcript, both of which fail by showing
+nothing. A received screenshot arrives as `![…](file:///…)`, and
+react-markdown's URL sanitizer blanks that scheme before the renderer ever sees
+it — no error, no console line, just an absent image; the render test pins the
+transform that lets it through and the authenticated read it becomes. A sent
+one is persisted by Hermes as an `@image:<path>` directive appended to your own
+message, quoted by its rules when the path holds a space or a bracket, so the
+parser is checked against the formatter it has to agree with — a ref that isn't
+recognised renders as a stray line of file path where the photo should be.
+
+**`web/test/highlight.test.ts`** — the local rehype plugin that replaced
+`rehype-highlight` to keep thirty unused grammars out of the Markdown chunk.
+Trading a well-tested dependency for eighty lines of tree-walking is what buys
+these: that an unknown language degrades to plain code rather than throwing,
+that the `hljs` class and the fence's own `language-` class both survive (the
+second is what the code header and the mermaid special case read), and that
+inline code is left alone. An exception inside a rehype plugin takes down the
+whole message, and a message that fails to render looks like the agent said
+nothing.
+
+**`web/test/sessionCache.test.ts`** — hiding a session from the query cache
+before its delete is sent, which is how the undo toasts work at all. There are
+two shapes under the `['sessions']` prefix now — the plain lists and the paged
+list's `{ pages: [...] }` — and a setter that understands one and quietly skips
+the other throws nothing and logs nothing: the row stays put, the tap looks
+like it missed, and the delete goes through eight seconds later anyway.
+
+**`web/test/cronText.test.ts`** — cron expressions in words, and the validator
+behind the create form's inline error. Those two contracts run opposite ways
+and both matter: `humanCron` must stay silent unless it is certain, because a
+schedule rendered wrong gets believed; `cronError` must stay silent unless it is
+certain, because a false complaint blocks a schedule Hermes would have accepted.
+The cases it must catch are the ones that used to save happily and never run.
 
 **`web/test/push.test.ts` / `apiClient.test.ts` / `uiStore.test.ts` /
 `sessionTags.test.ts`** — browser-side push state, REST error shaping, theme

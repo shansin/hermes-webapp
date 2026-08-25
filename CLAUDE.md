@@ -25,6 +25,9 @@ pnpm build                   # web/dist
 pnpm test                    # both vitest projects
 npx vitest run --project server        # or --project web
 npx vitest run web/test/usage.test.ts  # a single file
+
+pnpm size                    # gzipped chunk report + budgets (needs a build)
+pnpm analyze                 # rebuild with a treemap at web/dist/stats.html
 ```
 
 Requires a Hermes backend on `127.0.0.1:9119` (`hermes serve --port 9119 --host 127.0.0.1`).
@@ -86,22 +89,69 @@ The seven system screens (Memory, Skills, Cron, Models, Usage, Profiles, Setting
 
 **The Activity pane spans profiles, and had to be made to.** Its three sources are not alike: the kanban board is one shared store and the cron list endpoint defaults to `profile=all`, but sessions are per-profile — so the pane used to show a card assigned to `research` while hiding the conversation it was running in. `useActiveSessionsAcrossProfiles` fans out one query per profile (own key, own refetch interval, so an idle profile settles to the slow poll) and merges. Unlike the Sessions screen this takes no picker: it is a short unpaginated list of live work and the point is seeing everything at once. `ActivityItem.owner` carries the profile (or the kanban assignee) and is rendered only when more than one profile exists; a session row's `url` carries `&profile=`, without which tapping another agent's row opens an empty chat. The fan-out is capped at `ACTIVITY_PROFILE_CAP` and the screen says so rather than quietly covering less.
 
+**An image in a transcript is a path on the agent's machine, never a URL.** Both
+directions of it, and neither can be handed to an `<img>`: a received
+screenshot arrives as `![shot](file:///home/…/x.png)`, which a page served over
+http cannot read and which react-markdown's URL sanitizer blanks before the
+renderer sees it — the failure is an absent picture and nothing else. A sent
+one is persisted by Hermes as an `@image:<path>` directive line appended to
+your own message (its desktop client's own form, quoted by
+`format_reference_value`'s rules when the path holds a space or a bracket), so
+left alone it renders as a stray line of file path. `lib/localImages.ts` turns
+both into an absolute path and `chat/LocalImage.tsx` fetches it through
+`/api/fs/read-data-url` — the same authenticated read the file viewer uses,
+because the transcript's origin is the proxy and a second origin for raw files
+would need the credential the phone deliberately never holds. The composer
+carries the same `@image:` ref into the message's *display* text (never the
+prompt — the gateway already holds the bytes) so the live bubble and the
+reloaded one are one renderer rather than two.
+
+**Enter is a newline in the composer; Ctrl/Cmd+Enter sends.** A message to an
+agent is a paragraph more often than a line. On a phone the key is a return key
+either way and the button is the only way to send, so this only changes a
+hardware keyboard. Enter still accepts a highlighted slash completion, because
+there the list is what is in front of you.
+
+The streaming bubble parses markdown **once per block, not once per tick**.
+`lib/streamingMarkdown.ts` splits the accumulated text at the last blank line
+that is safely a block boundary — outside any fence, and not in front of a list,
+blockquote or table continuation, because splitting there turns one ordered list
+into two that both start at 1. The finished half goes to a separate memoized
+`Markdown` whose string does not change between ticks, so React skips it. Being
+too careful there costs performance; being too clever corrupts a message while
+it is streaming, which is the state hardest to reproduce. Its refusals are
+tested.
+
 **Sessions belong to a profile too, and nothing merges them.** Every `/api/sessions*` route takes `?profile=`, built by `sessionUrl` in `api/sessions.ts`; omitting it addresses the active profile. Unlike cron there is no `profile=all` — the backend rejects it — so the Sessions screen picks a profile rather than merging N paginated stores whose offsets do not align. The detail and messages routes **404 for a session in another profile**, which reads as "deleted", so the profile has to travel with the id everywhere a session is opened, deleted or flagged; `session.resume` takes one as well, which is what `/chat?resume=<id>&profile=<name>` is for. Kanban tasks are joined to their session by title correlation (`source: kanban` plus the task id), because Hermes leaves `session_id` null on the task row — so no match means "cannot tell", never "did not run".
+
+The screen pages with `useSessionPages`, at the endpoint's own 100-row cap, so
+first paint costs what one page always cost and older sessions are reachable
+rather than merely counted in the header. The consequence to know about is in
+the cache: there are now **two shapes** under the `['sessions']` prefix — the
+plain lists and the paged `{ pages: [...] }` — and the undo toasts hide a row by
+editing that cache before the delete is sent. `hideSessions` / `restoreSessions`
+in `api/sessions.ts` handle both; a setter that knows only one fails silently,
+leaving the row on screen while the delete goes through anyway.
+
+**Every profile picker is the same two components.** `shared/SelectSheet.tsx` is single-select — a `SelectChip` trigger that names what is chosen and a bottom sheet of rows, the counterpart to `MultiSelectSheet` and stacking under it the same way (`useHistoryDismiss` nests, so back closes the picker and leaves a half-filled form alone). `shared/ProfileSelect.tsx` wraps it in the two shapes the app actually uses: `ProfileFilter` scopes a screen (Sessions, Skills — value `string | null`, null meaning the active profile, rendering nothing on a single-profile install) and `ProfileField` fills in a form (the cron job's store, a task's assignee — a plain name, since that is what gets sent). These were a chip per profile everywhere, which is fine for two agents and a wrapped block of controls at five; Sessions stacked three such rails above the list. Do not reintroduce a rail: the count grows with the number of profiles configured.
 
 **Cron jobs belong to a profile, and the screen shows all of them.** A job is not tagged with a profile — it lives in that profile's own `cron/jobs.json` and runs against that profile's home (config, model, skills, memory). The selector is a `?profile=` query parameter, built by `cronUrl` in `api/hub.ts`. Two defaults differ and both bite: the *list* endpoint defaults to `profile=all`, so `/cron` is already a merged view the moment a second profile exists (hence the profile badge per row — it is not decoration); *create* and the per-job actions default to whichever profile is active. Always pass the profile on a per-job action: without it Hermes resolves the job by scanning every store and matching on id **or name**, so two profiles each holding a `morning-brief` act on whichever is found first. Jobs may also pin `skills` / `enabled_toolsets` — a narrowing of the profile's own set, where absent means inherit, so an empty list is never sent.
 
 **A profile's `skill_count` is installed, not enabled.** It counts `SKILL.md` files on disk, and disabling a skill leaves the file there — so a profile deliberately narrowed to seven still reports eighty-six. The Profiles list shows the enabled count instead, fanned out one request per profile by `useProfileSkillCounts`, sharing its query keys with `useSkills(profile)` so the editor sheet reads a warm cache. A row whose request is still in flight shows nothing rather than `0`: "no skills enabled" is a real and alarming state that a loading row must not claim.
 
+**The Skills screen picks a profile too, and a skill's category is its directory.** Skills are per-profile in both directions — the `SKILL.md` files live in that profile's `skills/` tree and the enabled set is `skills.disabled` in its config — so an omitted `?profile=` silently means "the active one" on the read *and* on every write. The screen carries the same picker as Sessions — `ProfileFilter`, the shared dropdown (null is the active profile, hidden entirely on a single-profile install), and `flip` and the hub install both pass it; a picker that only scoped the list would show one profile while the switches edited another. Two server-side details are worth knowing before touching this: Hermes derives `category` from the **parent directory** (`skills/<category>/<skill>/SKILL.md`) and ignores any `metadata.category` in the frontmatter, so an agent-authored skill written to the top level comes back with `category: null` — which used to throw while rendering the group heading and, with no error boundary anywhere in `App.tsx`, took every screen down with it. And hub install addresses a skill by `identifier` (`skills-sh/anthropics/skills/pdf`), never by `name`: one search for `pdf` returns the same name from three repos.
+
 **Navigation has one rule and one breakpoint.** Back is `BackButton`/`useAppBack` everywhere: go back if `history.state.idx > 0`, otherwise go up to `/chat`. Do not reintroduce a `location.key === 'default'` check — a redirect replaces the entry, minting a fresh key without deepening the stack, so that test claims history a `standalone` install does not have and back leaves the app. Files overrides the action to walk up a directory while it has a parent, which is why the override exists at all.
 
 Past 1000px `NavDrawer` renders *docked*: a permanent rail, no backdrop, no scroll lock, no drag, and crucially **no `useHistoryDismiss` sentinel** — a permanently-open overlay registering as dismissable eats the back button on every screen for ever. The docked rail also pushes instead of replacing, because there is no sentinel to land on and replacing would mean the stack never grows. The breakpoint is written twice on purpose (`WIDE_QUERY` in `lib/useMediaQuery.ts`, the media query in `global.css`); `matchMedia` cannot read a custom property, and if they drift the rail appears without the space reserved for it.
 
-**Updates** (`/notifications`, the screen formerly called Cron Notifications) is the one channel carrying everything Hermes reports, and three writers feed it. `push/cron.ts` writes scheduled runs; `push/updates.ts` writes the agent's own announcements (`notification.show`, `background.complete`, `subagent.complete`) and the backend going up and down. All of it goes through `push/feed.ts`, which is the proxy's own record and therefore the part that survives nobody being connected — a push you did not see is gone, a row is not.
+**Updates** (`/notifications`, the screen formerly called Cron Notifications) is the one channel carrying everything Hermes reports, and three writers feed it. `push/cron.ts` writes scheduled runs; `push/updates.ts` writes the agent's own announcements (`notification.show`, `background.complete`, `subagent.complete`) and the backend going up and down. All of it goes through `push/feed.ts`, which is the proxy's own record and therefore the part that survives nobody being connected — a push you did not see is gone, a row is not. Its writes are debounced on the **leading** edge: the first append of a burst is on disk before the call returns, so "appended" and "recorded" stay the same statement, and only a burst — `cron.changed` arriving four times a run, a catch-up appending run by run — is collapsed. `flushFeed()` is wired into the signal handler, without which a proxy stopping inside the cooldown drops the row explaining why.
 
-Three things there are easy to get wrong:
+Four things there are easy to get wrong:
 
 - **The route stays `/notifications` despite the rename.** Every push payload already sitting on a phone points at it, as does the stored `url` of every entry written before the rename. `/updates` is an alias.
 - **`handleFrame`'s early-out gates the feed, not just push.** It skips `JSON.parse` on the firehose unless the line contains one of the types that matter, so a type handled in `updates.ts` but missing from `FEED_EVENT_TYPES` simply never reaches the feed on a machine with no push devices — invisibly. The list is exported from `updates.ts` for exactly that reason, and `updates.test.ts` checks the two against each other.
+- **`cron.changed` only ever speaks for one profile, so the signal cannot be the only trigger.** It is not emitted by whatever ran the job: it is a one-second file watcher inside the gateway's socket server stat-ing `<active profile home>/cron/jobs.json`, and `_watcher_home()` is process-wide. A job in `profiles/<name>/cron/jobs.json` therefore runs on time, writes its output, and moves nothing anybody is watching — silent from here whatever the gateway topology is. `startCronSweep()` re-runs the pass every 3 minutes for that reason, which also picks up runs that finished while the proxy was down. Both profile-scoped reads inside the pass matter as much as the trigger: the runs endpoint needs `?profile=` or Hermes resolves the job by scanning every store and matching id **or name**, and `/api/sessions/<run>/messages` needs it or the 404 leaves the notification standing with "<job> finished" where the agent's reply should be. The profile comes off the merged job list, which is already `profile=all`.
 - **The backend watch has to stay quiet.** A row per Hermes restart trains you to ignore the row that means it has been down all night, so an outage is only recorded after a grace window, recovery is silent unless an outage was announced, and `stopPushListener` resets the watch — otherwise a proxy shutting down announces that the backend is offline on its way out.
 
 What stays out of the feed is deliberate: `message.complete` would make it a second copy of every transcript, and `approval.request` / `clarify.request` block the agent and already have always-mounted sheets. All three still push.
@@ -113,6 +163,22 @@ The PWA layer (manifest, Workbox SW, `public/push-sw.js`, `public/share-sw.js`, 
 ## Conventions
 
 - **File-header doc comments carry the reasoning.** Nearly every source file opens with a block explaining *why* the code is shaped that way — a constraint from Hermes, a browser behaviour, a bug that came back. Match that when adding files, and read them before changing anything; they are where the non-obvious constraints live.
+- **Bundle size is measured, not argued.** `web/scripts/size.mjs` reports every
+  chunk gzipped and, separately, the **eager** total — the entry plus everything
+  the HTML tells the browser to `modulepreload`, which is what decides time to
+  first paint and the number a refactor can inflate without any single chunk
+  changing enough to notice. It carries budgets and exits non-zero, so this can
+  regress loudly. The `manualChunks` note in `vite.config.ts` is why it exists:
+  a size change made by reasoning that measurably did the opposite. `ANALYZE=1`
+  adds a treemap saying which module is responsible.
+
+- **Syntax highlighting is local, deliberately.** `components/chat/highlight.ts`
+  replaces `rehype-highlight`, which imports lowlight's `common` set — 37
+  grammars — at module scope, so its `languages` option can only add and no
+  bundler can drop any. The local plugin registers the ten a transcript
+  actually contains and cost 30% of the Markdown chunk. Auto-detection stays
+  off there for the same reason it was off before.
+
 - **Every build is stamped.** `vite.config.ts` bakes `__BUILD_ID__` (`YYYY-MM-DD HH:MMZ <short-sha>`, `+` when the tree was dirty) into the bundle and writes the same value to `dist/build.json`. `/healthz` reports that file as `webBuild` plus `serverStartedAt`; Settings → BUILD shows both. The point is the comparison: the bundle says what the browser is *running*, `build.json` says what the server is *serving*, and a mismatch is a service worker holding an old copy — otherwise invisible from either end, and previously diagnosed by grepping the built bundle by hand. The server re-reads the file per request because `SKIP_BUILD=1` in the unit means rebuilds happen without a restart.
 - **`cf-ray` is the join key between logs.** The WS proxy records Cloudflare's request id on the bridged, closed and refused lines. Correlating a browser capture with the server log by timestamp does not work — the machines are tens of milliseconds apart, enough to make a socket look like it predates the bridge carrying it.
 - **Commit messages state the user-visible effect**, imperative, sentence-cased, no prefix or scope: "Stop a notification tap landing in an empty session", "Keep one conversation's stream out of another".
