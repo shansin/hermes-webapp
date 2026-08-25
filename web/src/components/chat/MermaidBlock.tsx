@@ -9,9 +9,9 @@
  * phone, so the result scrolls horizontally and can be opened full-screen
  * rather than being scaled down to illegibility.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useUi } from '../../store/ui';
-import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
+import { ZoomOverlay } from './ZoomOverlay';
 
 type MermaidApi = {
   initialize: (config: Record<string, unknown>) => void;
@@ -41,6 +41,38 @@ function loadMermaid(dark: boolean): Promise<MermaidApi> {
 }
 
 let seq = 0;
+
+/**
+ * What to call the diagram out loud.
+ *
+ * `role="img"` with no accessible name announces as "image" and nothing else,
+ * which is worse than the raw fence would have been — at least that could be
+ * read. Mermaid's first meaningful line is its diagram type and often its
+ * direction (`flowchart TD`, `sequenceDiagram`, `gantt`), so it names the
+ * shape of the thing; a `title:` in a frontmatter block names the thing
+ * itself and wins where the model wrote one.
+ */
+function describe(source: string): string {
+  const lines = source.split('\n');
+
+  // ---\ntitle: Deployment flow\n--- , mermaid's own frontmatter.
+  if (lines[0]?.trim() === '---') {
+    for (const line of lines.slice(1)) {
+      if (line.trim() === '---') break;
+      const title = /^\s*title\s*:\s*(.+?)\s*$/.exec(line)?.[1];
+      if (title) return `Diagram: ${title.replace(/^["']|["']$/g, '')}`;
+    }
+  }
+
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || t.startsWith('%%') || t === '---') continue;
+    // The first two words at most: `flowchart TD` is useful, the node list
+    // that follows on the same line is not.
+    return `${t.split(/\s+/).slice(0, 2).join(' ')} diagram`;
+  }
+  return 'Diagram';
+}
 
 export function MermaidBlock({ source }: { source: string }) {
   const theme = useUi((s) => s.theme);
@@ -84,44 +116,35 @@ export function MermaidBlock({ source }: { source: string }) {
 
   if (!svg) return <div className="mermaid mermaid--pending">Drawing diagram…</div>;
 
+  const label = describe(source);
+
   return (
     <>
-      <div
-        className="mermaid"
-        role="img"
+      {/* A button around the image, not a click handler on it. Enlarging was
+          reachable by tap only — no focus, no Enter, nothing announced — and
+          the diagram is the one part of a reply that is unreadable at phone
+          width, so the way to open it cannot be pointer-only. The inner div
+          keeps `role="img"`, which takes no interactive descendants and so is
+          legal inside the button. */}
+      <button
+        type="button"
+        className="mermaid-open"
+        aria-label={`${label}. Enlarge`}
         onClick={() => setZoomed(true)}
-        // Mermaid sanitizes its own output under securityLevel: strict.
-        dangerouslySetInnerHTML={{ __html: svg }}
-      />
-      {zoomed && <ZoomedDiagram svg={svg} onClose={() => setZoomed(false)} />}
+      >
+        <div
+          className="mermaid"
+          role="img"
+          aria-label={label}
+          // Mermaid sanitizes its own output under securityLevel: strict.
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      </button>
+      {zoomed && (
+        <ZoomOverlay label={label} onClose={() => setZoomed(false)}>
+          <div className="zoom__diagram" dangerouslySetInnerHTML={{ __html: svg }} />
+        </ZoomOverlay>
+      )}
     </>
-  );
-}
-
-/**
- * The full-screen diagram.
- *
- * Split out so its hooks are unconditional — the parent returns early while
- * mermaid is still loading, and hooks cannot live behind that.
- *
- * It was previously dismissable by tap alone: no Escape on a desktop, and on a
- * phone the back button closed the whole screen behind it.
- */
-function ZoomedDiagram({ svg, onClose }: { svg: string; onClose: () => void }) {
-  const close = useCallback(onClose, [onClose]);
-  useHistoryDismiss(true, close);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [close]);
-
-  return (
-    <div className="mermaid__zoom" onClick={close} role="dialog" aria-modal="true">
-      <div className="mermaid__zoom-inner" dangerouslySetInnerHTML={{ __html: svg }} />
-    </div>
   );
 }

@@ -5,12 +5,14 @@
  * selecting text precisely on a phone is painful, so copy has to be a tap.
  */
 import { memo, useState, type ComponentProps, type ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
+import { rehypeHighlightLocal } from './highlight';
 import { Link } from 'react-router-dom';
 import { IconCheck, IconCopy } from '../shared/Icons';
 import { MermaidBlock } from './MermaidBlock';
+import { LocalImage } from './LocalImage';
+import { localImagePath } from '../../lib/localImages';
 import { useSession } from '../../store/session';
 import { buzz } from '../../lib/haptics';
 import { copyText } from '../../lib/share';
@@ -77,22 +79,33 @@ function workspacePath(href: string | undefined, cwd: string | undefined): strin
  * unified processor whenever the plugin list changes, and the streaming bubble
  * renders this component repeatedly for the length of a turn.
  *
- * `detect` is off. Auto-detection ran highlight.js' classifier over every code
- * block on every render — during streaming that is once per frame, on a
- * fragment that is still being written — and it guesses badly on short input.
- * Fences that declare a language still highlight, across lowlight's full
- * common set; an undeclared one renders as plain code.
- *
- * (Narrowing the grammar list was tried and reverted: `rehype-highlight`
- * imports lowlight's `common` at module scope, so passing `languages` adds
- * grammars without letting the bundler drop any.)
+ * Highlighting is `./highlight.ts` rather than `rehype-highlight`, and that is
+ * a size decision: the plugin imports lowlight's `common` set — thirty-seven
+ * grammars — at module scope, so no option can shrink it and the bundler
+ * cannot drop any. (Passing `languages` was tried and reverted for exactly
+ * that reason.) The local plugin registers the ten or so languages a Hermes
+ * transcript actually contains and nothing else. Auto-detection stays off
+ * there too, for the reason recorded in that file.
  */
 type MarkdownProps = ComponentProps<typeof ReactMarkdown>;
 
+/**
+ * Let a local image survive sanitizing.
+ *
+ * `defaultUrlTransform` allows http, https, mailto, irc and xmpp and blanks
+ * everything else — so the agent's own `![shot](file:///…/x.png)` arrived at
+ * the `img` component with an empty `src` and no way to tell it had ever had
+ * one. `file:` is passed through for the image renderer below to resolve into
+ * an authenticated read; every other scheme keeps the default treatment, which
+ * is what keeps `javascript:` out of a reply the model wrote.
+ */
+const urlTransform: MarkdownProps['urlTransform'] = (url, key, node) => {
+  if (key === 'src' && node.tagName === 'img' && url.startsWith('file://')) return url;
+  return defaultUrlTransform(url);
+};
+
 const remarkPlugins: MarkdownProps['remarkPlugins'] = [remarkGfm];
-const rehypePlugins: MarkdownProps['rehypePlugins'] = [
-  [rehypeHighlight, { detect: false, ignoreMissing: true }],
-];
+const rehypePlugins: MarkdownProps['rehypePlugins'] = [rehypeHighlightLocal];
 
 export const Markdown = memo(function Markdown({ children }: { children: string }) {
   // The workspace root for resolving `workspace://` links.
@@ -103,6 +116,7 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
+        urlTransform={urlTransform}
         components={{
           pre({ children }) {
             const text = nodeText(children);
@@ -133,6 +147,15 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
                 <pre>{children}</pre>
               </div>
             );
+          },
+          img({ src, alt }) {
+            // A screenshot the agent just took is on its disk, not on the web:
+            // `file://` is unreachable from a page served over http, and a
+            // bare absolute path resolves against the proxy's own origin and
+            // 404s. Both become an authenticated read instead.
+            const local = localImagePath(typeof src === 'string' ? src : undefined, cwd);
+            if (local) return <LocalImage path={local} alt={alt} />;
+            return <img className="chat-image" src={typeof src === 'string' ? src : undefined} alt={alt ?? ''} />;
           },
           a({ children, href }) {
             // `workspace://path` is how the agent points at a file it touched.

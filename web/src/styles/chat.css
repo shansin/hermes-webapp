@@ -285,6 +285,11 @@
 .md > *:first-child { margin-top: 0; }
 .md > *:last-child { margin-bottom: 0; }
 
+/* The streaming bubble renders the finished blocks and the block still being
+   written as two documents (see `StreamingMarkdown`), so the first one's last
+   child is no longer the end of the message and needs its margin back. */
+.md-stable .md > *:last-child { margin-bottom: 0.7em; }
+
 .md p { margin: 0 0 0.7em; }
 .md h1, .md h2, .md h3, .md h4 {
   margin: 1.1em 0 0.5em;
@@ -899,10 +904,69 @@
   max-width: 190px;
 }
 
+.attach-pill--busy {
+  position: relative;
+  overflow: hidden;
+  padding-bottom: 7px;
+}
+
 .attach-pill__name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.attach-pill__meta {
+  flex-shrink: 0;
+  font-size: var(--type-micro);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.attach-pill__cancel {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+  background: none;
+  border: 0;
+  padding: 0;
+  /* The pill is 190px at most and the name has to fit, so the button stays
+     visually tiny and gets its 48dp target the way every other small control
+     in the app does. */
+  position: relative;
+}
+
+.attach-pill__cancel::after {
+  content: '';
+  position: absolute;
+  inset: -14px;
+}
+
+.attach-pill__bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  transform-origin: left;
+  transition: transform 0.12s linear;
+}
+
+/* Nothing to measure once the bytes are with the gateway — one frame out, one
+   frame back, no progress channel. A sweep says "still working" without
+   claiming to know how far along it is. */
+.attach-pill__bar--indeterminate {
+  width: 40%;
+  right: auto;
+  transform: none;
+  animation: attach-sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes attach-sweep {
+  0% { left: -40%; }
+  100% { left: 100%; }
 }
 
 /* --- cost ring ------------------------------------------------------------ */
@@ -949,6 +1013,23 @@
 
 /* Diagrams are laid out for desktop widths. Rather than scale one down to
    illegibility, let it scroll sideways and offer a full-screen tap. */
+/* The button is only a hit target and a focus ring; the diagram inside keeps
+   every bit of the styling it had. */
+.mermaid-open {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+.mermaid-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
 .mermaid {
   margin: 0 0 0.9em;
   padding: 10px;
@@ -968,11 +1049,12 @@
   cursor: default;
 }
 
-.mermaid__zoom {
+.zoom {
   position: fixed;
   inset: 0;
-  /* Above the sheet layer (100/101): a diagram can be zoomed from inside the
-     file viewer's sheet, and at a lower index it would open behind it. */
+  /* Above the sheet layer (100/101): a diagram or image can be opened from
+     inside the file viewer's sheet, and at a lower index it would open behind
+     it. */
   z-index: 150;
   background: var(--bg);
   overflow: auto;
@@ -984,7 +1066,43 @@
   justify-content: center;
 }
 
-.mermaid__zoom-inner svg { max-width: none; height: auto; }
+/* The backdrop closes on tap, but a tap is not the only way out and on a
+   desktop it is not an obvious one. */
+.zoom__close {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  right: 10px;
+  z-index: 1;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--shape-full);
+  cursor: pointer;
+}
+
+/* A diagram is drawn at its natural size and scrolls; a photo is fitted to the
+   viewport, because scrolling around a screenshot to find the corner you
+   wanted is not zooming in on it.
+
+   `.zoom__inner` needs the explicit cap even though its parent is already the
+   viewport: as a flex item its width is fit-content, so a percentage measured
+   against it resolved to the picture's own natural size and fitted nothing.
+   The image then overflowed a centred flex container, which clips at the start
+   edge — so a wide screenshot opened full-screen showed its middle with no way
+   to scroll to either end. */
+.zoom__inner {
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+}
+
+.zoom__diagram svg { max-width: none; height: auto; }
+
+.zoom__image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 32px);
+  object-fit: contain;
+}
 
 /* --- subagent card -------------------------------------------------------- */
 
@@ -1203,4 +1321,71 @@
   margin-top: 7px;
   font-size: 13px;
   color: var(--text-faint);
+}
+
+
+/* --- images in a transcript ---------------------------------------------- */
+
+/* Both directions land here: a screenshot the agent took, and the photo you
+   sent it. Capped in height so one picture can't push the rest of the reply
+   off the screen — the full size is one tap away. */
+.chat-image__open {
+  display: block;
+  max-width: 100%;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0 0 0.6em;
+}
+
+.chat-image__open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.chat-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  width: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  cursor: zoom-in;
+}
+
+/* The placeholder holds roughly the space the picture will take, so the
+   transcript doesn't jump under a finger when the bytes arrive. */
+.chat-image--pending,
+.chat-image--missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  padding: 10px 12px;
+  color: var(--text-faint);
+  font-size: var(--type-detail);
+  text-align: center;
+  word-break: break-all;
+  cursor: default;
+}
+
+.chat-image--missing {
+  color: var(--warn);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+/* A user bubble's attachments sit above the caption, right-aligned with it. */
+.msg__images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+
+.msg__images .chat-image {
+  max-height: 200px;
 }

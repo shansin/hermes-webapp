@@ -24,6 +24,7 @@ import {
   type Recorder,
 } from '../../lib/audio';
 import { hermes } from '../../ws/client';
+import { formatImageRef } from '../../lib/localImages';
 
 const QUICK_ACTIONS = [
   { label: '📋 Summarize', text: 'Summarize what we just did in a few bullets.' },
@@ -33,14 +34,55 @@ const QUICK_ACTIONS = [
 ];
 
 interface Attachment {
+  /**
+   * Identity, because the name is not one: picking two files called
+   * `screenshot.png` from different folders is ordinary, and keying on the
+   * name meant the second one's completion marked the first as done.
+   */
+  id: string;
   name: string;
+  /** Bytes, so a pill that is going to sit there for a while says why. */
+  size: number;
   /** Set once the gateway has accepted the file. */
   attached: boolean;
+  /**
+   * Where it has got to.
+   *
+   * Two phases, and only the first can report progress: reading the file is
+   * local and `FileReader` fires `onprogress` throughout, while the attach
+   * itself is a single JSON-RPC frame over the gateway socket with no
+   * progress channel and no partial state to report. Saying which of the two
+   * is happening is the honest version of a progress bar — a bar that filled
+   * to 40% and then stopped would be a lie about the half that takes longest.
+   */
+  phase: 'reading' | 'uploading';
+  /** 0–1 while reading, null once there is nothing to measure. */
+  progress: number | null;
   /**
    * The gateway's own `[User attached image: …]` line, sent as the prompt when
    * an image goes out with no message typed alongside it.
    */
   placeholder?: string;
+  /**
+   * Where the gateway wrote the image on its own disk.
+   *
+   * Only so the sent picture can be shown in the transcript straight away.
+   * Hermes appends an `@image:<path>` ref to the persisted user message, so a
+   * reloaded conversation shows it — but that row is written at the end of the
+   * turn, and until then the live bubble had nothing but the caption. The
+   * composer carries the same ref into the message's display text, so live and
+   * reloaded are the same thing rather than two renderers to keep in step.
+   */
+  path?: string;
+}
+
+let attachSeq = 0;
+
+/** `1.4 MB`. Pills are small; one decimal is as much as fits and as much as helps. */
+function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** How long the box must sit still before we ask the gateway for completions. */
@@ -189,9 +231,22 @@ export function Composer({
 
   const sendable = Boolean(text.trim() || imagePlaceholders());
 
+  /**
+   * `@image:` refs for the pictures going out with this message, so the bubble
+   * can show them the moment it appears. Display only — the prompt itself is
+   * left exactly as typed, because the gateway already holds the bytes and
+   * writes these refs into history itself.
+   */
+  const imageRefs = () =>
+    attachments
+      .filter((a) => a.attached && a.path)
+      .map((a) => formatImageRef(a.path!))
+      .join('\n');
+
   const send = () => {
     const value = text.trim() || imagePlaceholders();
     if (!value || !sessionId) return;
+    const refs = imageRefs();
     setText('');
     setAttachments([]);
     setCompletions([]);
@@ -203,7 +258,7 @@ export function Composer({
       return;
     }
     buzz('tap');
-    void submit(value);
+    void submit(value, refs ? { display: `${value}\n${refs}` } : undefined);
   };
 
   /** Splice the chosen completion in at the index the gateway gave us. */
@@ -250,28 +305,85 @@ export function Composer({
     }
   };
 
+  /**
+   * Uploads that can be called off, and the readers doing the work.
+   *
+   * Refs rather than state because both are read from inside an async loop
+   * that closed over its own render — a cancel recorded in state would not be
+   * visible to the upload it was cancelling. The ids in `cancelled` are the
+   * authority: every await in the loop below checks it before doing anything
+   * with what it just got back.
+   */
+  const cancelled = useRef(new Set<string>());
+  const readers = useRef(new Map<string, FileReader>());
+
+  /**
+   * Stop attaching this file.
+   *
+   * What "stop" can mean depends on where it got to. While reading, the
+   * `FileReader` is genuinely aborted and nothing was ever sent. Once the
+   * gateway call is in flight there is no cancel on the other end — it is one
+   * JSON-RPC frame and Hermes will finish what it started — so the honest
+   * thing is to stop waiting for it: the pill goes, no ref text is pasted into
+   * the box, no placeholder joins the next send. The file may still land in
+   * the session workspace, which is why this says "Removed" rather than
+   * claiming the upload was undone.
+   */
+  const cancelAttachment = (a: Attachment) => {
+    buzz('tap');
+    cancelled.current.add(a.id);
+    readers.current.get(a.id)?.abort();
+    readers.current.delete(a.id);
+    setAttachments((list) => list.filter((x) => x.id !== a.id));
+  };
+
   const onPickFiles = async (files: FileList | File[] | null) => {
     if (!files?.length || !sessionId) return;
     for (const file of Array.from(files)) {
-      setAttachments((a) => [...a, { name: file.name, attached: false }]);
+      const id = `att-${++attachSeq}`;
+      setAttachments((a) => [
+        ...a,
+        { id, name: file.name, size: file.size, attached: false, phase: 'reading', progress: 0 },
+      ]);
       try {
         const dataUrl = await new Promise<string>((resolve, reject) => {
           const fr = new FileReader();
+          readers.current.set(id, fr);
+          // The one phase with a real measurement. A phone camera's photo is
+          // several megabytes and this is not instant on an old device.
+          fr.onprogress = (e) => {
+            if (!e.lengthComputable) return;
+            const ratio = e.loaded / e.total;
+            setAttachments((a) => a.map((x) => (x.id === id ? { ...x, progress: ratio } : x)));
+          };
           fr.onload = () => resolve(String(fr.result));
           fr.onerror = () => reject(new Error('read failed'));
+          // `abort()` fires this rather than `onerror`; the cancelled check
+          // below turns it into a quiet stop instead of an error toast.
+          fr.onabort = () => reject(new Error('cancelled'));
           fr.readAsDataURL(file);
         });
+        readers.current.delete(id);
+        if (cancelled.current.has(id)) continue;
+
+        setAttachments((a) =>
+          a.map((x) => (x.id === id ? { ...x, phase: 'uploading', progress: null } : x)),
+        );
+
         // Images and other files take different gateway methods, and the two
         // disagree on how bytes arrive: `image.attach_bytes` wants bare base64
         // under `content_base64`, `file.attach` wants the whole data: URL.
         let placeholder: string | undefined;
+        let attachedPath: string | undefined;
         if (file.type.startsWith('image/')) {
-          const res = await hermes.call<{ text?: string }>('image.attach_bytes', {
+          const res = await hermes.call<{ text?: string; path?: string }>('image.attach_bytes', {
             session_id: sessionId,
             content_base64: dataUrl.slice(dataUrl.indexOf(',') + 1),
             filename: file.name,
           });
+          if (cancelled.current.has(id)) continue;
           placeholder = res?.text || `[User attached image: ${file.name}]`;
+          attachedPath = res?.path;
         } else {
           // Non-images aren't queued as vision tiles — they land in the session
           // workspace and come back as an `@file:` ref the agent's file tools
@@ -281,20 +393,30 @@ export function Composer({
             name: file.name,
             data_url: dataUrl,
           });
+          // Checked before the paste, not after: a ref dropped into the box
+          // after the pill was cancelled is the one piece of this that the
+          // user would have to undo by hand.
+          if (cancelled.current.has(id)) continue;
           if (res?.ref_text) {
             setText((t) => (t ? `${t} ${res.ref_text}` : `${res.ref_text} `));
           }
         }
         setAttachments((a) =>
-          a.map((x) => (x.name === file.name ? { ...x, attached: true, placeholder } : x)),
+          a.map((x) =>
+            x.id === id ? { ...x, attached: true, progress: null, placeholder, path: attachedPath } : x,
+          ),
         );
         buzz('tap');
       } catch (err) {
-        setAttachments((a) => a.filter((x) => x.name !== file.name));
+        readers.current.delete(id);
+        setAttachments((a) => a.filter((x) => x.id !== id));
+        if (cancelled.current.has(id)) continue; // Asked for; not a failure.
         toast(
           `Couldn't attach ${file.name}: ${err instanceof Error ? err.message : 'failed'}`,
           'error',
         );
+      } finally {
+        cancelled.current.delete(id);
       }
     }
   };
@@ -323,9 +445,51 @@ export function Composer({
       {attachments.length > 0 && (
         <div className="composer__attachments">
           {attachments.map((a) => (
-            <span className="attach-pill" key={a.name}>
+            <span
+              className={`attach-pill${a.attached ? '' : ' attach-pill--busy'}`}
+              key={a.id}
+            >
               <span className="attach-pill__name">{a.name}</span>
-              {!a.attached && <span className="spin" style={{ fontSize: 10 }}>◌</span>}
+              {a.attached ? (
+                <span className="attach-pill__meta">{fileSize(a.size)}</span>
+              ) : (
+                <>
+                  <span className="attach-pill__meta">
+                    {a.phase === 'reading'
+                      ? a.progress
+                        ? `${Math.round(a.progress * 100)}%`
+                        : 'Reading…'
+                      : 'Sending…'}
+                  </span>
+                  {/* The pill used to be a spinner and nothing else: a large
+                      file over a slow link left the composer occupied with no
+                      way out short of reloading. */}
+                  <button
+                    type="button"
+                    className="attach-pill__cancel"
+                    aria-label={`Cancel attaching ${a.name}`}
+                    onClick={() => cancelAttachment(a)}
+                  >
+                    <IconClose size={13} />
+                  </button>
+                </>
+              )}
+              {/* A track under the pill, not a bar beside it — there is no room
+                  beside it, and the pill is already the thing being waited on.
+                  Indeterminate during the send, which has no progress to
+                  report. */}
+              {!a.attached && (
+                <span
+                  className={`attach-pill__bar${
+                    a.phase === 'uploading' ? ' attach-pill__bar--indeterminate' : ''
+                  }`}
+                  style={
+                    a.phase === 'reading'
+                      ? { transform: `scaleX(${a.progress ?? 0})` }
+                      : undefined
+                  }
+                />
+              )}
             </span>
           ))}
         </div>
@@ -345,7 +509,7 @@ export function Composer({
 
       {commandBusy && (
         <div className="composer__running">
-          <span className="spin" style={{ fontSize: 11 }}>◌</span>
+          <span className="spin" style={{ fontSize: 'var(--type-label-sm)' }}>◌</span>
           Running {commandBusy}…
         </div>
       )}
@@ -439,7 +603,9 @@ export function Composer({
           }}
           placeholder={recording ? 'Listening…' : 'Message Hermes…'}
           rows={1}
-          enterKeyHint="send"
+          // The on-screen keyboard offers a newline key rather than "send",
+          // matching what Enter now does. Sending is the button beside it.
+          enterKeyHint="enter"
           onKeyDown={(e) => {
             const suggesting = completions.length > 0;
             if (suggesting && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
@@ -454,8 +620,9 @@ export function Composer({
               setCompletions([]);
               return;
             }
-            // Tab always completes; Enter completes only while a suggestion is
-            // highlighted, so a fully typed command still sends on one press.
+            // Tab and Enter both complete while a suggestion is highlighted —
+            // the list is the thing in front of you, and picking from it is
+            // what Enter means there.
             if (suggesting && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) {
               const item = completions[active];
               if (item) {
@@ -464,8 +631,16 @@ export function Composer({
                 return;
               }
             }
-            // Enter sends on a hardware keyboard; Shift+Enter makes a newline.
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            // Enter is a newline, everywhere. A message to an agent is a
+            // paragraph more often than it is a line, and losing one to a
+            // reflex press costs more than a modifier does. Ctrl/Cmd+Enter
+            // sends, as does the button — which is the only way to send on a
+            // phone anyway, where the key is a return key regardless.
+            if (
+              e.key === 'Enter' &&
+              (e.metaKey || e.ctrlKey) &&
+              !e.nativeEvent.isComposing
+            ) {
               e.preventDefault();
               send();
             }
