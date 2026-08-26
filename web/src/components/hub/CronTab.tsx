@@ -19,6 +19,22 @@
  *   the job by scanning stores and matching on id *or name*, so two profiles
  *   holding a `morning-brief` each will act on whichever it finds first.
  *
+ * ## Editing is a patch, not a form submission
+ *
+ * `PUT /api/cron/jobs/<id>` merges `{ updates }` over the stored record, so a
+ * key sent is a key overwritten and a key omitted is a key left alone. This
+ * sheet renders seven fields; a job record holds thirty — a CLI or blueprint
+ * job carries `script`, `deliver`, `context_from`, `no_agent`, none of which
+ * are on screen. So an edit sends what `cronPatch` says changed and nothing
+ * else; posting the whole form back would erase the rest silently, and the
+ * job would go on looking right until its next run did the wrong thing.
+ *
+ * Two things the backend will not do, which the sheet says instead of finding
+ * out by round trip: a job cannot change profile (the profile is the store it
+ * lives in, so moving it is delete-and-recreate under a new id, losing its run
+ * history), and a terminal job cannot be rescheduled (`update_job` refuses to
+ * give a completed one-shot a `next_run_at`).
+ *
  * ## Pinning skills and toolsets
  *
  * Narrower than the profile, for a job that should not have the run of it: a
@@ -42,6 +58,7 @@ import {
   useCronJobs,
   useCronRuns,
   useDeleteCronJob,
+  useUpdateCronJob,
   useSkills,
   type CronJob,
 } from '../../api/hub';
@@ -52,6 +69,14 @@ import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 import { UNDO_WINDOW_MS, scheduleUndoable } from '../../lib/undo';
 import { cronError, humanCron } from '../../lib/cronText';
+import { ScriptRuns } from './ScriptRuns';
+import {
+  BLANK_CRON_FORM,
+  cronFormFromJob,
+  cronPatch,
+  scheduleIsCron,
+  type CronFormValues,
+} from '../../lib/cronForm';
 
 function jobName(j: CronJob): string {
   return j.name ?? j.id;
@@ -116,24 +141,27 @@ function isPaused(j: CronJob): boolean {
 }
 
 /**
+ * Whether the script *is* the job.
+ *
+ * A `no_agent` job runs a file and delivers whatever it printed — no model
+ * turn, no session, no transcript. That one flag decides most of what this
+ * screen can honestly show for the job: the run history has to come off disk
+ * rather than from the sessions endpoint, and prompt, model, skills and
+ * toolsets are all inert, because there is no agent for any of them to
+ * configure.
+ */
+function isScriptJob(j: CronJob): boolean {
+  return Boolean(j.no_agent) || Boolean(j.script);
+}
+
+/**
  * A job with no `model`/`provider` of its own runs on whatever the global
  * default happens to be *at fire time*. Hermes notices that drift and, unless
  * `cron.model_drift_guard` is off, refuses to run the job at all rather than
  * silently spending on a model the job was never tested against. Pinning here
  * is what takes a job out of that class.
  */
-const BLANK_FORM = {
-  name: '',
-  prompt: '',
-  schedule: '0 9 * * *',
-  model: '' as string,
-  provider: '' as string,
-  /** Empty until the active profile is known — see `formProfile` below. */
-  profile: '' as string,
-  /** Empty means "whatever the profile has enabled", not "none". */
-  skills: [] as string[],
-  toolsets: [] as string[],
-};
+const BLANK_FORM: CronFormValues = BLANK_CRON_FORM;
 
 export function CronTab() {
   const { data, isLoading, error } = useCronJobs();
@@ -143,6 +171,7 @@ export function CronTab() {
   const del = useDeleteCronJob();
   const qc = useQueryClient();
   const create = useCreateCronJob();
+  const update = useUpdateCronJob();
   const toast = useUi((s) => s.toast);
 
   /**
@@ -225,6 +254,15 @@ export function CronTab() {
   );
 
   const [creating, setCreating] = useState(false);
+  /**
+   * The job being edited, or null when the sheet is filling in a new one.
+   *
+   * The whole record rather than an id: the patch is computed against what
+   * the job *was*, so the sheet needs the original values in hand, and the
+   * list underneath refetches every 30s — reading them back out of `data` at
+   * submit time would diff the form against a row that may have moved on.
+   */
+  const [editing, setEditing] = useState<CronJob | null>(null);
   const [form, setForm] = useState(BLANK_FORM);
   const [pickingModel, setPickingModel] = useState(false);
   const [picking, setPicking] = useState<'skills' | 'toolsets' | null>(null);
@@ -238,16 +276,76 @@ export function CronTab() {
    * read rather than seeded into state, because the active profile arrives
    * from a query that may not have landed when the sheet opens.
    */
-  const formProfile = form.profile || activeProfile || '';
+  const formProfile = editing ? (editing.profile ?? '') : form.profile || activeProfile || '';
 
-  /** What is wrong with the schedule, and what it says when nothing is. */
-  const scheduleError = cronError(form.schedule);
+  /* Open the sheet on an existing job. Its stored values become the form's,
+     so an untouched field produces no key in the patch. */
+  const openEdit = useCallback((job: CronJob) => {
+    setForm(cronFormFromJob(job));
+    setPickingModel(false);
+    setPicking(null);
+    setEditing(job);
+  }, []);
+
+  const closeSheet = useCallback(() => {
+    /* A create sheet keeps its half-filled draft when it is dismissed — the
+       form is the user's own work in progress. An edit sheet must not: those
+       values belong to a job, and leaving them behind means the next tap on
+       "New scheduled job" opens what looks like a duplicate of the job that
+       was just being edited. */
+    setEditing((was) => {
+      if (was) setForm(BLANK_FORM);
+      return null;
+    });
+    setCreating(false);
+    setPickingModel(false);
+    setPicking(null);
+  }, []);
+
+  /**
+   * What is wrong with the schedule, and what it says when nothing is.
+   *
+   * `cronError` knows five-field cron and nothing else, which is all a new
+   * job can be here — but an existing job may be a one-shot or an interval,
+   * and running `every 10m` past a cron validator puts a red error under a
+   * field the user never touched and disables Save on a job that is fine. A
+   * non-cron schedule is therefore left to the backend to judge.
+   */
+  const judgeAsCron = !editing || scheduleIsCron(editing);
+  const scheduleError = judgeAsCron ? cronError(form.schedule) : null;
   const scheduleSentence = scheduleError ? null : humanCron(form.schedule.trim());
+
+  /**
+   * A finished one-shot cannot be rescheduled through this door: `update_job`
+   * refuses to give a terminal job a `next_run_at`, so a schedule edit comes
+   * back 400 while every other field would have saved. Saying so beside the
+   * field beats a toast after the round trip.
+   */
+  const terminal = editing?.state === 'completed' || editing?.state === 'error';
+
+  /* A script or no_agent job has no prompt and never needed one; only a job
+     that had one can be emptied of it, and that is the rejection to prevent. */
+  const promptRequired = editing ? Boolean(editing.prompt) : true;
+
+  /**
+   * A `no_agent` job is a script, and the rest of this form is furniture for
+   * it: the prompt is not read, and model, skills and toolsets configure an
+   * agent that never runs. Rendering them anyway produced an edit sheet that
+   * was four empty controls and a name — "nothing to edit" — while the thing
+   * the job actually runs was not on screen at all. So they are replaced by a
+   * line saying what runs, and name and schedule are left as what can be
+   * changed from here.
+   */
+  const editingScript = Boolean(editing && isScriptJob(editing));
+
+  const patch = editing ? cronPatch(editing, form) : {};
+  const dirty = Object.keys(patch).length > 0;
 
   /* Scoped to the profile being configured, not the one running. Both are
      cached for 30s and only fetched while the sheet is open. */
-  const scopedSkills = useSkills(formProfile || null, creating);
-  const scopedToolsets = useToolsets(formProfile || null, creating);
+  const sheetOpen = creating || Boolean(editing);
+  const scopedSkills = useSkills(formProfile || null, sheetOpen);
+  const scopedToolsets = useToolsets(formProfile || null, sheetOpen);
 
   const skillOptions: MultiSelectOption[] = (scopedSkills.data ?? [])
     .filter((sk) => sk.enabled)
@@ -305,11 +403,40 @@ export function CronTab() {
         'success',
       );
       setForm(BLANK_FORM);
-      setPickingModel(false);
-      setPicking(null);
-      setCreating(false);
+      closeSheet();
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Create failed', 'error');
+    }
+  };
+
+  /**
+   * Save an edit — as a patch of what changed, never the whole form.
+   *
+   * The job carries fields this sheet does not render (`script`, `deliver`,
+   * `context_from`), and Hermes merges what it is sent over what it holds, so
+   * a key here is a key overwritten. `cronPatch` is what keeps the untouched
+   * ones out; an empty patch means there is nothing to send and the sheet
+   * just closes.
+   */
+  const saveEdit = async () => {
+    if (!editing) return;
+    if (!Object.keys(patch).length) {
+      closeSheet();
+      return;
+    }
+    try {
+      await update.mutateAsync({
+        id: editing.id,
+        // The store the job lives in, off the job itself — not the active
+        // profile, and not the picker, which an edit does not offer.
+        profile: editing.profile,
+        updates: patch,
+      });
+      toast('Job updated', 'success');
+      setForm(BLANK_FORM);
+      closeSheet();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Update failed', 'error');
     }
   };
 
@@ -442,6 +569,9 @@ export function CronTab() {
                 <button className="btn btn--sm" onClick={() => setOpenRuns(j.id)}>
                   History
                 </button>
+                <button className="btn btn--sm" onClick={() => openEdit(j)}>
+                  Edit
+                </button>
                 <button
                   className="btn btn--sm btn--ghost"
                   style={{ marginLeft: 'auto', color: 'var(--error)' }}
@@ -457,6 +587,13 @@ export function CronTab() {
       )}
 
       <Sheet open={Boolean(openRuns)} onClose={() => setOpenRuns(null)} title="Run history">
+        {/* A script job has no sessions to list and never will, so the runs
+            endpoint is not asked to explain itself — the files it writes are
+            the history. See `ScriptRuns`. */}
+        {openJob && isScriptJob(openJob) ? (
+          <ScriptRuns job={openJob} />
+        ) : (
+        <>
         {runs.isLoading && <SkeletonList n={3} h={46} />}
         {/* An empty history is not always "nothing happened": a job refused
             before it started never gets a run row, and `last_error` is then the
@@ -495,15 +632,14 @@ export function CronTab() {
             </div>
           );
         })}
+        </>
+        )}
       </Sheet>
 
       <Sheet
-        open={creating}
-        onClose={() => {
-          setCreating(false);
-          setPickingModel(false);
-        }}
-        title="New scheduled job"
+        open={creating || Boolean(editing)}
+        onClose={closeSheet}
+        title={editing ? `Edit ${jobName(editing)}` : 'New scheduled job'}
       >
         <input
           className="field"
@@ -515,7 +651,24 @@ export function CronTab() {
         {/* Which profile's store the job goes into — see the note at the top.
             Only shown once there is a choice to make: a single-profile install
             has exactly one answer and a picker offering it is furniture. */}
-        {profiles.length > 1 && (
+        {profiles.length > 1 && editing && (
+          <>
+            <div className="group-head">RUNS AS</div>
+            <div style={{ fontSize: 'var(--type-body-sm)', marginBottom: 4 }}>
+              {formProfile || 'default'}
+            </div>
+            {/* Not a picker here, and not an oversight: a job is not tagged
+                with a profile, it *lives* in that profile's `cron/jobs.json`.
+                Moving one is a delete and a create under a new id, which
+                throws away its run history — so the sheet states where the
+                job runs rather than appearing to offer a change it cannot
+                make in place. */}
+            <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
+              A job cannot move between profiles — recreate it to run it as another agent.
+            </div>
+          </>
+        )}
+        {profiles.length > 1 && !editing && (
           <>
             <div className="group-head">
               RUNS AS
@@ -555,7 +708,8 @@ export function CronTab() {
           onChange={(e) => setForm({ ...form, schedule: e.target.value })}
           aria-invalid={Boolean(scheduleError)}
           aria-describedby="cron-schedule-note"
-          style={{ marginBottom: 4, fontFamily: 'var(--mono)' }}
+          disabled={terminal}
+          style={{ marginBottom: 4, fontFamily: 'var(--mono)', opacity: terminal ? 0.6 : undefined }}
         />
         <div
           id="cron-schedule-note"
@@ -566,8 +720,32 @@ export function CronTab() {
             lineHeight: 1.45,
           }}
         >
-          {scheduleError ?? scheduleSentence ?? '\u00a0'}
+          {scheduleError ??
+            (terminal
+              ? 'This job has already finished — resume it with a new time to reschedule.'
+              : (scheduleSentence ?? '\u00a0'))}
         </div>
+        {editingScript && (
+          <>
+            <div className="group-head">RUNS</div>
+            <div
+              style={{
+                fontFamily: 'var(--mono)',
+                fontSize: 'var(--type-body-sm)',
+                overflowWrap: 'anywhere',
+                marginBottom: 4,
+              }}
+            >
+              {typeof editing?.script === 'string' && editing.script ? editing.script : 'a script'}
+            </div>
+            <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginBottom: 12, lineHeight: 1.45 }}>
+              This job runs a script instead of the agent, so it has no prompt, model
+              or skills — edit the file on disk to change what it does. Its name and
+              schedule are editable here.
+            </div>
+          </>
+        )}
+        {!editingScript && (
         <textarea
           className="field"
           placeholder="What should the agent do?"
@@ -576,7 +754,8 @@ export function CronTab() {
           onChange={(e) => setForm({ ...form, prompt: e.target.value })}
           style={{ resize: 'vertical', marginBottom: 12 }}
         />
-        {pickingModel ? (
+        )}
+        {!editingScript && (pickingModel ? (
           <div style={{ marginBottom: 12 }}>
             <ModelPicker
               selected={form.model || undefined}
@@ -620,11 +799,11 @@ export function CronTab() {
               </div>
             )}
           </div>
-        )}
+        ))}
         {/* Narrowing, not enabling: these can only take away from what the
             profile already has. Hidden while the model picker is open so the
             sheet is never two long lists deep. */}
-        {!pickingModel && (
+        {!pickingModel && !editingScript && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
             <PickerRow
               label="Skills"
@@ -654,12 +833,27 @@ export function CronTab() {
         <button
           className="btn btn--primary"
           style={{ width: '100%' }}
-          onClick={submit}
+          onClick={editing ? saveEdit : submit}
           disabled={
-            !form.name.trim() || !form.prompt.trim() || Boolean(scheduleError) || create.isPending
+            !form.name.trim() ||
+            (promptRequired && !form.prompt.trim()) ||
+            Boolean(scheduleError) ||
+            create.isPending ||
+            update.isPending ||
+            // Nothing changed: the button says so rather than sending a
+            // no-op patch and reporting a save that saved nothing.
+            Boolean(editing && !dirty)
           }
         >
-          {create.isPending ? 'Creating…' : 'Create job'}
+          {editing
+            ? update.isPending
+              ? 'Saving…'
+              : dirty
+                ? 'Save changes'
+                : 'No changes'
+            : create.isPending
+              ? 'Creating…'
+              : 'Create job'}
         </button>
       </Sheet>
 

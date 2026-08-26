@@ -283,6 +283,38 @@ export function useCreateCronJob() {
   });
 }
 
+/**
+ * Change an existing job in place.
+ *
+ * The body is `{ updates }` and Hermes merges it over the stored record, so
+ * this is a patch and has to stay one: a job carries fields no screen here
+ * renders (`script`, `deliver`, `context_from`, `no_agent`), and a key sent
+ * is a key overwritten. `cronPatch` in `lib/cronForm.ts` is what decides
+ * which keys travel; this hook only addresses the right store.
+ *
+ * Same scoping argument as `useCronAction`, with the same silent failure at
+ * the end of it — an omitted profile edits whichever `morning-brief` Hermes
+ * scans first.
+ *
+ * The runs cache is left alone deliberately: an edit does not change what has
+ * already happened, and invalidating it would refetch a sheet nobody has open.
+ */
+export function useUpdateCronJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      profile,
+      updates,
+    }: {
+      id: string;
+      profile?: string | null;
+      updates: Record<string, unknown>;
+    }) => api.put(cronUrl(`/api/cron/jobs/${encodeURIComponent(id)}`, profile), { updates }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cron'] }),
+  });
+}
+
 /** Same scoping argument as `useCronAction` — deleting the wrong profile's
     same-named job is the worst version of that mistake. */
 export function useDeleteCronJob() {
