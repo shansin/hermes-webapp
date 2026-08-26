@@ -6,19 +6,25 @@ import { ModelPicker } from '../shared/ModelPicker';
 import { buzz } from '../../lib/haptics';
 
 /**
- * The model new chats start with, globally.
+ * The model new chats start with, for one profile.
  *
- * `/api/model/set` with `scope: "main"` writes `model.*` in
- * `~/.hermes/config.yaml`, so this is the default everywhere Hermes runs — the
+ * `/api/model/set` with `scope: "main"` writes `model.*` into that profile's
+ * config, so this is the default everywhere Hermes runs as that agent — the
  * terminal included — not just this app.
+ *
+ * It used to say "globally" and mean it: no profile travelled with the call,
+ * and an omitted one is the *active* profile rather than the one on screen. So
+ * setting a model while looking at one agent could write another's config, and
+ * the toast said it had worked. The profile is explicit now, and `ModelsTab`
+ * owns the choice.
  *
  * Deliberately separate from the model sheet in chat: that one hot-swaps the
  * running session and leaves this untouched, this one writes Hermes' own config
  * and leaves running sessions untouched. It sits directly under the active-model
  * card so the phone shows both answers at once.
  */
-export function DefaultModelSection() {
-  const { data, isLoading } = useDefaultModel();
+export function DefaultModelSection({ profile = null }: { profile?: string | null }) {
+  const { data, isLoading } = useDefaultModel(profile);
   const setDefault = useSetDefaultModel();
   const toast = useUi((s) => s.toast);
 
@@ -34,7 +40,7 @@ export function DefaultModelSection() {
 
   const apply = async (model: string, provider: string, confirmExpensive = false) => {
     try {
-      const res = await setDefault.mutateAsync({ model, provider, confirmExpensive });
+      const res = await setDefault.mutateAsync({ model, provider, profile, confirmExpensive });
       if (res.confirm_required) {
         setConfirm({ model, provider, message: res.confirm_message || 'This model is expensive.' });
         return;
@@ -121,6 +127,7 @@ export function DefaultModelSection() {
               are unaffected.
             </div>
             <ModelPicker
+              profile={profile}
               selected={main?.model}
               onPick={(m, p) => void apply(m, p)}
               busy={busy}

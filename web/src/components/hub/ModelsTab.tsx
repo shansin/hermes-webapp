@@ -19,10 +19,11 @@
  * `import { UsageTab }` here would silently inline the whole thing — see
  * `web/test/usage.test.ts`, which checks this file for exactly that.
  */
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { DefaultModelSection } from './DefaultModelSection';
 import { AuxiliaryModelSection } from './AuxiliaryModelSection';
+import { ProfileFilter } from '../shared/ProfileSelect';
 import { buzz } from '../../lib/haptics';
 
 const UsageSection = lazy(() =>
@@ -37,6 +38,18 @@ const SECTIONS = [
 
 export function ModelsTab() {
   const [params, setParams] = useSearchParams();
+  /**
+   * Which profile's models are being set. Null is the active one, and on a
+   * single-profile install `ProfileFilter` renders nothing at all — so this
+   * costs that install neither a control nor a decision.
+   *
+   * The screen used to have no such choice, which did not make it
+   * profile-independent: model config is per-profile, so it simply wrote
+   * whichever profile happened to be active while presenting itself as *the*
+   * default. Scoping the screen is the same pattern Sessions and Skills use,
+   * and for the same reason — see `shared/ProfileSelect.tsx`.
+   */
+  const [profile, setProfile] = useState<string | null>(null);
   // Anything unrecognised falls back to the picker rather than to a blank
   // screen — a hand-typed or stale `?tab=` must not strand anyone.
   const tab = params.get('tab') === 'usage' ? 'usage' : 'setup';
@@ -68,8 +81,11 @@ export function ModelsTab() {
         </Suspense>
       ) : (
         <div style={{ padding: '0 12px 12px' }}>
-          <DefaultModelSection />
-          <AuxiliaryModelSection />
+          <div style={{ marginBottom: 12 }}>
+            <ProfileFilter value={profile} onChange={setProfile} />
+          </div>
+          <DefaultModelSection profile={profile} />
+          <AuxiliaryModelSection profile={profile} />
         </div>
       )}
     </>

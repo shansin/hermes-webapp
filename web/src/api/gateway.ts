@@ -5,6 +5,7 @@
  * pulling in streaming state, and so every method name lives in one place.
  */
 import { hermes, CONTROL_TIMEOUT_MS } from '../ws/client';
+import { api } from './client';
 import { dispatchCommand } from './commands';
 import {
   ModelOptionsSchema,
@@ -83,18 +84,39 @@ export async function fetchHistory(sessionId: string): Promise<HistoryMessage[]>
  * whether they are waiting on a box that is switched on.
  */
 export async function fetchModelOptions(
-  { refresh = false }: { refresh?: boolean } = {},
+  { refresh = false, profile = null }: { refresh?: boolean; profile?: string | null } = {},
 ): Promise<ModelOptions> {
-  const raw = await hermes.call(
-    'model.options',
-    refresh ? { refresh: true } : {},
-    {
-      // A refresh dials out to every saved custom endpoint in turn, so the
-      // 15s meant for metadata calls is not enough — one sleeping Tailscale
-      // host would fail the whole probe. Only the refresh path pays this.
-      timeoutMs: refresh ? 60_000 : CONTROL_TIMEOUT_MS,
-    },
-  );
+  // A refresh dials out to every saved custom endpoint in turn, so the 15s
+  // meant for metadata calls is not enough — one sleeping Tailscale host would
+  // fail the whole probe. Only the refresh path pays this.
+  const timeoutMs = refresh ? 60_000 : CONTROL_TIMEOUT_MS;
+
+  /**
+   * Naming a profile changes the transport, and it has to.
+   *
+   * The gateway's `model.options` takes `session_id`, `explicit_only`,
+   * `include_unconfigured` and `refresh` — no profile. The socket answers for
+   * the profile the gateway is running as, full stop. But the catalogue is
+   * genuinely per-profile: `custom_providers` is profile config, so two
+   * profiles can have different endpoints saved and therefore different models
+   * to offer. Asking the socket for another profile's list would quietly hand
+   * back this one's, which is worse than not offering the choice at all — the
+   * picker would look right and name models that profile cannot reach.
+   *
+   * The REST route does take `?profile=`, so that is the one used whenever a
+   * profile is named. The socket stays the default path for the unscoped case,
+   * where it is one already-open connection instead of a new request.
+   */
+  if (profile) {
+    const qs = new URLSearchParams({ profile });
+    if (refresh) qs.set('refresh', 'true');
+    const raw = await api.get<unknown>(`/api/model/options?${qs.toString()}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return ModelOptionsSchema.parse(raw);
+  }
+
+  const raw = await hermes.call('model.options', refresh ? { refresh: true } : {}, { timeoutMs });
   return ModelOptionsSchema.parse(raw);
 }
 

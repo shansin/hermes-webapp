@@ -34,11 +34,20 @@ import { buzz } from '../../lib/haptics';
 
 export function ModelPicker({
   selected,
+  profile = null,
   onPick,
   busy = false,
 }: {
   /** Model id to mark as active, if any. */
   selected?: string;
+  /**
+   * Whose catalogue to offer. Null is the active profile — the right default
+   * for the three callers that pin something inside the profile they are
+   * already in. It matters because `custom_providers` is profile config: two
+   * profiles can have different endpoints saved, so the list of models that
+   * exist is genuinely not the same list.
+   */
+  profile?: string | null;
   onPick: (model: string, provider: string) => void;
   busy?: boolean;
 }) {
@@ -48,8 +57,10 @@ export function ModelPicker({
   const toast = useUi((s) => s.toast);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['model-options'],
-    queryFn: () => fetchModelOptions(),
+    // The profile is part of the key, not just the request: one shared entry
+    // would hand the second profile the first one's models.
+    queryKey: ['model-options', profile ?? null],
+    queryFn: () => fetchModelOptions({ profile }),
     staleTime: 5 * 60_000,
   });
 
@@ -66,8 +77,8 @@ export function ModelPicker({
     buzz('tap');
     setRefreshing(true);
     try {
-      const fresh = await fetchModelOptions({ refresh: true });
-      qc.setQueryData(['model-options'], fresh);
+      const fresh = await fetchModelOptions({ refresh: true, profile });
+      qc.setQueryData(['model-options', profile ?? null], fresh);
       const n = fresh.providers.reduce((sum, p) => sum + p.models.length, 0);
       toast(`${n} models across ${fresh.providers.length} providers`, 'success');
     } catch (e) {

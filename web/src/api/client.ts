@@ -97,7 +97,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  /**
+   * `init` is forwarded so a caller can pass an `AbortSignal` — `fetch` has no
+   * timeout of its own, and a request that dials sleeping hosts (the model
+   * catalogue's refresh) would otherwise hang until the browser gives up with
+   * no way to say how long is too long.
+   */
+  get: <T>(path: string, init?: RequestInit) => request<T>(path, init),
 
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, {

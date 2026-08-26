@@ -517,12 +517,24 @@ export interface ModelAssignment {
  * `model.options` both answer with the live resolved model instead, which drifts
  * from the stored default as soon as any chat switches model for itself.
  */
-export function useDefaultModel() {
+/**
+ * What one profile's model slots are set to.
+ *
+ * `/api/model/auxiliary` and `/api/model/set` both take `?profile=`, and an
+ * omitted one means the *active* profile — not the profile the screen is
+ * showing. The Models screen had no picker at all and passed nothing, so it
+ * read and wrote whichever profile happened to be active while claiming, in a
+ * heading, to be the default model. Setting a model for the agent you were
+ * looking at therefore changed a different agent, silently and with a success
+ * toast. Everything here is explicit for that reason; null still means the
+ * active profile, but now it is a choice rather than an omission.
+ */
+export function useDefaultModel(profile?: string | null) {
   return useQuery({
-    queryKey: ['model', 'default'],
+    queryKey: ['model', 'default', profile ?? null],
     queryFn: () =>
       api.get<{ main: ModelAssignment; tasks: { task: string; provider: string; model: string }[] }>(
-        '/api/model/auxiliary',
+        withProfile('/api/model/auxiliary', profile),
       ),
     staleTime: 60_000,
   });
@@ -565,13 +577,15 @@ export function useSetAuxiliaryModel() {
     mutationFn: ({
       provider,
       model,
+      profile,
       confirmExpensive = false,
     }: {
       provider: string;
       model: string;
+      profile?: string | null;
       confirmExpensive?: boolean;
     }) =>
-      api.post<SetModelResult>('/api/model/set', {
+      api.post<SetModelResult>(withProfile('/api/model/set', profile), {
         scope: 'auxiliary',
         provider,
         model,
@@ -589,13 +603,15 @@ export function useSetDefaultModel() {
     mutationFn: ({
       provider,
       model,
+      profile,
       confirmExpensive = false,
     }: {
       provider: string;
       model: string;
+      profile?: string | null;
       confirmExpensive?: boolean;
     }) =>
-      api.post<SetModelResult>('/api/model/set', {
+      api.post<SetModelResult>(withProfile('/api/model/set', profile), {
         scope: 'main',
         provider,
         model,

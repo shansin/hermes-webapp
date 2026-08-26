@@ -52,8 +52,8 @@ export function summariseAuxiliary(
  * setting, and the reason anyone wants this is "send the small stuff
  * somewhere cheap".
  */
-export function AuxiliaryModelSection() {
-  const { data, isLoading } = useDefaultModel();
+export function AuxiliaryModelSection({ profile = null }: { profile?: string | null }) {
+  const { data, isLoading } = useDefaultModel(profile);
   const setAux = useSetAuxiliaryModel();
   const toast = useUi((s) => s.toast);
 
@@ -70,7 +70,7 @@ export function AuxiliaryModelSection() {
 
   const apply = async (model: string, provider: string, confirmExpensive = false) => {
     try {
-      const res = await setAux.mutateAsync({ model, provider, confirmExpensive });
+      const res = await setAux.mutateAsync({ model, provider, profile, confirmExpensive });
       if (res.confirm_required) {
         setConfirm({ model, provider, message: res.confirm_message || 'This model is expensive.' });
         return;
@@ -162,6 +162,7 @@ export function AuxiliaryModelSection() {
               {uniform === '' ? 'Following the main model' : 'Follow the main model (auto)'}
             </button>
             <ModelPicker
+              profile={profile}
               selected={uniform || undefined}
               onPick={(m, p) => void apply(m, p)}
               busy={busy}
