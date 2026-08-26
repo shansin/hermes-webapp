@@ -462,7 +462,7 @@ export function UsageTab() {
         {/* --- overhead: the tokens nobody asked for --- */}
         <Card
           title="Machinery"
-          hint="Calls Hermes makes on its own behalf — naming a session, judging an approval, compacting a transcript. Charged to a model, attributable to no conversation."
+          hint="Calls Hem makes on its own behalf — naming a session, judging an approval, compacting a transcript. Charged to a model, attributable to no conversation."
         >
           {usage.isLoading ? (
             <SkeletonList n={3} h={30} />

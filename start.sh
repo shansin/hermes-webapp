@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Start Hermes Control.
+# Start Hem.
 #
 #   1. make sure the Hermes backend is up on loopback (start it if not)
 #   2. make sure the web app is built
@@ -11,7 +11,7 @@
 # back rather than failing on it.
 #
 #   bash start.sh              # foreground
-#   bash start.sh --bg         # detach, log to .logs/hermes-control.log
+#   bash start.sh --bg         # detach, log to .logs/hem.log
 #   bash start.sh --status     # report, change nothing
 #   TAILSCALE=1 bash start.sh  # with the HTTPS front
 #   ENV_FILE=.env.public bash start.sh   # the Cloudflare Tunnel + Access deployment
@@ -111,7 +111,7 @@ authed() {
 }
 
 # The proxy's own endpoint, as opposed to the backend's /api/health above: a
-# 200 here means the thing on the port is Hermes Control and not something else.
+# 200 here means the thing on the port is Hem and not something else.
 # Is the public endpoint actually being served? With the Access gate configured
 # the proxy binds loopback, so a dead tunnel means the app is unreachable from
 # everywhere except this machine — while `/healthz` stays perfectly green. The
@@ -199,7 +199,7 @@ report() {
   [ -n "${HTTPS_CERT:-}" ] && [ -n "${HTTPS_KEY:-}" ] && scheme="https"
 
   echo
-  bold "Hermes Control"
+  bold "Hem"
   [ -n "${ENV_FILE:-}" ] && echo "  Config:          .env + ${ENV_FILE}"
   echo "  On this machine: ${scheme}://localhost:${PROXY_PORT}"
   # Only when the proxy is actually listening on the LAN. Bound to loopback
@@ -218,7 +218,7 @@ report() {
     warn "  HTTP mode - install/offline/push stay dormant (see README)."
     warn "  TAILSCALE=1 bash start.sh puts an HTTPS front on it."
   fi
-  [ "${BACKGROUND}" = "1" ] && echo "  Logs:            ${LOG_DIR}/hermes-control.log"
+  [ "${BACKGROUND}" = "1" ] && echo "  Logs:            ${LOG_DIR}/hem.log"
   echo
 }
 
@@ -433,21 +433,21 @@ if [ "${BACKGROUND}" = "1" ]; then
   mkdir -p "${LOG_DIR}"
   bold "→ Starting the proxy in the background…"
   # setsid so it outlives this shell and its terminal.
-  setsid nohup pnpm --filter @hermes-webapp/server start \
-    >> "${LOG_DIR}/hermes-control.log" 2>&1 < /dev/null &
+  setsid nohup pnpm --filter @hem/server start \
+    >> "${LOG_DIR}/hem.log" 2>&1 < /dev/null &
 
   for _ in $(seq 1 60); do
     proxy_up && break
     sleep 1
   done
   if ! proxy_up; then
-    warn "  ! Proxy did not come up. Last lines of ${LOG_DIR}/hermes-control.log:"
-    tail -n 15 "${LOG_DIR}/hermes-control.log" >&2 || true
+    warn "  ! Proxy did not come up. Last lines of ${LOG_DIR}/hem.log:"
+    tail -n 15 "${LOG_DIR}/hem.log" >&2 || true
     die "Startup failed."
   fi
   bold "✓ Proxy up on ${PROXY_PORT}"
   report
 else
   report
-  exec pnpm --filter @hermes-webapp/server start
+  exec pnpm --filter @hem/server start
 fi

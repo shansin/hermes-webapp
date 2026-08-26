@@ -191,7 +191,7 @@ export function NavDrawer() {
       >
         <div className="drawer__head">
           <div>
-            <div className="drawer__title">Hermes</div>
+            <div className="drawer__title">Hem</div>
             <div className={`drawer__conn drawer__conn--${connection === 'open' ? 'on' : 'off'}`}>
               {connection === 'open' ? 'Connected' : 'Disconnected'}
               {/* Only when it is not the stock profile: naming `default` on

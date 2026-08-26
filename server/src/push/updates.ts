@@ -74,7 +74,7 @@ export function recordGatewayEvent(
        * row — all of them. `events.ts` flattens its own copy for the banner;
        * what is kept here is what the card shows.
        */
-      title = 'Hermes';
+      title = 'Hem';
       body = fullText(str(payload.text) ?? str(payload.message));
       break;
     }

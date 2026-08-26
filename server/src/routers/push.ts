@@ -83,7 +83,7 @@ pushRouter.post('/push/test', async (c) => {
   if (!pushPublicKey()) return c.json({ error: 'push_disabled' }, 503);
 
   const delivered = await sendPush({
-    title: 'Hermes',
+    title: 'Hem',
     body: 'Push notifications are working.',
     url: '/settings',
     tag: 'test',

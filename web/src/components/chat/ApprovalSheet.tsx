@@ -78,7 +78,7 @@ export function ApprovalSheet() {
 
       {approval.smart_denied && (
         <p style={{ color: 'var(--warn)', fontSize: 'var(--type-detail)', marginTop: 0 }}>
-          Hermes flagged this as risky. Approve only if you expected it.
+          Hem flagged this as risky. Approve only if you expected it.
         </p>
       )}
 

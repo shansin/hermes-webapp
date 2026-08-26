@@ -1,21 +1,21 @@
 {
-  "name": "hermes-webapp",
+  "name": "hem",
   "private": true,
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
-  "description": "Hermes Control — phone-first web app / PWA for the Hermes Agent",
+  "description": "Hem — phone-first web app / PWA for the Hermes Agent backend",
   "scripts": {
-    "dev:server": "pnpm --filter @hermes-webapp/server dev",
-    "dev:web": "pnpm --filter @hermes-webapp/web dev",
-    "build": "pnpm --filter @hermes-webapp/web build",
-    "start": "pnpm --filter @hermes-webapp/server start",
+    "dev:server": "pnpm --filter @hem/server dev",
+    "dev:web": "pnpm --filter @hem/web dev",
+    "build": "pnpm --filter @hem/web build",
+    "start": "pnpm --filter @hem/server start",
     "typecheck": "pnpm -r typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "size": "pnpm --filter @hermes-webapp/web size",
-    "analyze": "pnpm --filter @hermes-webapp/web analyze"
+    "size": "pnpm --filter @hem/web size",
+    "analyze": "pnpm --filter @hem/web analyze"
   },
   "engines": {
     "node": ">=20"

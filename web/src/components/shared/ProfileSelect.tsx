@@ -22,7 +22,7 @@ import { PickerRow } from './MultiSelectSheet';
 import { useActiveProfile, useProfiles } from '../../api/profiles';
 
 /** The row hint that marks the profile Hermes is currently running as. */
-const ACTIVE_HINT = 'The profile Hermes is running as';
+const ACTIVE_HINT = 'The profile Hem is running as';
 
 export function ProfileFilter({
   value,

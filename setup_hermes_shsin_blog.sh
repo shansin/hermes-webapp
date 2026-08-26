@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Rebuild the public deployment of Hermes Control on a fresh machine.
+# Rebuild the public deployment of Hem on a fresh machine.
 #
 # Run this after a format, once Hermes itself is installed. It stands the whole
 # thing back up: dependencies, the web build, a Cloudflare Tunnel, the Access
@@ -40,7 +40,7 @@ DOMAIN="shsin.blog"
 SUBDOMAIN="hermes"
 FQDN="${SUBDOMAIN}.${DOMAIN}"
 TUNNEL_NAME="hermes"
-APP_NAME="Hermes Control"
+APP_NAME="Hem"
 # Who Access will admit, comma-separated Google accounts.
 #
 # Not hardcoded, because this file lives in a public repository and an
@@ -290,7 +290,7 @@ REC_ID="$(jq -r '.result[0].id // empty' <<<"$out")"
 # Proxied, unlike the apex: this hostname MUST go through Cloudflare's proxy so
 # that Access has somewhere to intercept before traffic reaches the machine.
 BODY="$(jq -n --arg n "$SUBDOMAIN" --arg c "$TARGET" \
-  '{type:"CNAME", name:$n, content:$c, ttl:1, proxied:true, comment:"Hermes Control via Cloudflare Tunnel"}')"
+  '{type:"CNAME", name:$n, content:$c, ttl:1, proxied:true, comment:"Hem via Cloudflare Tunnel"}')"
 
 if [ -n "$REC_ID" ]; then
   out=$(cf PUT "/zones/${ZONE_ID}/dns_records/${REC_ID}" "$BODY")
@@ -454,7 +454,7 @@ PNPM_BIN="$(dirname "$(command -v pnpm)")"
 
 cat > "$HOME/.config/systemd/user/hermes-webapp.service" <<UNIT
 [Unit]
-Description=Hermes Control — proxy + Cloudflare Access gate
+Description=Hem — proxy + Cloudflare Access gate
 After=network-online.target
 Wants=network-online.target
 After=cloudflared.service
@@ -535,7 +535,7 @@ if [ "$fail" -gt 0 ]; then
   exit 1
 fi
 
-bold "Hermes Control is up."
+bold "Hem is up."
 cat <<EOF
 
   Open:     https://${FQDN}

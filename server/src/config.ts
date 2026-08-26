@@ -1,5 +1,5 @@
 /**
- * Environment configuration for the Hermes Control proxy.
+ * Environment configuration for the Hem proxy.
  *
  * Everything is optional and defaults to a stock Hermes install. The one value
  * that needs care is the dashboard session token: see `resolveToken`.

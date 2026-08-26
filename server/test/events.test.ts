@@ -56,7 +56,7 @@ describe('events that produce nothing', () => {
 describe('message.complete', () => {
   it('sends the reply as the body', () => {
     const m = toMessage('message.complete', { text: 'All three tests pass.' }, 's1');
-    expect(m).toMatchObject({ title: 'Hermes', body: 'All three tests pass.' });
+    expect(m).toMatchObject({ title: 'Hem', body: 'All three tests pass.' });
   });
 
   it('deep-links to the conversation', () => {
@@ -159,7 +159,7 @@ describe('approvals', () => {
    */
   it('wakes a phone for a question the agent is parked on', () => {
     const m = toMessage('clarify.request', { request_id: 'r1', question: 'Which source?' }, 's1')!;
-    expect(m.title).toBe('Question from Hermes');
+    expect(m.title).toBe('Question from Hem');
     expect(m.body).toBe('Which source?');
   });
 

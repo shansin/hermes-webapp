@@ -193,7 +193,7 @@ export function NotificationsScreen() {
           textAlign: 'center',
         }}
       >
-        Everything Hermes reports posts here. Tap a row to open what it is about.
+        Everything Hem reports posts here. Tap a row to open what it is about.
       </div>
     </div>
   );
@@ -295,7 +295,7 @@ function Entry({ entry, onOpen }: { entry: NotificationEntry; onOpen: () => void
         }}
       >
         {/* The source chip, then the title, then the words. The chip is what
-            makes a mixed feed legible: "Hermes" heading a row means something
+            makes a mixed feed legible: "Hem" heading a row means something
             different when the agent said it than when the proxy did. */}
         <div
           style={{

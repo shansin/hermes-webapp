@@ -268,18 +268,18 @@ export function toMessage(
   switch (type) {
     case 'background.complete': {
       const label = str(payload.title) ?? 'Background task';
-      return { title: 'Hermes', body: `${label} finished`, url: chatUrl, tag: sessionTag, kind: type };
+      return { title: 'Hem', body: `${label} finished`, url: chatUrl, tag: sessionTag, kind: type };
     }
 
     case 'subagent.complete': {
       const name = str(payload.name) ?? 'Subagent';
-      return { title: 'Hermes', body: `${name} finished`, url: chatUrl, tag: sessionTag, kind: type };
+      return { title: 'Hem', body: `${name} finished`, url: chatUrl, tag: sessionTag, kind: type };
     }
 
     case 'notification.show': {
       const text = str(payload.text) ?? str(payload.message);
       if (!text) return null;
-      return { title: 'Hermes', body: text, url: chatUrl, tag: sessionTag, kind: type };
+      return { title: 'Hem', body: text, url: chatUrl, tag: sessionTag, kind: type };
     }
 
     /**
@@ -311,7 +311,7 @@ export function toMessage(
       const preview = flatten(str(payload.text));
       if (!preview) return null;
 
-      return { title: 'Hermes', body: preview, url: chatUrl, tag: sessionTag, kind: type };
+      return { title: 'Hem', body: preview, url: chatUrl, tag: sessionTag, kind: type };
     }
 
     /**
@@ -329,7 +329,7 @@ export function toMessage(
       const more = batch && batch.length > 1 ? ` (+${batch.length - 1} more)` : '';
 
       return {
-        title: 'Question from Hermes',
+        title: 'Question from Hem',
         body: `${question}${more}`,
         url: chatUrl,
         // Kept off the per-session tag for the same reason approvals are: a

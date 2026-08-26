@@ -55,7 +55,7 @@ describe('the agent’s own announcements', () => {
     expect(rows[0]).toMatchObject({
       source: 'agent',
       severity: 'info',
-      title: 'Hermes',
+      title: 'Hem',
       body: 'Time to brush your teeth',
       url: '/chat?session=s1',
     });

@@ -167,7 +167,7 @@ export function ProfilesTab() {
       )}
 
       {profiles.length === 0 ? (
-        <Empty icon="👤" title="No profiles" hint="Hermes reported no configured profiles." />
+        <Empty icon="👤" title="No profiles" hint="Hem reported no configured profiles." />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
           {profiles.map((p) => {

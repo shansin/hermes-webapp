@@ -144,9 +144,9 @@ export default defineConfig({
       devOptions: { enabled: false },
       includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Hermes Control',
-        short_name: 'Hermes',
-        description: 'Phone-first control center for the Hermes Agent',
+        name: 'Hem',
+        short_name: 'Hem',
+        description: 'Hem — phone-first control center for the Hermes Agent backend',
         theme_color: '#0b0b0f',
         background_color: '#0b0b0f',
         display: 'standalone',

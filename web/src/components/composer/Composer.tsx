@@ -601,7 +601,7 @@ export function Composer({
             // Any further typing means the user wants suggestions again.
             setPopoverOpen(true);
           }}
-          placeholder={recording ? 'Listening…' : 'Message Hermes…'}
+          placeholder={recording ? 'Listening…' : 'Message Hem…'}
           rows={1}
           // The on-screen keyboard offers a newline key rather than "send",
           // matching what Enter now does. Sending is the button beside it.

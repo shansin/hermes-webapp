@@ -1,5 +1,5 @@
 /**
- * Hermes Control proxy.
+ * The Hem proxy.
  *
  * A thin LAN-facing shell around the Hermes backend, which stays on loopback:
  *
@@ -145,7 +145,7 @@ app.notFound((c) => {
     return c.html(
       `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
        <body style="font:16px system-ui;padding:2rem;background:#0b0b0f;color:#e8e8ef">
-       <h1>Hermes Control</h1>
+       <h1>Hem</h1>
        <p>The web app hasn't been built yet. Run:</p>
        <pre style="background:#1a1a22;padding:1rem;border-radius:8px">pnpm build</pre>
        <p>…or use <code>bash start.sh</code>, which builds automatically.</p>
@@ -209,7 +209,7 @@ const server = serve(
   (info) => {
     const scheme = config.https ? 'https' : 'http';
     const lan = lanAddress();
-    log.info(`Hermes Control listening on ${scheme}://${config.PROXY_HOST}:${info.port}`);
+    log.info(`Hem listening on ${scheme}://${config.PROXY_HOST}:${info.port}`);
     // Only when we are actually listening on the LAN. Bound to loopback — the
     // Cloudflare deployment — that address refuses connections, and printing it
     // sends you off to debug a phone that was never going to reach it.

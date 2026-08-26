@@ -1,4 +1,4 @@
-# Hermes Control
+# Hem
 
 A phone-first web app (and dormant PWA) for driving the [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 running on your own machine — from your phone on the same LAN, over Tailscale,
@@ -48,7 +48,7 @@ the web app, then runs the proxy. It prints the LAN URL to open on your phone
 (`SKIP_BUILD=1` reuses the existing `web/dist` when the tree hasn't changed):
 
 ```
-Hermes Control
+Hem
   On this machine: http://localhost:3000
   On your phone:   http://192.168.1.42:3000
 ```
@@ -60,7 +60,7 @@ takes the port back from an already-running instance — which is what you want,
 since the run just rebuilt the bundle that instance was serving.
 
 ```bash
-bash start.sh --bg        # detach; logs to .logs/hermes-control.log
+bash start.sh --bg        # detach; logs to .logs/hem.log
 bash start.sh --status    # report what's up, change nothing
 ```
 

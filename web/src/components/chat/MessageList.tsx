@@ -451,7 +451,7 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
             className="chip"
             disabled={selected.size === 0}
             onClick={async () => {
-              const { text, tone } = outcomeToast(await shareText(selectedMarkdown(), 'Hermes'));
+              const { text, tone } = outcomeToast(await shareText(selectedMarkdown(), 'Hem'));
               toast(text, tone);
               if (tone === 'success') endSelection();
             }}
@@ -674,7 +674,7 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
                 Edit &amp; resend
               </button>
               {/* Copy what the bubble shows: the refs are plumbing. */}
-              <MessageActions getText={() => caption} title="Hermes" />
+              <MessageActions getText={() => caption} title="Hem" />
             </div>
           )}
         </>
@@ -740,7 +740,7 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
                   </>
                 )}
               </button>
-              <MessageActions getText={() => m.text} title="Hermes" />
+              <MessageActions getText={() => m.text} title="Hem" />
             </>
           )}
           {p.isLastAssistant && (

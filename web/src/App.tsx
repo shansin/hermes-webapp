@@ -201,7 +201,7 @@ export function App() {
           }`}
         >
           {connection === 'connecting'
-            ? 'Connecting to Hermes…'
+            ? 'Connecting to Hem…'
             : connection === 'reconnecting'
               ? 'Reconnecting…'
               : 'Disconnected'}
