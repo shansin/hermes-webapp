@@ -309,7 +309,18 @@ describe('token handling', () => {
  * is invisible enough to be worth pinning down.
  */
 describe('the client keepalive', () => {
-  it('pings the browser while the socket is idle', async () => {
+  /**
+   * A data frame, not a protocol ping, and that is the whole point of the test.
+   *
+   * `client.ping()` is the textbook way to do this and it was killing the
+   * connection: 55 of the 176 abnormal client closes across two days of proxy
+   * logs landed 45.007–45.062s after the bridge opened — the first ping tick,
+   * plus milliseconds — and each one cost a running turn, because Hermes hard
+   * interrupts a session whose transport has been detached for its reap grace.
+   * The newline reaches no handler in the client (it splits on newlines and
+   * skips empty lines), including in an old bundle still sitting on a phone.
+   */
+  it('sends a data frame, and no protocol ping, while the socket is idle', async () => {
     // Fake only setInterval: the sockets below are real and need their own I/O
     // timers to keep working.
     vi.useFakeTimers({ toFake: ['setInterval'] });
@@ -317,21 +328,54 @@ describe('the client keepalive', () => {
       const client = track(await openClient());
       await upgraded();
 
-      const pinged = new Promise<void>((resolve) => client.once('ping', () => resolve()));
+      let pinged = false;
+      client.once('ping', () => {
+        pinged = true;
+      });
+      const frame = new Promise<string>((resolve) =>
+        client.once('message', (data: RawData) => resolve(data.toString())),
+      );
       await vi.advanceTimersByTimeAsync(45_000);
 
       await expect(
         Promise.race([
-          pinged,
-          new Promise((_, r) => setTimeout(() => r(new Error('no ping arrived')), 2000)),
+          frame,
+          new Promise((_, r) => setTimeout(() => r(new Error('no keepalive arrived')), 2000)),
         ]),
-      ).resolves.toBeUndefined();
+      ).resolves.toBe('\n');
+      expect(pinged).toBe(false);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('stops pinging once the client has gone', async () => {
+  /**
+   * A newline is inert in a stream of JSON lines and is a byte of corruption in
+   * a stream of audio, so the keepalive is sent on the JSON-RPC path only. The
+   * other bridged paths are request-scoped streams that are never idle anyway;
+   * what they still get is the stall check and the interval's own cleanup.
+   */
+  it('sends no keepalive frame on a path that is not JSON-RPC', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] });
+    try {
+      const client = track(await openClient('/api/audio/speak-stream'));
+      await upgraded();
+
+      let frames = 0;
+      client.on('message', () => {
+        frames++;
+      });
+      await vi.advanceTimersByTimeAsync(45_000 * 2);
+      await new Promise((r) => setTimeout(r, 200));
+
+      expect(frames).toBe(0);
+      expect(upstreamSockets[0]!.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops sending once the client has gone', async () => {
     vi.useFakeTimers({ toFake: ['setInterval'] });
     try {
       const client = await openClient();
@@ -351,14 +395,16 @@ describe('the client keepalive', () => {
   });
 
   /**
-   * The keepalive is also the only thing that can notice a peer that stopped
-   * existing. A phone walking out of radio range sends no close frame, and TCP
-   * will sit on the half-open connection far longer than anyone waits — so the
-   * bridge stays "open" forever with a Hermes socket held open behind it, and
-   * the live-connection count in the log stops meaning anything. That count is
-   * the first thing anyone reads when the app is misbehaving.
+   * A phone on a stalled radio: still connected, no longer reading.
+   *
+   * Losing the ping lost its pong with it, so the keepalive can no longer be
+   * answered — what it can still see is its own send buffer. A peer that has
+   * stopped reading stops draining it, and the bridge has to go rather than sit
+   * "open" forever holding a Hermes gateway session behind it. (A peer that
+   * vanished at the TCP level is the kernel's job now: `setKeepAlive` on the
+   * accepted socket errors the connection out instead of leaving it half-open.)
    */
-  it('drops a bridge whose client has stopped answering', async () => {
+  it('drops a bridge whose client has stopped reading', async () => {
     vi.useFakeTimers({ toFake: ['setInterval'] });
     try {
       const client = track(await openClient());
@@ -366,18 +412,22 @@ describe('the client keepalive', () => {
       const upstream = upstreamSockets[0]!;
       const upstreamClosed = new Promise<void>((r) => upstream.once('close', () => r()));
 
-      // Pausing the socket is a peer that has gone without saying so: the ping
-      // is never read, so no pong is ever sent.
+      // Pausing the socket is a peer that has stopped reading without saying
+      // so. Enough bytes to outlast the receive window, so the send buffer on
+      // this side is genuinely stuck rather than merely momentarily full.
       client.pause();
+      const chunk = 'x'.repeat(512 * 1024);
+      for (let i = 0; i < 16; i++) upstream.send(chunk);
+      // Real time, not the faked interval: the frames have to cross the bridge
+      // and pile up on the client leg before the tick can see the stall.
+      await new Promise((r) => setTimeout(r, 500));
 
-      // One interval sends the ping; the next finds it unanswered.
-      await vi.advanceTimersByTimeAsync(45_000);
       await vi.advanceTimersByTimeAsync(45_000);
 
       await expect(
         Promise.race([
           upstreamClosed,
-          new Promise((_, r) => setTimeout(() => r(new Error('the bridge was left open')), 2000)),
+          new Promise((_, r) => setTimeout(() => r(new Error('the bridge was left open')), 4000)),
         ]),
       ).resolves.toBeUndefined();
     } finally {
@@ -385,14 +435,14 @@ describe('the client keepalive', () => {
     }
   });
 
-  it('keeps a bridge whose client is answering', async () => {
+  it('keeps a bridge whose client is reading', async () => {
     vi.useFakeTimers({ toFake: ['setInterval'] });
     try {
       track(await openClient());
       await upgraded();
       const upstream = upstreamSockets[0]!;
 
-      // Several rounds of ping/pong, which `ws` answers at the protocol level.
+      // Several rounds of keepalive, all of them read and drained.
       for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(45_000);
 
       expect(upstream.readyState).toBe(WebSocket.OPEN);

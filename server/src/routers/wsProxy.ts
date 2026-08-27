@@ -38,22 +38,61 @@ const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
 const MAX_PENDING_FRAMES = 64;
 
 /**
- * How often to ping the browser.
+ * How often to send the browser a keepalive frame.
  *
  * The gateway socket is idle between turns — often for a very long time — and
  * an idle proxied WebSocket gets closed at 100s by Cloudflare, which is the
  * whole path in the published deployment. The browser then reconnects, so
  * nothing breaks, but the app spends its life flashing "Reconnecting…".
  *
- * A ping is protocol-level: the browser answers it automatically, no script
- * involved, and either frame is enough traffic to keep the connection from
- * looking idle. `push/events.ts` already does exactly this for the proxy's own
- * upstream socket and for the same underlying reason — an idle socket gets
- * dropped by something in the middle without telling either end.
- *
- * 45s leaves room for one ping to go missing before the 100s ceiling.
+ * 45s leaves room for one keepalive to go missing before the 100s ceiling.
  */
 const CLIENT_PING_INTERVAL_MS = 45_000;
+
+/**
+ * The keepalive frame, and why it is not a protocol ping.
+ *
+ * It was `client.ping()` — protocol-level, answered by the browser with no
+ * script involved, which is the textbook way to do this and is what
+ * `push/events.ts` still does on the proxy's own upstream leg. On the
+ * Cloudflare path it was killing the connection. Two days of proxy logs held
+ * 176 abnormal (1006) client closes, and 55 of them landed between 45.007s and
+ * 45.062s after the bridge opened — the first ping tick, plus milliseconds.
+ * Not the unresponsive-peer path below (that fires at 90s and logs, 17 times
+ * over the same period): the socket simply died as the ping went out. Every
+ * one of those drops cost a running turn, because Hermes hard-interrupts a
+ * session whose transport has been detached for 20s.
+ *
+ * A newline is a data frame, which is what this connection carries all day.
+ * The gateway speaks newline-delimited JSON-RPC and the client splits on
+ * newlines and skips empty lines (`ws/client.ts`), so it costs one byte and
+ * reaches no handler — including in an old bundle still sitting on a phone.
+ *
+ * That last part is why it is sent on the JSON-RPC path only: a newline is
+ * inert in a stream of JSON lines and is a byte of corruption in a stream of
+ * audio. `/api/ws` is also the only long-idle one — nothing else here holds a
+ * socket open between turns, which is the problem being solved.
+ */
+const CLIENT_KEEPALIVE_FRAME = '\n';
+const KEEPALIVE_PATHS = new Set(['/api/ws']);
+
+/**
+ * How long a peer may leave the keepalive unsent before we treat it as gone.
+ *
+ * Losing the ping loses its pong, which was the only thing that could notice a
+ * phone that walked out of radio range without closing: TCP sits on a
+ * half-open connection far longer than anyone waits, and the bridge would stay
+ * "open" forever holding a Hermes gateway socket with it — which also makes
+ * the live count in the log, the first thing anyone reads, stop meaning
+ * anything.
+ *
+ * A one-byte frame to a peer that is still there drains from the send buffer
+ * immediately, so a buffer that has not drained by the next tick means nobody
+ * is reading. Sized well above a frame or two so ordinary streaming
+ * backpressure — which the MAX_BUFFERED_BYTES checks already own — cannot
+ * trip it.
+ */
+const CLIENT_STALL_BYTES = 256 * 1024;
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { getToken, resolveToken, upstreamWs, upstreamHost, accessEnabled } from '../config.js';
@@ -138,6 +177,22 @@ export function attachWsProxy(server: {
         return;
       }
     }
+
+    /**
+     * TCP keepalive on the accepted socket.
+     *
+     * The keepalive frame below is one-directional now that the protocol ping
+     * is gone, so nothing at the WebSocket layer hears back from the peer.
+     * This is the layer that can: on the LAN and Tailscale paths the TCP peer
+     * *is* the phone, so the kernel notices a device that vanished mid-connection
+     * and errors the socket out instead of leaving a half-open bridge holding a
+     * Hermes gateway session behind it. Through the tunnel the peer is
+     * cloudflared, which is less informative but still not nothing.
+     */
+    (socket as Duplex & { setKeepAlive?: (enable: boolean, delay: number) => void }).setKeepAlive?.(
+      true,
+      30_000,
+    );
 
     wss.handleUpgrade(req, socket, head, (client) => {
       // One line per socket — the app opens one for its lifetime, so this is
@@ -233,44 +288,31 @@ function bridge(client: WebSocket, pathname: string, search: string): void {
     upstream.send(data, { binary: isBinary });
   });
 
-  /**
-   * Whether the browser has answered since the last ping.
-   *
-   * The keepalive below is also the only thing that can notice a peer that
-   * stopped existing. A phone that walks out of radio range never sends a
-   * close frame, and TCP will sit on the half-open connection for far longer
-   * than anyone waits — so without this the bridge stays "open" forever,
-   * holding a Hermes gateway socket with it, and the proxy's own log of live
-   * connections quietly stops meaning anything. Reading the count is the first
-   * thing anyone does when the app is misbehaving, so it has to be true.
-   */
-  let alive = true;
-  client.on('pong', () => {
-    alive = true;
-  });
-
   // Keep the connection from looking idle to whatever sits in the middle.
   // Unconditional rather than gated on the Access config: a home NAT drops idle
-  // sockets too, it is two frames a minute, and a keepalive that only runs in
-  // one deployment is a keepalive nobody notices has broken in the other.
+  // sockets too, it is a byte a minute, and a keepalive that only runs in one
+  // deployment is a keepalive nobody notices has broken in the other.
   const ping = setInterval(() => {
     if (client.readyState !== WebSocket.OPEN) return;
-    if (!alive) {
-      // Two intervals with no pong. A browser answers at the protocol level
-      // with no script involved, so silence means the peer is gone rather than
-      // busy. `terminate`, not `close`: there is nobody left to complete a
-      // closing handshake with, and waiting on one is how the leak starts.
-      log.warn({ pathname }, 'client stopped answering pings — dropping bridge');
+    if (client.bufferedAmount > CLIENT_STALL_BYTES) {
+      // A whole interval and the buffer has not drained: the peer is gone
+      // rather than busy. `terminate`, not `close` — there is nobody left to
+      // complete a closing handshake with, and waiting on one is how the leak
+      // starts.
+      log.warn(
+        { pathname, buffered: client.bufferedAmount },
+        'client stopped reading — dropping bridge',
+      );
       clearInterval(ping);
       client.terminate();
       closeBoth(1011, 'client unresponsive');
       return;
     }
-    alive = false;
+    if (!KEEPALIVE_PATHS.has(pathname)) return;
     try {
-      client.ping();
+      client.send(CLIENT_KEEPALIVE_FRAME);
     } catch {
-      // The close handler is what tears the bridge down; a failed ping just
+      // The close handler is what tears the bridge down; a failed send just
       // means we got there first.
     }
   }, CLIENT_PING_INTERVAL_MS);

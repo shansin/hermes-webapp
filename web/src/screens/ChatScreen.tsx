@@ -331,15 +331,37 @@ export function ChatScreen() {
   }, [connection, resumeId, wantNew]);
 
   /**
-   * Reconcile the transcript when the socket comes back.
+   * Reattach to the gateway session, and reconcile, when the socket comes back.
    *
    * The gateway session outlives the socket — the socket is only transport —
    * so the boot effect above deliberately does nothing on a reconnect that
-   * already holds a session. That left the one case this fixes: events emitted
-   * while the connection was down are gone for good. A turn that finished in
-   * that window never delivered its `message.complete`, so the reply stayed
-   * frozen mid-sentence and `running` stayed true, and the only way out was to
-   * open a session from the list and come back — which resumed for real.
+   * already holds a session. Two things still have to happen here, and the
+   * first one is not optional.
+   *
+   * **`session.resume` is what tells the gateway this socket owns the session.**
+   * A dropped socket leaves the session parked on Hermes' detached-transport
+   * sentinel with a reap timer armed (`dashboard.ws_orphan_reap_grace_s`, 20s
+   * by default): when it fires, a turn that is still running is **hard
+   * interrupted** and the runtime reaped. Only `session.resume` /
+   * `session.create` cancel that timer — `session.history` reads the
+   * transcript without rebinding anything, so reconnecting in two seconds and
+   * resyncing looked completely healthy from here and the agent was killed
+   * eighteen seconds later, mid-tool-call, with `Operation interrupted.` in
+   * the transcript. It also gets the stream pointed back at this socket: until
+   * the transport is rebound, the events of a live turn go to the sentinel and
+   * are gone.
+   *
+   * Second, and the reason this effect existed at all: events emitted while
+   * the connection was down are lost. A turn that finished in that window
+   * never delivered its `message.complete`, so the reply stayed frozen
+   * mid-sentence and `running` stayed true.
+   *
+   * The resume answers with the live record when there is one, and with a
+   * rebuilt runtime when there is not (the reap already fired, or Hermes
+   * restarted) — a different gateway handle, which has to be adopted or every
+   * later call addresses a session that no longer exists. That case gets the
+   * transcript loaded outright rather than resynced: it is a runtime rebuilt
+   * from disk, not the one we were watching.
    */
   const wasLive = useRef(false);
   useEffect(() => {
@@ -354,12 +376,37 @@ export function ChatScreen() {
     let alive = true;
     void (async () => {
       try {
-        const history = await fetchHistory(sessionId);
-        if (alive) applyResync(history);
+        // No stored id — a session.create that has not answered yet, or one
+        // Hermes never persisted. Nothing to resume against; reconcile alone.
+        if (!storedSessionId) {
+          const history = await fetchHistory(sessionId);
+          if (alive) applyResync(history);
+          void refreshUsage();
+          return;
+        }
+
+        const res = await resumeSession(storedSessionId, resumeProfile);
+        if (!alive) return;
+        const rebuilt = res.session_id !== sessionId;
+        if (rebuilt) {
+          adopt({
+            sessionId: res.session_id,
+            storedSessionId: res.stored_session_id ?? storedSessionId,
+            info: res.info,
+            // Asked while we were away, and only a resume can surface it.
+            pendingClarify: res.pending_clarify,
+          });
+        }
+
+        const history = await fetchHistory(res.session_id);
+        if (!alive) return;
+        if (rebuilt) loadHistory(history);
+        else applyResync(history);
         void refreshUsage();
       } catch {
-        // The handle didn't survive — a gateway restart rather than a network
-        // blip. Resuming the stored session rebuilds it from disk.
+        // The resume itself failed — a gateway that is up but refusing (a
+        // reap still settling), or a socket that dropped again underneath us.
+        // The full rebuild is the fallback it always was.
         if (!alive || !storedSessionId) return;
         await doResume(storedSessionId);
       }

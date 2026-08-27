@@ -62,6 +62,19 @@ Two independent client paths in the web app, and they are not interchangeable:
 - **REST** (`web/src/api/*.ts`, TanStack Query hooks per domain) over `api/client.ts`.
 - **JSON-RPC over WS** (`web/src/ws/client.ts`) — one socket opened once in `App.tsx` for the app's lifetime. `client.ts` does only correlation, newline-delimited frame splitting (one WS message can carry many JSON lines), backoff, and event fan-out. Streaming state lives in `store/session.ts`, never in the client.
 
+  **A reconnect must `session.resume`, not merely re-read.** Hermes parks a
+  session when its socket detaches and arms a reap timer
+  (`dashboard.ws_orphan_reap_grace_s`, 20s by default, raised to 180 on this
+  machine): when it fires, a turn still running is **hard interrupted** and the
+  runtime reaped, which is what `Operation interrupted.` in a transcript is. Only
+  `session.resume` / `session.create` cancel that timer and rebind the transport
+  — `session.history` reads the transcript without touching either. So
+  reconnecting in two seconds and resyncing looked perfectly healthy from the app
+  while the agent was killed eighteen seconds later mid-tool-call, and the events
+  of a live turn went on being delivered to the detached sentinel. `ChatScreen`'s
+  reconnect effect resumes first, adopts the handle if Hermes answered with a
+  rebuilt runtime rather than the live one, and only then reconciles history.
+
   Its one invariant: **a socket may only touch client state while it is still `this.ws`.** Every handler is guarded on that, because a superseded socket's `onclose` nulls the reference to its own replacement and schedules a reconnect — so the app sits on "Reconnecting…" holding nothing while the socket it just opened is perfectly fine, and the proxy's keepalive means that orphan never dies on its own. Each retry then opens the next orphan, so the state feeds itself until the app is reloaded. `readyState === CLOSING` is the usual way in (background the tab, lose the radio, come back), and it is why `connect()` treats CLOSING as unusable rather than falling through.
 
 The proxy holds a **second, separate** gateway socket for push (`server/src/push/events.ts`), because push must fire when no browser is connected.
@@ -208,10 +221,21 @@ Two things about it are easy to get wrong:
 
 A third, which only bites once published: **Cloudflare closes an idle proxied
 WebSocket at 100s.** The gateway socket is idle between turns, so `wsProxy.ts`
-pings the browser every 45s — protocol-level, answered automatically, no script
-involved. `push/events.ts` already did the same for the proxy's own upstream
-socket, for the same reason. Without it the app reconnects endlessly and logs
-nothing.
+sends the browser a keepalive every 45s. Without it the app reconnects endlessly
+and logs nothing. **It must not be a protocol ping**, which is what it was:
+across two days of proxy logs, 55 of the 176 abnormal (1006) client closes
+landed 45.007–45.062s after their bridge opened — the first ping tick, plus
+milliseconds — and each one cost a running turn (see the reap grace below). It
+is now a bare newline, a data frame the client already skips as an empty line,
+which an old bundle on a phone ignores just as happily. `push/events.ts` still
+pings its own upstream leg, which never leaves loopback.
+
+Losing the ping lost its pong, which was the only thing that could notice a peer
+that stopped existing. Two things replace it: `setKeepAlive` on the accepted
+socket, so the kernel errors out a connection whose peer vanished at the TCP
+level rather than leaving a half-open bridge holding a gateway session, and a
+send-buffer check on each keepalive tick, for a peer that is still connected and
+no longer reading.
 
 `/healthz` is the one exemption: `start.sh` polls it unauthenticated over loopback, and it is the first thing to check when the tunnel is the suspect.
 
