@@ -18,18 +18,23 @@
  * watching. The socket is still used, but only to invalidate these queries
  * early — see `useActivity`.
  *
- * There is no subagent endpoint to ask instead: both registries
- * (`_active_subagents` in `tools/delegate_tool.py`, `_records` in
- * `tools/async_delegation.py`) are process memory, reachable only from the CLI
- * `/agents` command. The session row is the one cross-process window onto a
- * delegation, which is why sessions lead here rather than being an extra.
+ * Sessions lead here for that reason, and because they are the one source that
+ * survives the socket being down. They are no longer the only window onto a
+ * delegation, though — that note used to say there wasn't one. `_active_subagents`
+ * in `tools/delegate_tool.py` *is* reachable, over the gateway's
+ * `delegation.status`, and it is the only thing that can see a **background**
+ * delegation: those children get no session rows and emit no `subagent.*`
+ * events, so three researchers running in parallel showed up here as the one
+ * parent session that dispatched them. See `api/delegation.ts`.
  */
+import type { ActiveSubagent } from '../api/delegation';
+import { isRunning } from '../api/delegation';
 import type { SessionRow } from '../api/sessions';
 import type { Task } from '../api/kanban';
 import type { CronJob } from '../api/hub';
 import { humanCron } from './cronText';
 
-export type ActivityKind = 'session' | 'kanban' | 'cron';
+export type ActivityKind = 'session' | 'kanban' | 'cron' | 'subagent';
 export type ActivityState = 'running' | 'queued' | 'stalled';
 
 export interface ActivityItem {
@@ -55,6 +60,17 @@ export interface ActivityItem {
    * say, and rendered only when there is more than one profile to tell apart.
    */
   owner?: string;
+  /**
+   * `since` is when this started, not when it last moved.
+   *
+   * Every other source carries a last-activity clock, so a row that has not
+   * moved for a while can be marked quiet. The delegation registry keeps only
+   * `started_at` — so treating it the same way would print "no update in 6m"
+   * over a child that is running a tool right now, which is worse than saying
+   * nothing. Rows with this flag say how long they have been going and are
+   * never marked quiet.
+   */
+  sinceIsStart?: boolean;
 }
 
 /**
@@ -93,6 +109,8 @@ export function quietFor(item: ActivityItem, nowS: number): number | null {
 }
 
 export function isQuiet(item: ActivityItem, nowS: number): boolean {
+  // A start time is not a heartbeat: see `sinceIsStart`.
+  if (item.sinceIsStart) return false;
   const quiet = quietFor(item, nowS);
   return quiet != null && quiet > QUIET_AFTER_S;
 }
@@ -122,6 +140,50 @@ export function fromSessions(sessions: readonly SessionRow[]): ActivityItem[] {
          empty chat. */
       url: `/chat?session=${encodeURIComponent(s.id)}${owner ? `&profile=${encodeURIComponent(owner)}` : ''}`,
       ...(owner ? { owner } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Delegated children, from the registry the gateway keeps in memory.
+ *
+ * These sit alongside the parent's own session row rather than replacing it,
+ * because they are not the same agent: a session dispatching three researchers
+ * is four things working, and collapsing them to one row is the bug this lane
+ * exists to fix. `owner_agent_session_id` names the parent, which is where the
+ * row leads and where the controls for it live.
+ *
+ * `last_tool` is the whole value of the row — "web_extract · 5 tools" is the
+ * difference between three agents working and three agents wedged — so a child
+ * that has not called one yet says so rather than showing an empty line.
+ */
+export function fromDelegations(active: readonly ActiveSubagent[] | undefined): ActivityItem[] {
+  const out: ActivityItem[] = [];
+
+  for (const child of active ?? []) {
+    if (!isRunning(child)) continue;
+    const owner = text(child.owner_agent_session_id);
+
+    const tools = child.tool_count ?? 0;
+    const detail = [
+      text(child.last_tool) ?? 'starting up',
+      tools > 0 ? `${tools} tool${tools === 1 ? '' : 's'}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
+    out.push({
+      id: `subagent:${child.subagent_id}`,
+      kind: 'subagent',
+      state: 'running',
+      title: text(child.goal) ?? 'Delegated agent',
+      detail,
+      since: seconds(child.started_at),
+      sinceIsStart: true,
+      /* The parent conversation, which is where the controls are. A child has
+         no screen of its own — it is not a session. */
+      url: owner ? `/chat?session=${encodeURIComponent(owner)}` : '/activity',
     });
   }
   return out;

@@ -23,6 +23,7 @@ import { splitAttachedImages } from '../../lib/localImages';
 import { useNavigate } from 'react-router-dom';
 import { Markdown } from './MarkdownAsync';
 import { ToolCallCard } from './ToolCallCard';
+import { LiveDelegations } from './LiveDelegations';
 import { ClarifyCard } from './ClarifyCard';
 import { ThinkingBlock } from './ThinkingBlock';
 import { SubagentCard } from './SubagentCard';
@@ -500,7 +501,12 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
           />
         ))}
 
+        {/* After the tail, not before: a background delegation outlives the
+            turn that dispatched it, so this block is about what is still
+            running now rather than part of any reply. Hidden while filtering,
+            like everything else that is not a search hit. */}
         {!filtering && <StreamingTail onGrow={followTail} />}
+        {!filtering && <LiveDelegations />}
       </div>
 
       {/* Turn navigation sits with jump-to-bottom rather than in the header:

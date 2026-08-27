@@ -103,6 +103,14 @@ immediately replaces it.
 **`web/test/sessionStore.test.ts`** — gateway events folded into a transcript.
 Session isolation, queueing mid-turn, rewinding, and resync after a drop.
 
+**`web/test/delegation.test.ts`** — the delegation registry and the two
+controls that act on one delegated child. Every assertion is a wire contract
+with no second source to check it against: the registry is gateway process
+memory, there is no REST route to compare with, and `subagent.steer` answers
+`{"status": "rejected"}` — a successful JSON-RPC reply — when it declines. So
+these catch the silent failures: a steer sent without the `session_id` the
+gateway resolves authority from, or a refusal read as a success.
+
 **`web/test/liveTurn.test.ts`** — arriving in the middle of a turn. The store
 learned that a turn was running from `message.start`, which is the one event a
 client that arrived late can never see, so a phone whose PWA the OS had
@@ -150,6 +158,11 @@ work whose URL omits `&profile=` opens an empty chat, because the resume looks
 the id up in the active profile's store. Pins that an unassigned kanban card
 gets no borrowed owner, and that a row with no profile keeps its original
 unscoped link — that shape is every notification already sitting on a phone.
+Also the delegation lane, which exists because a background delegation shows up
+in none of the other three: those children get no session rows and emit no
+`subagent.*` events, so three researchers appeared as one row — the parent that
+dispatched them. Pins that they list alongside that parent rather than
+replacing it, and that a start time is never dressed up as a heartbeat.
 
 **`web/test/sessionScope.test.ts`** — which profile's `state.db` a session call
 reads, and the task→session join. Sessions are per-profile and the detail route

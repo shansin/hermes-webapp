@@ -1,5 +1,5 @@
 /**
- * The Activity pane's data: three sources, one list, kept fresh two ways.
+ * The Activity pane's data: four sources, one list, kept fresh two ways.
  *
  * Polling is the backbone rather than the socket, for the reason given at the
  * top of `activity.ts` — work that started while the app was closed has to
@@ -13,11 +13,17 @@
  * ones it drops, because the whole point is work happening somewhere else.
  * `hermes.onEvent` hands over every event with its `session_id` intact, so no
  * server change is needed — the frames were always arriving.
+ *
+ * The delegation lane is the exception to both halves. It has no REST route
+ * and no events of its own — a background child emits nothing until the batch
+ * finishes — so there it really is only the poll, and `api/delegation.ts` sets
+ * its own rate accordingly.
  */
 import { useEffect, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { useActiveSessionsAcrossProfiles } from '../api/sessions';
+import { DELEGATION_KEY, useDelegations } from '../api/delegation';
 import { useProfiles } from '../api/profiles';
 import { useUi } from '../store/ui';
 import { useBoard } from '../api/kanban';
@@ -26,6 +32,7 @@ import { hermes } from '../ws/client';
 import {
   countRunning,
   fromCron,
+  fromDelegations,
   fromKanban,
   fromSessions,
   mergeActivity,
@@ -90,12 +97,20 @@ export function useActivity(full = true): {
   const sessions = useActiveSessionsAcrossProfiles(names, 25, true, socketLive);
   const board = useBoard(full);
   const cron = useCronJobs();
+  /* Not gated on `full`: a delegated child is the case the header pill is
+     most often asked about, and it is one small socket call rather than the
+     two REST lanes the pill deliberately skips. */
+  const delegations = useDelegations();
 
   useEffect(
     () =>
       hermes.onEvent(({ type }) => {
         if (!WATCHED.includes(type)) return;
         void qc.invalidateQueries({ queryKey: ['sessions', 'recent'] });
+        /* `background.complete` is the one event a background delegation ever
+           emits, and it means every child in the batch has just stopped —
+           exactly when leaving stale rows up would be most misleading. */
+        void qc.invalidateQueries({ queryKey: DELEGATION_KEY });
         if (full) {
           void qc.invalidateQueries({ queryKey: ['kanban', 'board'] });
           if (type === 'cron.changed') void qc.invalidateQueries({ queryKey: ['cron'] });
@@ -107,13 +122,13 @@ export function useActivity(full = true): {
   const items = useMemo(() => {
     // One clock for the whole pass, so two rows cannot disagree about now.
     const nowS = Date.now() / 1000;
-    const groups = [fromSessions(sessions.sessions)];
+    const groups = [fromSessions(sessions.sessions), fromDelegations(delegations.data?.active)];
     if (full) {
       groups.push(fromKanban(board.data?.columns, nowS));
       groups.push(fromCron(cron.data));
     }
     return mergeActivity(...groups);
-  }, [sessions.sessions, board.data, cron.data, full]);
+  }, [sessions.sessions, delegations.data, board.data, cron.data, full]);
 
   return {
     items,

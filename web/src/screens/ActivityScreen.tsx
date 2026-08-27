@@ -2,10 +2,12 @@
  * Activity — what Hermes is doing right now, and what is queued behind it.
  *
  * The screen you open when a session kicked off a `delegate_task` and you have
- * no idea how it is going. Three lanes land here: sessions with a turn in
- * flight (which is where a running delegation shows up, carrying its own
- * progress line), kanban workers, and cron. See `lib/activity.ts` for why the
- * data comes over REST rather than off the socket.
+ * no idea how it is going. Four lanes land here: sessions with a turn in
+ * flight (carrying their own progress line), the delegated children those
+ * turns dispatched — one row each, since a session running three researchers
+ * is four things working — kanban workers, and cron. See `lib/activity.ts` for
+ * why most of the data comes over REST rather than off the socket, and
+ * `api/delegation.ts` for why the delegation lane is the exception.
  *
  * Read-only by design, like the Updates feed: every row is a way *into* the
  * thing it describes, not a control for it. Stopping a run belongs in the
@@ -15,6 +17,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useProfiles } from '../api/profiles';
 import { ACTIVITY_PROFILE_CAP } from '../api/sessions';
+import { DELEGATION_KEY } from '../api/delegation';
 
 import { MenuButton } from '../components/shared/MenuButton';
 import { BackButton } from '../components/shared/BackButton';
@@ -27,6 +30,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 const KIND_ICON: Record<ActivityItem['kind'], string> = {
   session: '✻',
+  subagent: '⑃',
   kanban: '▤',
   cron: '⏰',
 };
@@ -115,6 +119,7 @@ export function ActivityScreen() {
           onRefresh={async () => {
             await Promise.all([
               qc.invalidateQueries({ queryKey: ['sessions', 'recent'] }),
+              qc.invalidateQueries({ queryKey: DELEGATION_KEY }),
               qc.invalidateQueries({ queryKey: ['kanban', 'board'] }),
               qc.invalidateQueries({ queryKey: ['cron'] }),
             ]);
@@ -203,13 +208,17 @@ function Row({
             ? untilTime(item.since)
             : /* Running rows say when they last moved rather than how long
                  they have run: "started 40m ago" is reassuring about a job
-                 that died 39 minutes in. */
-              (item.note ??
-              (seconds == null
-                ? 'running'
-                : quiet
-                  ? `no update in ${relTime(item.since)}`
-                  : `updated ${relTime(item.since)}`))}
+                 that died 39 minutes in. A delegated child is the one source
+                 with no last-activity clock at all, so it says the honest
+                 thing instead of dressing a start time up as a heartbeat. */
+              item.sinceIsStart
+              ? `running ${relTime(item.since)}`
+              : (item.note ??
+                (seconds == null
+                  ? 'running'
+                  : quiet
+                    ? `no update in ${relTime(item.since)}`
+                    : `updated ${relTime(item.since)}`))}
         </span>
       </span>
     </button>

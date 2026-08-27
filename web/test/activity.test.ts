@@ -1,5 +1,5 @@
 /**
- * Turning three unrelated API shapes into one "what is running" list.
+ * Turning four unrelated API shapes into one "what is running" list.
  *
  * The failures worth catching here are the quiet ones. Missing a running
  * delegation defeats the point of the pane; showing a crashed kanban worker as
@@ -12,12 +12,14 @@ import {
   QUIET_AFTER_S,
   countRunning,
   fromCron,
+  fromDelegations,
   fromKanban,
   fromSessions,
   isQuiet,
   mergeActivity,
   type ActivityItem,
 } from '../src/lib/activity';
+import type { ActiveSubagent } from '../src/api/delegation';
 import type { SessionRow } from '../src/api/sessions';
 import type { Task } from '../src/api/kanban';
 import type { CronJob } from '../src/api/hub';
@@ -41,6 +43,86 @@ const task = (over: Partial<Task> = {}): Task =>
 
 const job = (over: Partial<CronJob> = {}): CronJob =>
   ({ id: 'j1', name: 'meta-trial-digest', enabled: true, ...over }) as CronJob;
+
+const child = (over: Partial<ActiveSubagent> = {}): ActiveSubagent =>
+  ({
+    subagent_id: 'sa-0-a5b872fd',
+    goal: "Research Alphabet's Q2 2026 results",
+    delegation_id: 'deleg_382493b3',
+    owner_agent_session_id: 's1',
+    started_at: NOW - 120,
+    status: 'running',
+    tool_count: 5,
+    last_tool: 'web_extract',
+    ...over,
+  }) as ActiveSubagent;
+
+/**
+ * The lane that exists because a background delegation is invisible everywhere
+ * else: those children get no session rows and emit no `subagent.*` events, so
+ * a session running three researchers showed up as one row — the parent.
+ */
+describe('delegated children', () => {
+  it('lists one row per running child', () => {
+    const items = fromDelegations([
+      child(),
+      child({ subagent_id: 'sa-1', goal: "Research Meta's Q2 2026 results" }),
+      child({ subagent_id: 'sa-2', goal: "Research Microsoft's fiscal Q3 2026 results" }),
+    ]);
+
+    expect(items).toHaveLength(3);
+    expect(items.every((i) => i.kind === 'subagent' && i.state === 'running')).toBe(true);
+  });
+
+  /* Four things are working; the parent is not a summary of the other three. */
+  it('does not replace the session that dispatched them', () => {
+    const items = mergeActivity(fromSessions([session()]), fromDelegations([child(), child({ subagent_id: 'sa-1' })]));
+
+    expect(countRunning(items)).toBe(3);
+  });
+
+  it('leads back to the conversation that owns it', () => {
+    expect(fromDelegations([child()])[0]?.url).toBe('/chat?session=s1');
+  });
+
+  /* "web_extract · 5 tools" is the difference between working and wedged. */
+  it('says what the child is inside', () => {
+    expect(fromDelegations([child()])[0]?.detail).toBe('web_extract · 5 tools');
+  });
+
+  it('admits when a child has not called anything yet', () => {
+    expect(fromDelegations([child({ last_tool: null, tool_count: 0 })])[0]?.detail).toBe(
+      'starting up',
+    );
+  });
+
+  it('drops a child that has finished', () => {
+    expect(fromDelegations([child({ status: 'done' })])).toEqual([]);
+  });
+
+  /* An unfamiliar status shows a row that should not be there rather than
+     hiding one that should — the same way cron reads its endings. */
+  it('keeps a child whose status it does not recognise', () => {
+    expect(fromDelegations([child({ status: 'winding-down' })])).toHaveLength(1);
+  });
+
+  it('survives a registry answer with nothing in it', () => {
+    expect(fromDelegations(undefined)).toEqual([]);
+    expect(fromDelegations([{ subagent_id: 'bare' } as ActiveSubagent])).toHaveLength(1);
+  });
+
+  /**
+   * The registry keeps `started_at` and no heartbeat, so the quiet rule — which
+   * every other lane earns honestly — would print "no update in 6m" over a
+   * child that is running a tool right now.
+   */
+  it('is never marked quiet on a start time', () => {
+    const item = fromDelegations([child({ started_at: NOW - QUIET_AFTER_S * 10 })])[0]!;
+
+    expect(item.sinceIsStart).toBe(true);
+    expect(isQuiet(item, NOW)).toBe(false);
+  });
+});
 
 describe('sessions', () => {
   /** The whole reason the pane exists: a delegation running out of sight. */

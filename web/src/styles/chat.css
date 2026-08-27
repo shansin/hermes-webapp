@@ -1389,3 +1389,66 @@
 .msg__images .chat-image {
   max-height: 200px;
 }
+
+/* --- live background delegations ------------------------------------------ */
+
+/* Children that are running *now*, read from the delegation registry rather
+   than folded out of the transcript — see `chat/LiveDelegations.tsx`. Set apart
+   from the message flow with a dashed rule, because unlike every card above it
+   this block is not a record of what happened: it disappears when the agents
+   finish, and what they did lands in the conversation separately. */
+.delegation {
+  margin: 10px 0 4px;
+  padding: 10px 0 2px;
+  border-top: 1px dashed var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.delegation__head {
+  font-size: var(--type-body-sm);
+  color: var(--text-dim);
+  padding-left: 12px;
+}
+
+.delegation__child {
+  margin-left: 0;
+}
+
+.delegation__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  padding-left: 27px; /* clears the ⑃ glyph, so the buttons line up with the goal */
+}
+
+.delegation__stop {
+  color: var(--error);
+}
+
+.delegation__steer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-top: 8px;
+  padding-left: 27px;
+}
+
+.delegation__input {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  font: inherit;
+  font-size: var(--type-body-sm);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+}
+
+.delegation__input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
