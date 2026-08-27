@@ -13,6 +13,12 @@
  *  - `reasoning.delta` carries the model's chain of thought; `thinking.delta`
  *    is only a decorative "pondering…" placeholder and is shown as a status,
  *    never as content.
+ *  - A turn can already be running when this store first hears of the session,
+ *    and `message.start` will never arrive to say so. `applyLiveState` takes
+ *    the gateway's own answer from `session.resume`; `LIVE_TURN_EVENTS` infers
+ *    it from anything else the turn emits. Both exist because `running` gates
+ *    the stop button, the working indicator and — the expensive one — whether
+ *    the next message is queued or fired at a session that will reject it.
  */
 import { create } from 'zustand';
 import {
@@ -33,6 +39,7 @@ import {
   type ClarifyRequest,
   type ContextBreakdown,
   type HistoryMessage,
+  type SessionCreateResult,
   type SessionInfo,
   type Usage,
 } from '../ws/types';
@@ -162,6 +169,20 @@ interface SessionState {
   /** True while a rewind (retry / edit) is in flight. */
   rewinding: boolean;
 
+  /**
+   * The user half of a turn that is running right now, when history does not
+   * have it yet.
+   *
+   * Hermes flushes a turn to SQLite when it ends, so a session resumed
+   * mid-turn replays a transcript that stops at the *previous* turn: the
+   * prompt being answered is not in it, and neither are any mid-turn
+   * corrections. `session.resume` carries them in `inflight`, and this is
+   * where they wait — `loadHistory` grafts them back onto the end of every
+   * transcript it builds, because a reconnect rebuilds from the same
+   * projection that dropped them and would otherwise lose them again.
+   */
+  inflightPrompt: { user: string; corrections: string[] } | null;
+
   // --- actions
   reset: () => void;
   adoptSession: (r: {
@@ -170,13 +191,21 @@ interface SessionState {
     info?: SessionInfo;
     pendingClarify?: ClarifyRequest;
   }) => void;
+  /**
+   * Adopt the live-turn state a `session.create` / `session.resume` answered
+   * with: whether a turn is running, what it is answering, the reply so far,
+   * and anything it is blocked on. Separate from `adoptSession` because the
+   * reconnect path reattaches to a session it already holds — the identity is
+   * unchanged there, the turn state is the whole point of asking.
+   */
+  applyLiveState: (result: SessionCreateResult) => void;
   loadHistory: (messages: HistoryMessage[], opts?: { resync?: boolean }) => void;
   applyEvent: (params: { type: string; session_id?: string; payload?: unknown }) => void;
   submitPrompt: (text: string, opts?: { display?: string }) => Promise<void>;
   addNotice: (text: string, tone?: 'info' | 'error', label?: string) => void;
   clearQueued: () => void;
   retryLast: () => Promise<void>;
-  applyResync: (messages: HistoryMessage[]) => void;
+  applyResync: (messages: HistoryMessage[], opts?: { running?: boolean }) => void;
   /** Graft clarify answers back onto a replayed transcript. */
   restoreClarifyAnswers: (stored: { role?: string; content?: unknown }[]) => void;
   resendFailed: (messageId: string) => Promise<void>;
@@ -301,6 +330,30 @@ async function rewind(get: Get, set: Set, idx: number, replacement?: string): Pr
   }
 }
 
+/**
+ * Events that only ever occur inside a turn.
+ *
+ * Two kinds of event are deliberately absent. `message.complete` and
+ * `tool.complete` can each be the last thing a finished turn emits, and a
+ * completion must never be the reason the UI decides work has started. And
+ * `status.update` is not turn-scoped at all: a manual `/compress` is refused
+ * while a turn is running and emits one anyway, so trusting it would light the
+ * stop button on an idle session with no `message.complete` coming to put it
+ * out again.
+ */
+const LIVE_TURN_EVENTS = new Set([
+  'message.delta',
+  'reasoning.delta',
+  'thinking.delta',
+  'tool.generating',
+  'tool.start',
+  'subagent.start',
+  'subagent.tool',
+  'subagent.thinking',
+  'approval.request',
+  'clarify.request',
+]);
+
 /** The `text` of a streaming delta, or null when the payload isn't one. */
 function deltaText(payload: unknown): string | null {
   if (typeof payload !== 'object' || payload === null) return null;
@@ -327,6 +380,7 @@ export const useSession = create<SessionState>((set, get) => ({
   error: null,
   queued: null,
   rewinding: false,
+  inflightPrompt: null,
 
   reset: () =>
     set({
@@ -348,6 +402,7 @@ export const useSession = create<SessionState>((set, get) => ({
       error: null,
       queued: null,
       rewinding: false,
+      inflightPrompt: null,
     }),
 
   adoptSession: ({ sessionId, storedSessionId, info, pendingClarify }) =>
@@ -362,6 +417,62 @@ export const useSession = create<SessionState>((set, get) => ({
         ? { ...normalizeClarify(pendingClarify), id: ++clarifySeq }
         : null,
     }),
+
+  /**
+   * Take the gateway's word for what this session is doing.
+   *
+   * `running` only ever came from `message.start` or from submitting a prompt
+   * here, so any client that arrived after a turn began believed the session
+   * was idle for the rest of it: no stop button, no working indicator, and the
+   * next message sent at a busy session instead of queued behind the turn.
+   * The phone hits this constantly — backgrounding a PWA long enough for the
+   * OS to discard the page is the ordinary case, not an edge one.
+   *
+   * The reply so far is merged rather than assigned: on a reconnect this
+   * client may already hold *more* of the turn than the snapshot does (deltas
+   * kept arriving while the resume was in flight), and both are the same text
+   * accumulated from the same stream, so the longer one is the newer one.
+   */
+  applyLiveState: (result) => {
+    const running = result.running === true;
+    const inflight = result.inflight ?? null;
+    const s = get();
+
+    const partial = inflight?.assistant ?? '';
+    const next: Partial<SessionState> = {
+      running,
+      inflightPrompt:
+        running && inflight?.user
+          ? { user: inflight.user, corrections: inflight.corrections ?? [] }
+          : null,
+    };
+
+    if (running && partial.length > s.streamingText.length) next.streamingText = partial;
+
+    /**
+     * Both blocking prompts, restored for the same reason: the event fired at
+     * a client that was not there, and the agent is still parked on it. An
+     * approval was previously dropped outright — `pending_approval` was read
+     * nowhere — which left the turn stopped with nothing on screen to release
+     * it, from an app that looked perfectly healthy.
+     */
+    if (result.pending_approval) {
+      const p = ApprovalRequestSchema.safeParse(result.pending_approval);
+      if (p.success) next.approval = { ...p.data, id: ++approvalSeq };
+    }
+    if (result.pending_clarify) {
+      const p = ClarifyRequestSchema.safeParse(result.pending_clarify);
+      if (p.success) next.clarify = { ...normalizeClarify(p.data), id: ++clarifySeq };
+    }
+
+    // A prompt the gateway accepted for the next turn. Shown in the same strip
+    // as one held here, since from the composer they are the same wait — but
+    // never over one held here: that one has not been sent anywhere yet, and
+    // it may carry a `display` the server's copy cannot know about.
+    if (result.queued?.user && !s.queued) next.queued = { text: result.queued.user };
+
+    set(next);
+  },
 
   /**
    * Replace the transcript with the server's copy.
@@ -420,6 +531,31 @@ export const useSession = create<SessionState>((set, get) => ({
       }
     }
 
+    /**
+     * Put the running turn's prompt back on the end.
+     *
+     * `session.history` answers from the session store, and Hermes writes a
+     * turn there when it ends — so a transcript fetched mid-turn describes the
+     * conversation as it was *before* the prompt was sent. Reopening the app
+     * while the agent was working showed the previous turn and nothing else:
+     * not the question being answered, not the reply so far.
+     *
+     * Only the prompt is recoverable this way, and only from the snapshot
+     * `session.resume` carried (the reply so far goes to `streamingText`, and
+     * the tool calls of this turn are simply not recorded anywhere yet — which
+     * is why nothing here tries to reconstruct a running tool card).
+     *
+     * Deduplicated against what history did return, because a turn that
+     * completes between the resume and the fetch lands in both.
+     */
+    const { inflightPrompt, running } = get();
+    if (running && inflightPrompt) {
+      for (const text of [inflightPrompt.user, ...inflightPrompt.corrections]) {
+        if (!text || out.some((m) => m.kind === 'user' && m.text === text)) continue;
+        out.push({ kind: 'user', id: nextId(), text, at: null });
+      }
+    }
+
     set({
       messages: withClarifyAnswers(out, get().clarifyAnswers),
       queued: opts?.resync ? get().queued : null,
@@ -453,6 +589,20 @@ export const useSession = create<SessionState>((set, get) => ({
      * restored explicitly on resume.
      */
     if (session_id && session_id !== s.sessionId) return;
+
+    /**
+     * Anything arriving from a turn means a turn is running.
+     *
+     * `message.start` is the event that says so, and it is the one event a
+     * client that arrived late can never see. `session.resume` answers with
+     * `running` and covers that properly; this is the backstop for everything
+     * it cannot — a session adopted by a path that never resumed, a gateway
+     * that answered without the flag, a socket that reattached mid-turn. The
+     * cost of being wrong is one spurious stop button until the turn ends;
+     * the cost of the old default was sending the next message at a session
+     * the gateway then rejected as busy.
+     */
+    if (!s.running && LIVE_TURN_EVENTS.has(type)) set({ running: true });
 
     switch (type) {
       case 'message.start':
@@ -573,8 +723,24 @@ export const useSession = create<SessionState>((set, get) => ({
           thinkingHint: '',
           statusLine: '',
           usage: usage ?? s.usage,
+          // The turn's prompt is in the transcript now, either as the bubble
+          // that submitted it or as the one grafted on resume.
+          inflightPrompt: null,
           messages: [
-            ...s.messages,
+            /**
+             * Nothing can still be running once the turn is over.
+             *
+             * A tool card is cleared by its own `tool.complete`, which is a
+             * single event that a dropped socket, an interrupt or a gateway
+             * that never emitted it all lose — and the card then pulses for
+             * ever, on a conversation that finished, because nothing else ever
+             * looked at it again.
+             */
+            ...s.messages.map((m) =>
+              (m.kind === 'tool' || m.kind === 'subagent') && m.status === 'running'
+                ? { ...m, status: 'done' as const }
+                : m,
+            ),
             {
               kind: 'assistant',
               id: nextId(),
@@ -755,6 +921,9 @@ export const useSession = create<SessionState>((set, get) => ({
       error: null,
       streamingText: '',
       streamingReasoning: '',
+      // This turn's prompt is now a bubble of its own; a snapshot of the last
+      // one must not be grafted on again by the next reconnect.
+      inflightPrompt: null,
     }));
 
     try {
@@ -822,8 +991,16 @@ export const useSession = create<SessionState>((set, get) => ({
    * The streaming buffers are cleared rather than kept: whatever they hold is
    * either already in the history we just loaded, or belongs to a turn still
    * being written, which will stream in again from wherever it has got to.
+   *
+   * `opts.running` is the gateway's own answer, from the `session.resume` that
+   * reattached this socket, and it supersedes the length heuristic below —
+   * which is a guess, and a wrong one in a case that happens constantly: a
+   * turn that completes and another that starts (or a `session.compress`, or
+   * a subagent's rows landing) all grow the transcript while a turn is very
+   * much still running, and the guess reads that growth as "the turn ended"
+   * and takes the stop button away mid-turn.
    */
-  applyResync: (messages) => {
+  applyResync: (messages, opts) => {
     const current = get().messages;
 
     // The server's copy can legitimately be *behind* ours. A prompt submitted
@@ -841,7 +1018,8 @@ export const useSession = create<SessionState>((set, get) => ({
      * being written does not, because the reply only joins the transcript when
      * it completes.
      */
-    const advanced = messages.length > current.length;
+    const ended =
+      typeof opts?.running === 'boolean' ? !opts.running : messages.length > current.length;
 
     get().loadHistory(messages, { resync: true });
 
@@ -849,13 +1027,14 @@ export const useSession = create<SessionState>((set, get) => ({
     // unconditionally would blank a reply that is still streaming and merely
     // hasn't been recorded yet.
     set(
-      advanced
+      ended
         ? {
             running: false,
             streamingText: '',
             streamingReasoning: '',
             thinkingHint: '',
             statusLine: '',
+            inflightPrompt: null,
             error: null,
           }
         : { error: null },

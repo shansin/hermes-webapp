@@ -255,6 +255,28 @@ export const StatusUpdateSchema = z
 
 // --- session.create / history ------------------------------------------------
 
+/**
+ * The turn a resumed session is in the middle of.
+ *
+ * `assistant` is the reply accumulated so far, not a replay: the gateway does
+ * not re-emit the deltas already sent, so this is the only way to recover the
+ * text a turn produced while nobody was listening. `corrections` are mid-turn
+ * redirects — extra user messages sent into the same turn — carried alongside
+ * the original prompt rather than over it.
+ */
+export const InflightTurnSchema = z
+  .object({
+    user: z.string().default(''),
+    assistant: z.string().default(''),
+    streaming: z.boolean().optional(),
+    corrections: z.array(z.string()).optional(),
+    /** A retained failed turn: present only once the turn has stopped. */
+    error: z.string().optional(),
+    status: z.string().optional(),
+  })
+  .passthrough();
+export type InflightTurn = z.infer<typeof InflightTurnSchema>;
+
 export const SessionCreateResultSchema = z
   .object({
     session_id: z.string(),
@@ -268,6 +290,28 @@ export const SessionCreateResultSchema = z
      * gateway replays the pending prompt here rather than re-emitting it.
      */
     pending_clarify: ClarifyRequestSchema.optional(),
+    /**
+     * The live-turn projection, and the reason it is read at all.
+     *
+     * `running` is the gateway's own answer to "is a turn in flight right
+     * now", and nothing else can supply it after a cold start: `message.start`
+     * fired at a client that no longer exists, so a reopened app saw deltas
+     * arriving into a store that believed the session was idle. That showed as
+     * a missing stop button and a missing working indicator, and — worse —
+     * `submitPrompt` sending the next message straight at a busy session,
+     * where the gateway rejects it (4009) and the bubble is stamped failed.
+     *
+     * `inflight` carries the half of that turn no transcript has yet: the
+     * agent flushes to SQLite at turn end, so the prompt being answered and
+     * the reply so far exist only here until it completes.
+     */
+    running: z.boolean().optional(),
+    status: z.string().optional(),
+    inflight: InflightTurnSchema.nullish(),
+    /** A prompt the gateway accepted for the next turn, held while busy. */
+    queued: z.object({ user: z.string().default('') }).passthrough().nullish(),
+    /** Raised while we were detached; the turn is still blocked on it. */
+    pending_approval: ApprovalRequestSchema.optional(),
   })
   .passthrough();
 export type SessionCreateResult = z.infer<typeof SessionCreateResultSchema>;

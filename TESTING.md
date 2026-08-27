@@ -103,6 +103,16 @@ immediately replaces it.
 **`web/test/sessionStore.test.ts`** — gateway events folded into a transcript.
 Session isolation, queueing mid-turn, rewinding, and resync after a drop.
 
+**`web/test/liveTurn.test.ts`** — arriving in the middle of a turn. The store
+learned that a turn was running from `message.start`, which is the one event a
+client that arrived late can never see, so a phone whose PWA the OS had
+discarded came back to an idle-looking screen over a working agent — and sent
+its next message at a session the gateway rejects as busy. These cover the
+live-turn state `session.resume` answers with (`running`, the in-flight prompt
+and reply, a held prompt, and the two requests that block a turn), the live
+event that infers a running turn when nothing said so, and that neither leaves
+a tool card pulsing once the turn has ended.
+
 **`web/test/pushServiceWorker.test.ts`** — `public/push-sw.js` evaluated in a
 fake worker global. It gets no type checking and no bundling, and it runs where
 nobody can open a console on it.

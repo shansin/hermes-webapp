@@ -81,6 +81,7 @@ export function ChatScreen() {
   const loadHistory = useSession((s) => s.loadHistory);
   const restoreClarifyAnswers = useSession((s) => s.restoreClarifyAnswers);
   const applyResync = useSession((s) => s.applyResync);
+  const applyLiveState = useSession((s) => s.applyLiveState);
   const setTitle = useSession((s) => s.setTitle);
   const refreshUsage = useSession((s) => s.refreshUsage);
 
@@ -198,10 +199,17 @@ export function ChatScreen() {
         sessionId: res.session_id,
         storedSessionId: res.stored_session_id ?? storedId,
         info: res.info,
-        // A question asked while we were away. Only a resume can surface it —
-        // `clarify.request` already fired, at a client that wasn't listening.
-        pendingClarify: res.pending_clarify,
       });
+
+      /**
+       * What the session is doing *right now*, which the transcript below
+       * cannot say. A resume landing mid-turn used to produce an idle-looking
+       * screen over a working agent: no stop button, no indicator, no sign of
+       * the prompt being answered — and the next message sent at a session the
+       * gateway rejects as busy. It also carries the two prompts that block a
+       * turn, both of which fired at a client that was not listening.
+       */
+      applyLiveState(res);
 
       // Past this point the conversation is open and must stay open. Each of
       // these degrades on its own rather than costing the session.
@@ -393,15 +401,24 @@ export function ChatScreen() {
             sessionId: res.session_id,
             storedSessionId: res.stored_session_id ?? storedSessionId,
             info: res.info,
-            // Asked while we were away, and only a resume can surface it.
-            pendingClarify: res.pending_clarify,
           });
         }
+
+        /**
+         * Before the transcript, and on both paths: `loadHistory` grafts the
+         * running turn's prompt onto what it builds, so it has to know there
+         * is one first. This is also the only thing that restores an approval
+         * or a clarify raised while the socket was down — a rebuilt session is
+         * not the only way to miss one.
+         */
+        applyLiveState(res);
 
         const history = await fetchHistory(res.session_id);
         if (!alive) return;
         if (rebuilt) loadHistory(history);
-        else applyResync(history);
+        // The gateway just said whether a turn is in flight; that beats
+        // guessing it from how much the transcript grew.
+        else applyResync(history, { running: res.running });
         void refreshUsage();
       } catch {
         // The resume itself failed — a gateway that is up but refusing (a
