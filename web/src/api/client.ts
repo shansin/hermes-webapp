@@ -105,8 +105,17 @@ export const api = {
    */
   get: <T>(path: string, init?: RequestInit) => request<T>(path, init),
 
-  post: <T>(path: string, body?: unknown) =>
+  /**
+   * `init` is forwarded for the same reason `get` forwards it, plus one of its
+   * own: a POST can be the *slowest* call the app makes. The kanban specifier
+   * and decomposer each run an auxiliary model to completion inside the
+   * request, which is tens of seconds on a reasoning model and minutes on a
+   * local one, so those callers pass a signal with a deadline that says so
+   * rather than inheriting the browser's.
+   */
+  post: <T>(path: string, body?: unknown, init?: RequestInit) =>
     request<T>(path, {
+      ...init,
       method: 'POST',
       headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),

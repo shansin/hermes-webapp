@@ -73,8 +73,25 @@ const CLIENT_PING_INTERVAL_MS = 45_000;
  * audio. `/api/ws` is also the only long-idle one — nothing else here holds a
  * socket open between turns, which is the problem being solved.
  */
-const CLIENT_KEEPALIVE_FRAME = '\n';
-const KEEPALIVE_PATHS = new Set(['/api/ws']);
+/**
+ * Which paths get a keepalive, and what it says.
+ *
+ * A frame per path rather than one shared string, because "inert" is a
+ * property of the stream it is sent into: a newline is a byte of nothing in
+ * newline-delimited JSON-RPC and a byte of corruption in a stream of audio, and
+ * neither is parseable by a client that runs `JSON.parse` on every frame.
+ *
+ * The kanban events socket is the other long-idle one — the plugin sends
+ * nothing at all between board changes, so on the published path Cloudflare
+ * closes it at 100s exactly as it did the gateway socket — and its client does
+ * parse every frame. So it gets a JSON object with no `events` key, which that
+ * client already has to skip: the endpoint only ever sends `{events, cursor}`,
+ * and a frame without `events` is by construction not one.
+ */
+const KEEPALIVE_FRAMES = new Map<string, string>([
+  ['/api/ws', '\n'],
+  ['/api/plugins/kanban/events', '{"keepalive":true}'],
+]);
 
 /**
  * How long a peer may leave the keepalive unsent before we treat it as gone.
@@ -100,7 +117,23 @@ import { verifyAccess, nodeHeaders } from '../auth.js';
 import { log } from '../log.js';
 
 /** Paths the Hermes backend exposes as WebSockets and we forward as-is. */
-const WS_PATHS = new Set(['/api/ws', '/api/events', '/api/pub', '/api/audio/speak-stream']);
+/**
+ * The upgrades this proxy will carry.
+ *
+ * `/api/plugins/kanban/events` is the board's live-update stream, and it needs
+ * the bridge for the same two reasons `/api/ws` does: Hermes checks `Host` and
+ * `Origin` against the loopback interface it bound, and the credential rides in
+ * the query string — the plugin delegates its upgrade check to the dashboard's
+ * own WS gate, which reads `?token=`. A browser can supply neither, and must
+ * not hold the token in any case.
+ */
+const WS_PATHS = new Set([
+  '/api/ws',
+  '/api/events',
+  '/api/pub',
+  '/api/audio/speak-stream',
+  '/api/plugins/kanban/events',
+]);
 
 export function isProxiedWsPath(pathname: string): boolean {
   return WS_PATHS.has(pathname);
@@ -308,9 +341,10 @@ function bridge(client: WebSocket, pathname: string, search: string): void {
       closeBoth(1011, 'client unresponsive');
       return;
     }
-    if (!KEEPALIVE_PATHS.has(pathname)) return;
+    const frame = KEEPALIVE_FRAMES.get(pathname);
+    if (frame === undefined) return;
     try {
-      client.send(CLIENT_KEEPALIVE_FRAME);
+      client.send(frame);
     } catch {
       // The close handler is what tears the bridge down; a failed send just
       // means we got there first.

@@ -164,19 +164,34 @@ async function upgraded(timeoutMs = 2000): Promise<Upgrade> {
 }
 
 describe('path allowlist', () => {
-  it.each(['/api/ws', '/api/events', '/api/pub', '/api/audio/speak-stream'])(
-    'proxies %s',
-    (path) => {
-      expect(isProxiedWsPath(path)).toBe(true);
-    },
-  );
+  it.each([
+    '/api/ws',
+    '/api/events',
+    '/api/pub',
+    '/api/audio/speak-stream',
+    /* The board's live-update stream. It needs the bridge for the same two
+       reasons `/api/ws` does — Hermes checks Host and Origin against the
+       loopback interface, and the plugin's upgrade gate reads the credential
+       out of the query string — and a browser can supply neither. */
+    '/api/plugins/kanban/events',
+  ])('proxies %s', (path) => {
+    expect(isProxiedWsPath(path)).toBe(true);
+  });
 
-  it.each(['/', '/api/sessions', '/api/ws/extra', '/socket.io/', '/push/feed'])(
-    'refuses %s',
-    (path) => {
-      expect(isProxiedWsPath(path)).toBe(false);
-    },
-  );
+  it.each([
+    '/',
+    '/api/sessions',
+    '/api/ws/extra',
+    '/socket.io/',
+    '/push/feed',
+    // Exact match only: the plugin's REST routes sit under the same prefix as
+    // its socket, and a prefix test here would open every one of them to an
+    // upgrade the bridge would then dial upstream.
+    '/api/plugins/kanban/board',
+    '/api/plugins/kanban/events/extra',
+  ])('refuses %s', (path) => {
+    expect(isProxiedWsPath(path)).toBe(false);
+  });
 
   it('destroys the socket for an unproxied upgrade', async () => {
     await expect(openClient('/nope')).rejects.toThrow();
@@ -370,6 +385,38 @@ describe('the client keepalive', () => {
 
       expect(frames).toBe(0);
       expect(upstreamSockets[0]!.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The kanban events socket is the other long-idle one — the plugin sends
+   * nothing at all between board changes, so Cloudflare closes it at 100s
+   * exactly as it did the gateway socket. Its client runs `JSON.parse` on
+   * every frame, so a newline would throw there; the frame it gets is a JSON
+   * object with no `events` key, which that client already skips because the
+   * endpoint only ever sends `{events, cursor}`.
+   */
+  it('sends a parseable keepalive on the kanban events path', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] });
+    try {
+      const client = track(await openClient('/api/plugins/kanban/events?since=0'));
+      await upgraded();
+
+      const frame = new Promise<string>((resolve) =>
+        client.once('message', (data: RawData) => resolve(data.toString())),
+      );
+      await vi.advanceTimersByTimeAsync(45_000);
+
+      const text = await Promise.race([
+        frame,
+        new Promise<string>((_, r) => setTimeout(() => r(new Error('no keepalive arrived')), 2000)),
+      ]);
+      expect(text).toBe('{"keepalive":true}');
+      // Parseable, and carrying nothing a frame handler would act on.
+      expect(JSON.parse(text)).toEqual({ keepalive: true });
+      expect(JSON.parse(text).events).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }

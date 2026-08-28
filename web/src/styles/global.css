@@ -1834,6 +1834,21 @@ button.header__sub::after {
    the full height of the board and its own list scrolls inside that, rather
    than eight columns of different heights with one page-level scrollbar
    serving whichever is tallest. */
+/* The board's own pan area. `touch-action: pan-y` lets the browser keep
+   vertical scrolling on its compositor thread — which is what makes the list
+   feel native — while horizontal drags reach the paging handler instead of
+   being eaten by the scroller or by an overscroll-to-navigate gesture. */
+.kanban__pager {
+  touch-action: pan-y;
+  /* Fills the scroller even when the column holds one card, because the blank
+     space below the last card is where a thumb naturally starts a swipe — and
+     with the pager sized to its content that space belonged to the scroll
+     container, so the gesture reached nothing. A column with two cards paged
+     and the same column with one did not. */
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
 .kanban__board {
   flex: 1;
   min-height: 0;
@@ -1894,10 +1909,42 @@ button.header__sub::after {
 /* Advance and delete for a mouse. Hidden by default and revealed on hover,
    but only where hovering is a thing that happens: `any-hover` rather than
    `hover` so a laptop with a touchscreen still gets them, and a phone — which
-   would otherwise show them permanently, on top of the title, next to the
-   swipes that already do the job — never does. */
+   would otherwise show them permanently, on top of the title — never does.
+   A phone reaches them by long-pressing the card instead, which is what
+   `--revealed` paints; the card used to swipe, and the board wanted that
+   gesture for paging between its eight columns. */
 .tcard__actions {
   display: none;
+}
+
+.tcard--revealed .tcard__actions {
+  display: flex;
+  gap: 2px;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  opacity: 1;
+  background: var(--bg-elev);
+  border-radius: var(--shape-md);
+}
+
+.tcard--revealed .tcard__actions .icon-btn {
+  width: 34px;
+  height: 34px;
+}
+
+/* The armed card says so, so the two icons are not the only sign that a press
+   registered — and so it is obvious which card the next tap applies to. */
+.tcard--revealed {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* A long press is a text-selection gesture on both platforms, and the callout
+   lands on top of the buttons it just revealed. */
+.tcard {
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 
 @media (any-hover: hover) {

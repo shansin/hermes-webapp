@@ -95,7 +95,10 @@ export function useActivity(full = true): {
    */
   const socketLive = useUi((s) => s.connection) === 'open';
   const sessions = useActiveSessionsAcrossProfiles(names, 25, true, socketLive);
-  const board = useBoard(full);
+  /* The Activity pane reads whichever board the server currently points at:
+     it is a summary of live work, not a board view, and pinning it to one
+     slug would hide the cards on any other. */
+  const board = useBoard({ enabled: full });
   const cron = useCronJobs();
   /* Not gated on `full`: a delegated child is the case the header pill is
      most often asked about, and it is one small socket call rather than the
