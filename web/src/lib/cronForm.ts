@@ -157,3 +157,48 @@ export function cronPatch(job: CronJob, form: CronFormValues): Record<string, un
 
   return updates;
 }
+
+/**
+ * What an unpinned job actually runs on.
+ *
+ * There is no global model. `model.provider` / `model.default` live in each
+ * profile's own `config.yaml`, and a job runs against the home of the profile
+ * whose `cron/jobs.json` it lives in — so an unpinned job follows *that*
+ * profile's default, which on a multi-profile install is routinely not the one
+ * the app is currently pointed at.
+ *
+ * The sheet used to call it "the global default", and the list it sits in is
+ * already every profile's jobs (`/api/cron/jobs` defaults to `profile=all`).
+ * So a fitness job read as following the model shown on the Models screen,
+ * ran on the fitness profile's model instead, and the difference looked like
+ * the job ignoring its configuration. Naming the profile is the fix, and
+ * naming the model it resolves to is what makes the answer checkable without
+ * opening another screen.
+ *
+ * `profiles` is the list the screen already holds, so this costs no request.
+ * A single-profile install gets the unqualified wording: there is only one
+ * answer there, and naming it is chrome for a distinction that does not exist
+ * — the same rule the profile badge on each row follows.
+ */
+export function inheritedModelNote(
+  profiles: { name: string; model: string | null }[],
+  profile: string,
+): { label: string; hint: string } {
+  const named = profiles.length > 1 && profile ? profile : null;
+  const model = profile ? (profiles.find((p) => p.name === profile)?.model ?? null) : null;
+
+  const label = named ? `Follows ${named}'s default` : 'Follows the profile default';
+
+  /**
+   * The drift guard is why an unpinned job is worth a warning at all: Hermes
+   * refuses to run one after its model changes, rather than spending on a
+   * model the job was never tested against. Naming the current model makes
+   * that concrete instead of ominous.
+   */
+  const whose = named ? `${named}'s` : "this profile's";
+  const hint = model
+    ? `Runs on ${model}, ${whose} own default. An unpinned job may be skipped after that changes.`
+    : `An unpinned job may be skipped after ${whose} model changes.`;
+
+  return { label, hint };
+}

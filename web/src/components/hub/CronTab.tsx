@@ -74,6 +74,7 @@ import {
   BLANK_CRON_FORM,
   cronFormFromJob,
   cronPatch,
+  inheritedModelNote,
   scheduleIsCron,
   type CronFormValues,
 } from '../../lib/cronForm';
@@ -155,11 +156,14 @@ function isScriptJob(j: CronJob): boolean {
 }
 
 /**
- * A job with no `model`/`provider` of its own runs on whatever the global
- * default happens to be *at fire time*. Hermes notices that drift and, unless
- * `cron.model_drift_guard` is off, refuses to run the job at all rather than
- * silently spending on a model the job was never tested against. Pinning here
- * is what takes a job out of that class.
+ * A job with no `model`/`provider` of its own runs on whatever **its own
+ * profile's** default happens to be *at fire time* — not a global one, which
+ * does not exist: model config lives in each profile's `config.yaml` and a job
+ * runs against the home of the store it sits in. Hermes notices that drift
+ * and, unless `cron.model_drift_guard` is off, refuses to run the job at all
+ * rather than silently spending on a model the job was never tested against.
+ * Pinning here is what takes a job out of that class; `inheritedModelNote`
+ * says which profile the unpinned case is deferring to.
  */
 const BLANK_FORM: CronFormValues = BLANK_CRON_FORM;
 
@@ -346,6 +350,10 @@ export function CronTab() {
   const sheetOpen = creating || Boolean(editing);
   const scopedSkills = useSkills(formProfile || null, sheetOpen);
   const scopedToolsets = useToolsets(formProfile || null, sheetOpen);
+
+  /* What "unpinned" resolves to for this job, off the profile list the screen
+     already holds — so the sheet can name the model without another request. */
+  const modelNote = inheritedModelNote(profiles, formProfile);
 
   const skillOptions: MultiSelectOption[] = (scopedSkills.data ?? [])
     .filter((sk) => sk.enabled)
@@ -757,7 +765,12 @@ export function CronTab() {
         )}
         {!editingScript && (pickingModel ? (
           <div style={{ marginBottom: 12 }}>
+            {/* The profile being configured, like the skill and toolset
+                pickers above. `custom_providers` is profile config, so the
+                unscoped picker offered the *active* profile's catalogue and
+                would happily pin a model this job's profile cannot serve. */}
             <ModelPicker
+              profile={formProfile || null}
               selected={form.model || undefined}
               onPick={(model, provider) => {
                 setForm((f) => ({ ...f, model, provider }));
@@ -782,7 +795,7 @@ export function CronTab() {
                   marginLeft: 8,
                 }}
               >
-                {form.model || 'Follows global default'}
+                {form.model || modelNote.label}
               </span>
             </button>
             {form.model ? (
@@ -795,7 +808,7 @@ export function CronTab() {
               </button>
             ) : (
               <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginTop: 6, lineHeight: 1.45 }}>
-                An unpinned job may be skipped after the global model changes.
+                {modelNote.hint}
               </div>
             )}
           </div>
