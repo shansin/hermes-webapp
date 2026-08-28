@@ -24,7 +24,6 @@ import {
   basename,
   fileKeys,
   parentOf,
-  useDefaultCwd,
   useDeletePath,
   useDirectory,
   useGitStatus,
@@ -34,6 +33,12 @@ import {
 import { MenuButton } from '../components/shared/MenuButton';
 import { useUi } from '../store/ui';
 import { buzz } from '../lib/haptics';
+
+/**
+ * The starting directory, as the backend spells it. Expanded server-side by
+ * `_fs_path`, then swapped for the absolute path it resolved to.
+ */
+const HOME = '~';
 
 export function FilesScreen() {
   const qc = useQueryClient();
@@ -99,20 +104,47 @@ export function FilesScreen() {
     };
   }, [armed]);
 
-  const defaultCwd = useDefaultCwd();
   const listing = useDirectory(dir);
   const git = useGitStatus(dir);
   const mkdir = useMakeDirectory();
   const del = useDeletePath();
 
-  // Open on the agent's working directory until told otherwise. Replaces
-  // rather than pushes: the default landing spot is not somewhere the user
-  // navigated to, so back should leave Files, not return to a blank screen.
+  /**
+   * Open on the home directory until told otherwise.
+   *
+   * It used to open on the agent's *working* directory, which on this machine
+   * is whichever repo the backend was started in — a reasonable default for a
+   * coding session and a confusing one for everything else, since the files an
+   * agent actually leaves behind (reports, briefs, exports) land in `~`. Home
+   * is one tap from either, and the repo is not.
+   *
+   * `~` rather than an absolute path because there is no endpoint that reports
+   * the home directory — `/api/fs/default-cwd` answers with the cwd — but the
+   * backend expands a tilde on every path it takes. So it travels as written
+   * and is swapped for what it resolved to below.
+   *
+   * Replaces rather than pushes: the landing spot is not somewhere the user
+   * navigated to, so back should leave Files rather than return to a blank
+   * screen.
+   */
   useEffect(() => {
-    if (dir === null && !requested && defaultCwd.data?.cwd) {
-      setParams({ dir: defaultCwd.data.cwd }, { replace: true });
-    }
-  }, [dir, requested, defaultCwd.data, setParams]);
+    if (dir === null && !requested) setParams({ dir: HOME }, { replace: true });
+  }, [dir, requested, setParams]);
+
+  /**
+   * Adopt the absolute path `~` resolved to, once the listing says what it is.
+   *
+   * Without this the tilde stays in the URL and in the crumb trail, and `..`
+   * from home has no parent to compute — `parentOf('~')` is null, so the one
+   * directory you always start in would be the one you could not go up from.
+   * Every entry carries its absolute path, so the answer is already in hand.
+   */
+  useEffect(() => {
+    if (dir !== HOME) return;
+    const first = listing.data?.entries?.[0]?.path;
+    const resolved = first ? parentOf(first) : null;
+    if (resolved) setParams({ dir: resolved }, { replace: true });
+  }, [dir, listing.data, setParams]);
 
   /**
    * A requested path may be a file or a directory, and the caller doesn't know

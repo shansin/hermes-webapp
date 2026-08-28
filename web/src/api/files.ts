@@ -64,6 +64,14 @@ export const fileKeys = {
 const q = (path: string) => encodeURIComponent(path);
 
 /** Where the browser opens: the agent's configured working directory. */
+/**
+ * The backend's working directory.
+ *
+ * No longer where Files opens — that is the home directory now, since the cwd
+ * is whichever repo the backend was started in and the files an agent leaves
+ * behind land in `~`. Kept because it is the only endpoint that reports the
+ * cwd and the git branch with it.
+ */
 export function useDefaultCwd() {
   return useQuery({
     queryKey: fileKeys.cwd,
