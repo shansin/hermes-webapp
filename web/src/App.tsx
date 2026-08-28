@@ -3,7 +3,8 @@
  * single place the gateway socket is opened.
  */
 import { Suspense, lazy, useEffect, useState } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { ErrorBoundary } from './components/shared/ErrorBoundary';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { ChatScreen } from './screens/ChatScreen';
 import { HubPage, HubRedirect } from './screens/HubPage';
 import {
@@ -86,6 +87,11 @@ const BANNER_DELAY_MS = 700;
 
 export function App() {
   const connection = useUi((s) => s.connection);
+  /* Only the path: a boundary reset should follow navigation between
+     screens, not a query-string change on the one you are already on
+     (a profile filter, `?tab=`, `?resume=`), which would remount the
+     screen and throw its state away. */
+  const { pathname } = useLocation();
   const setConnection = useUi((s) => s.setConnection);
   const token = useUi((s) => s.token);
   const [showBanner, setShowBanner] = useState(false);
@@ -210,6 +216,13 @@ export function App() {
       )}
 
       <div className="app__body">
+        {/* Keyed on the pathname so a throw is scoped to the screen that threw:
+            a boundary never resets itself, and without the key the first error
+            would pin its fallback over every route for the rest of the
+            session. Inside `app__body` on purpose — the drawer and the
+            approval/clarify sheets below stay mounted, so a crashed screen
+            still leaves the agent answerable and the app navigable. */}
+        <ErrorBoundary key={pathname} where={pathname}>
         <Suspense fallback={<RoutePending />}>
           <Routes>
             <Route path="/" element={<Navigate to="/chat" replace />} />
@@ -238,6 +251,7 @@ export function App() {
             <Route path="*" element={<Navigate to="/chat" replace />} />
           </Routes>
         </Suspense>
+        </ErrorBoundary>
       </div>
 
       <NavDrawer />

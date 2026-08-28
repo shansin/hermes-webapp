@@ -445,10 +445,14 @@ export function SessionsScreen() {
             {showingSearch ? (
               <>
                 {search.isLoading && <SkeletonList n={4} h={52} />}
-                {search.data?.results.length === 0 && (
+                {/* `search.data?.results.length` guards only `data`: a payload
+                    that arrives without the key makes this a plain `.length` on
+                    `undefined`, and with no error boundary in `App.tsx` that
+                    throw blanks the whole app rather than this list. */}
+                {search.data && (search.data.results ?? []).length === 0 && (
                   <Empty icon="🔍" title="No matches" hint={`Nothing found for "${query}".`} />
                 )}
-                {search.data?.results.map((hit, i) => (
+                {(search.data?.results ?? []).map((hit, i) => (
                   <button
                     key={`${hit.session_id}-${i}`}
                     className="card"
@@ -477,7 +481,7 @@ export function SessionsScreen() {
               /* A filtered-out list is not an empty one, and saying "No
                  sessions yet" to someone with a hundred of them reads as data
                  loss. Offer the way back out. */
-              filter !== 'all' && (data?.sessions.length ?? 0) > 0 ? (
+              filter !== 'all' && (data?.sessions?.length ?? 0) > 0 ? (
                 <Empty
                   icon="🫙"
                   title={`Nothing in ${FILTER_LABEL[filter]}`}
@@ -557,7 +561,7 @@ export function SessionsScreen() {
                 {loadingMore
                   ? 'Loading…'
                   : `Show older${
-                      data ? ` · ${Math.max(0, data.total - data.sessions.length)} more` : ''
+                      data ? ` · ${Math.max(0, data.total - (data.sessions?.length ?? 0))} more` : ''
                     }`}
               </button>
             )}
