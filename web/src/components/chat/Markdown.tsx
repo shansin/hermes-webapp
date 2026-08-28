@@ -13,6 +13,7 @@ import { IconCheck, IconCopy } from '../shared/Icons';
 import { MermaidBlock } from './MermaidBlock';
 import { LocalImage } from './LocalImage';
 import { localImagePath } from '../../lib/localImages';
+import { filesHref, inlineCodePath, resolveFilePath } from '../../lib/fileLinks';
 import { useSession } from '../../store/session';
 import { buzz } from '../../lib/haptics';
 import { copyText } from '../../lib/share';
@@ -62,19 +63,6 @@ function nodeText(node: ReactNode): string {
 }
 
 /**
- * Resolve a `workspace://relative/path` link against the session's working
- * directory, since the file API only speaks absolute paths. Returns null for
- * ordinary links, and for a workspace link we have no root to resolve against.
- */
-function workspacePath(href: string | undefined, cwd: string | undefined): string | null {
-  if (!href?.startsWith('workspace://')) return null;
-  const rel = href.slice('workspace://'.length).replace(/^\/+/, '');
-  if (!rel) return null;
-  if (!cwd) return null;
-  return `${cwd.replace(/\/+$/, '')}/${rel}`;
-}
-
-/**
  * Hoisted so the array identities are stable. react-markdown rebuilds its
  * unified processor whenever the plugin list changes, and the streaming bubble
  * renders this component repeatedly for the length of a turn.
@@ -99,8 +87,27 @@ type MarkdownProps = ComponentProps<typeof ReactMarkdown>;
  * an authenticated read; every other scheme keeps the default treatment, which
  * is what keeps `javascript:` out of a reply the model wrote.
  */
+/**
+ * Schemes that name something on the agent's own machine.
+ *
+ * Neither is a URL the browser could follow; both are resolved into an
+ * authenticated read against the proxy. Nothing else is exempted — the default
+ * treatment is what keeps `javascript:` out of a reply the model wrote.
+ */
+const LOCAL_SCHEMES = ['file://', 'workspace://'];
+
 const urlTransform: MarkdownProps['urlTransform'] = (url, key, node) => {
   if (key === 'src' && node.tagName === 'img' && url.startsWith('file://')) return url;
+  /* And on a link, so `[the report](file:///home/…/x.md)` reaches the anchor
+     renderer with an href to resolve. Blanked here it arrived as an empty
+     string, indistinguishable from a link the agent never wrote one for.
+     `workspace://` needs the same exemption and never had it — which is why
+     those links, the ones this app documents as the agent's way of pointing at
+     a file it touched, have never actually opened anything: the handler for
+     them was reading an href the sanitiser had already emptied. */
+  if (key === 'href' && node.tagName === 'a' && LOCAL_SCHEMES.some((s) => url.startsWith(s))) {
+    return url;
+  }
   return defaultUrlTransform(url);
 };
 
@@ -158,18 +165,46 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
             return <img className="chat-image" src={typeof src === 'string' ? src : undefined} alt={alt ?? ''} />;
           },
           a({ children, href }) {
-            // `workspace://path` is how the agent points at a file it touched.
-            // Opening it in the file browser is the whole reason those links
-            // exist; left alone the browser treats the scheme as unknown and
-            // the link does nothing at all.
-            const ws = workspacePath(href, cwd);
-            if (ws) {
-              return <Link to={`/files?path=${encodeURIComponent(ws)}`}>{children}</Link>;
+            /* `workspace://path` is how the agent points at a file it touched,
+               and `file://` and a bare absolute path are how it points at one
+               when it is not thinking about links at all. All three open the
+               file browser; left alone the first two do nothing (the browser
+               knows neither scheme) and the third resolves against the proxy's
+               own origin and 404s. See `lib/fileLinks.ts` for what qualifies. */
+            const local = resolveFilePath(href, cwd);
+            if (local) {
+              return <Link to={filesHref(local)}>{children}</Link>;
             }
             return (
               <a href={href} target="_blank" rel="noreferrer noopener">
                 {children}
               </a>
+            );
+          },
+
+          /**
+           * Inline code that is a path becomes a link to it.
+           *
+           * This is where an agent actually puts a path most of the time —
+           * "wrote `/home/shsin/report.md`" — and it was the one form with no
+           * way to open it. Fenced blocks are excluded by the newline test in
+           * `inlineCodePath`: a code sample is not a link, however many paths
+           * it contains.
+           */
+          code({ children, className, ...rest }) {
+            const text = typeof children === 'string' ? children : nodeText(children);
+            const local = className?.includes('language-') ? null : inlineCodePath(text, cwd);
+            if (local) {
+              return (
+                <Link className="md__path" to={filesHref(local)} title={`Open ${local}`}>
+                  {children}
+                </Link>
+              );
+            }
+            return (
+              <code className={className} {...rest}>
+                {children}
+              </code>
             );
           },
         }}
