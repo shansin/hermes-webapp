@@ -35,6 +35,7 @@ import { notificationsRouter } from './routers/notifications.js';
 import { startPushListener, stopPushListener } from './push/events.js';
 import { startCronSweep, stopCronSweep } from './push/cron.js';
 import { startKanbanSweep, stopKanbanSweep } from './push/kanban.js';
+import { startSessionSweep, stopSessionSweep } from './push/sessions.js';
 import { flushFeed } from './push/feed.js';
 import { pushPublicKey } from './push/send.js';
 import { attachWsProxy } from './routers/wsProxy.js';
@@ -247,6 +248,10 @@ startCronSweep();
 // nothing kanban-shaped and the plugin's own one is a stream, so a card that
 // blocks during a deploy would be lost. State, on a timer, catches up instead.
 startKanbanSweep();
+// And the same for a conversation. The gateway routes a session's events only
+// to the transport that owns that session, so none of them have ever reached
+// the listener above — see the header of `push/sessions.ts`.
+startSessionSweep();
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
@@ -254,6 +259,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopPushListener();
     stopCronSweep();
     stopKanbanSweep();
+    stopSessionSweep();
     // The feed's writes are debounced, so the last one may still be pending.
     flushFeed();
     server.close(() => process.exit(0));

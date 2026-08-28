@@ -24,6 +24,7 @@ vi.mock('../src/push/send.js', () => ({
   pushEnabled: () => false,
 }));
 vi.mock('../src/push/cron.js', () => ({ scheduleCronReconcile: vi.fn() }));
+vi.mock('../src/push/sessions.js', () => ({ scheduleSessionSweep: vi.fn() }));
 vi.mock('../src/push/store.js', () => ({ listSubscriptions: () => [] }));
 
 const { toMessage } = await import('../src/push/events.js');

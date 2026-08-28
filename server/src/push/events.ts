@@ -18,6 +18,8 @@ import { log } from '../log.js';
 import { sendPush, pushEnabled, type PushMessage } from './send.js';
 import { scheduleCronReconcile } from './cron.js';
 import { flatten } from './preview.js';
+import { bindRpcSocket, resolveRpcFrame, rpcPending, unbindRpcSocket } from './rpc.js';
+import { scheduleSessionSweep } from './sessions.js';
 import {
   FEED_EVENT_TYPES,
   backendCameBack,
@@ -62,6 +64,9 @@ export function stopPushListener(): void {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
   clearHeartbeat();
+  // Ahead of the close, which will not reach the branch that does this: the
+  // reference is cleared here, so the handler's `socket === ws` is already false.
+  unbindRpcSocket();
   socket?.close(1000, 'shutting down');
   socket = null;
 }
@@ -99,6 +104,9 @@ async function connect(): Promise<void> {
   ws.on('open', () => {
     attempt = 0;
     log.info('Push listener connected to the Hermes gateway.');
+    // The socket is now also the proxy's way of *asking* the gateway things —
+    // `push/sessions.ts` needs `session.active_list`, which has no REST route.
+    bindRpcSocket((frame) => ws.send(frame));
     // Silent unless an outage was actually announced — see `updates.ts`.
     backendCameBack();
     clearHeartbeat();
@@ -125,13 +133,35 @@ async function connect(): Promise<void> {
     // One WS message may batch several newline-delimited JSON-RPC frames.
     for (const line of raw.toString().split('\n')) {
       const trimmed = line.trim();
-      if (trimmed) handleFrame(trimmed);
+      if (!trimmed) continue;
+      /**
+       * Answers to our own calls, taken out of the stream before `handleFrame`
+       * can drop them. Its substring early-out looks for event *types*, and a
+       * response frame contains none of them — so on a machine with no push
+       * devices every reply would be discarded and every call would time out
+       * against a socket that had already answered. Guarded on there being a
+       * call in flight, which is a few milliseconds at a time, so the firehose
+       * stays unparsed the rest of the time.
+       */
+      if (rpcPending()) {
+        try {
+          if (resolveRpcFrame(JSON.parse(trimmed))) continue;
+        } catch {
+          // Not JSON at all — the keepalive newline, or a truncated frame.
+        }
+      }
+      handleFrame(trimmed);
     }
   });
 
   ws.on('close', (code) => {
     clearHeartbeat();
-    if (socket === ws) socket = null;
+    if (socket === ws) {
+      socket = null;
+      // Fails everything waiting on this socket rather than leaving a sweep
+      // sitting on its own timeout past the reconnect.
+      unbindRpcSocket();
+    }
     if (stopped) return;
     // Starts the grace timer; a restart that reconnects inside it says nothing.
     backendWentDown();
@@ -161,8 +191,15 @@ function scheduleReconnect(): void {
   reconnectTimer.unref?.();
 }
 
-/** Frame types worth parsing even with no push devices registered. */
-const FEED_TYPE_SCAN = ['cron.changed', ...FEED_EVENT_TYPES];
+/**
+ * Frame types worth parsing even with no push devices registered.
+ *
+ * `cron.changed` and `sessions.changed` are here as triggers rather than as
+ * news: both are session-less "go and look" signals, and both are the only
+ * frames of their kind this socket ever sees — see the header of
+ * `push/sessions.ts` for why a session's own events never arrive.
+ */
+const FEED_TYPE_SCAN = ['cron.changed', 'sessions.changed', ...FEED_EVENT_TYPES];
 
 function handleFrame(line: string): void {
   /**
@@ -216,6 +253,18 @@ function handleFrame(line: string): void {
     // ahead of the `subscribed` check: the feed is written whether or not any
     // phone is registered to be told about it.
     scheduleCronReconcile();
+  }
+
+  /**
+   * The one signal that reaches here for a conversation. It carries nothing —
+   * `_CHANGE_WATCHES` broadcasts it with an empty payload when the sessions
+   * table's signature moves — so, exactly like `cron.changed`, it is a request
+   * to go and look. Ahead of the `subscribed` check so the sweep's watermarks
+   * stay current on a machine with no phone registered yet; without that, the
+   * first device to subscribe would be told about a backlog it never missed.
+   */
+  if (params.type === 'sessions.changed') {
+    scheduleSessionSweep();
   }
 
   if (!subscribed) return;
