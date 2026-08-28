@@ -167,10 +167,112 @@ replacing it, and that a start time is never dressed up as a heartbeat.
 **`web/test/sessionScope.test.ts`** — which profile's `state.db` a session call
 reads, and the task→session join. Sessions are per-profile and the detail route
 answers *404 Session not found* for a session that exists in another profile, so
-the failure reads as "deleted" rather than "wrong store". The join is a title
-correlation, not a foreign key — Hermes leaves `session_id` null on the task row
-— so the rule that a non-kanban session merely mentioning the id must never
-match is pinned here.
+the failure reads as "deleted" rather than "wrong store". The title correlation is
+the *fallback* join and not a foreign key, so the rule that a non-kanban session
+merely mentioning the id must never match is pinned here; the exact join and
+what it costs to get wrong are in `kanban.test.ts`.
+
+**`web/test/kanban.test.ts`** — the three kanban joins that fail silently.
+Which conversation a run happened in: the exact join is the session id a worker
+stamps into its run metadata, and the fallback is a title the auxiliary model
+routinely never writes — most kanban sessions in this install's research
+profile are `title: null`, and every one of them reported "no matching
+conversation" for a run that had plainly happened. Which profile to look in: a
+run carries the profile it ran as, while `task.assignee` is only where the card
+points now, and the wrong per-profile store answers with an empty list rather
+than an error. Pins that both halves come off the *same* run — mixing the
+newest run's profile with an older run's session id builds a lookup for a
+session that never lived in that store, which 404s and reads as "deleted".
+And the unblock ordering: Hermes builds the next worker's prompt from the
+comments, so the answer must be posted before the card is released, and a card
+whose answer failed to post must stay blocked. Releasing it anyway burns a run
+rediscovering the same blocker, which costs a `block_recurrences` increment —
+two of those and Hermes reroutes the card to Triage. The rest of the file
+covers payload shapes with the same quiet failure: a bulk change reporting
+twelve moved when nine moved (per-id results, 200 either way), an override
+cleared with an empty string rather than the flag — which pins the card to a
+model named `""` — a create dropping its idempotency key or swallowing the "no
+dispatcher is running" warning Hermes gives nowhere else, and a dispatcher tick
+read as nested when the wire shape is flat.
+
+**`web/test/kanbanScope.test.ts`** — which board a kanban call addresses. The
+same class of silent cross-write as `?profile=`, with a twist: omitting the
+board does not mean "the only board", it means whichever board the *server*
+points at, and `POST /boards/<slug>/switch` moves that pointer process-wide. A
+second client switching boards would redirect every unqualified call this app
+makes while the screen kept its title and its cards. Every read and every write
+is pinned here, along with the two URLs that have to *join* an existing query
+rather than start one — unlink takes its ids in the query string, and a `?`
+there drops both — and the query keys, because two boards sharing a cache entry
+shows the previous board's cards until the refetch lands.
+
+**`web/test/kanbanAdmin.test.ts`** — the two board-level flags that cannot be
+taken back. `DELETE /boards/<slug>` archives by default and destroys the whole
+SQLite file with `?delete=true`; `describe-auto` overwrites a description
+stored nowhere else, which is also what the decomposer routes on. Both default
+to the safe form here. Also that a refusal arriving as a 200 with `ok: false` —
+what a missing auxiliary model answers — is surfaced rather than read as
+success, and that every health read is gated so a closed sheet costs nothing
+(the workers query polls).
+
+**`web/test/kanbanShapes.test.tsx`** — surviving a response missing a key.
+`data?.rows.length` guards only `data`, so a payload that arrives without the
+key throws on a plain `.length` — and with no error boundary in `App.tsx` that
+unmounts the whole app, not the section. Realistic for the newer plugin routes,
+where any version drift answers 200 with an unexpected body. Worth knowing how
+this was found: every test in this directory passed while the app blanked on
+the first tap of Board health, and only driving the real build in a browser
+showed it.
+
+**`web/test/fileLinks.test.ts`** — what counts as a file path in a transcript.
+The risk is inventing a link, not missing one: a false positive looks tappable,
+lands on "file not found", and teaches you the feature is unreliable, while a
+miss costs a copy and paste. So the bulk of this file is the refusals — the
+app's own routes, a URL with a file-shaped path, anything carrying a query or
+whitespace, and `javascript:` above all — alongside the paths this install's
+agents actually emit.
+
+**`web/test/markdownPaths.test.tsx`** — that the renderer reaches for that rule
+in both places an agent puts a path, and that a fenced code block is not one of
+them. Two of the failure modes live in the wiring rather than the rule:
+react-markdown's URL sanitiser empties any scheme it does not know, so a
+`file://` href arrived indistinguishable from a link written without one — and
+`workspace://` had that bug all along, which is how this test found it.
+
+**`web/test/historyDismiss.test.tsx`** — back-button dismissal, and the
+hand-off that used to break it. One sheet opening another while closing itself
+had the newcomer close a frame after it opened: React runs cleanups before
+effects, so the departing overlay's queued `history.back()` landed on the
+newcomer's history entry. That is a menu item that does nothing, and it shipped
+on the kanban board menu and on `/model` and `/context` from the command
+palette. **jsdom fires no `popstate` for `back()`**, so the symptom is not
+reproducible here and was confirmed in Chrome; what these tests pin is the
+decision underneath it — a hand-off reuses the departing entry
+(`replaceState`), a nest stacks (`pushState`), a plain close pops, a close
+after a route navigation does not, and StrictMode's mount/unmount/mount leaves
+one sentinel rather than two.
+
+**`web/test/kanbanEvents.test.ts`** — the board's live-update socket, which
+sits next to a poll it must never replace. Every case is a way it could go
+quietly wrong while the board still looks fine: a cursor that does not survive
+a reconnect (re-seeding replays the gap, zero replays the whole table), a
+board change carrying the previous board's cursor into a different table's
+numbering, the proxy's JSON keepalive treated as data — which would turn it
+into a slower poll nobody asked for — a malformed frame tearing down the
+stream instead of being dropped, and a superseded socket's close marking the
+hook dead over a live stream, which would leave the board on the slow poll
+believing it was live. Also that it gives up rather than retrying for ever:
+a socket that cannot open here usually never will, and the poll covers it.
+
+**`server/test/kanbanSweep.test.ts`** — telling you a card stopped. The board
+has no event stream that reaches the proxy, so this is state on a timer, and
+every test is a way that could report wrongly: announcing states instead of
+transitions (a card blocked yesterday is still blocked today); announcing the
+past (a fresh install, or a restart, firing one notification per card);
+losing a re-block, because Hermes re-blocks in place until the limit so the
+counter moves while the status does not; forgetting watermarks on a pass that
+reached nothing, which would re-announce the whole board on recovery; and
+following the server's board pointer instead of sweeping every board.
 
 **`web/test/cronScope.test.ts`** — which profile a cron call addresses. A job
 created into the wrong profile looks entirely normal on the screen that created
