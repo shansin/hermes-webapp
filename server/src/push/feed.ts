@@ -131,12 +131,28 @@ const FileSchema = z.object({
    * a feed that has just been created.
    */
   lastReadAt: z.number().default(0),
+  /**
+   * Last-seen values for things whose *transitions* are the news, rather than
+   * whose existence is.
+   *
+   * `seenRuns` answers "have I already reported this?", which works for a run:
+   * a run happens once and is then permanently accounted for. A kanban card is
+   * the other shape — it goes blocked, is answered, runs, and blocks again, and
+   * every one of those is worth reporting. A seen-set says "already told you"
+   * the second time; only a remembered previous value can tell a transition
+   * from a card that has simply been sitting there since the last sweep.
+   *
+   * Kept here rather than in memory because the sweep restarts with the proxy,
+   * and a forgotten watermark makes every card on the board look like it just
+   * changed — a restart would fire a notification per card.
+   */
+  watermarks: z.record(z.string(), z.string()).default({}),
 });
 type FileShape = z.infer<typeof FileSchema>;
 
 const FILE = resolve(stateDir, '.hermes-cron-feed.json');
 
-let state: FileShape = { entries: [], seenRuns: [], seeded: false, lastReadAt: 0 };
+let state: FileShape = { entries: [], seenRuns: [], seeded: false, lastReadAt: 0, watermarks: {} };
 let loaded = false;
 
 function load(): FileShape {
@@ -336,6 +352,49 @@ export function markRunSeen(runId: string, write = true): void {
   // feed from re-announcing everything, so it must outlive the entries.
   if (seen.length > MAX_ENTRIES * 4) seen.splice(0, seen.length - MAX_ENTRIES * 4);
   if (write) persist();
+}
+
+/**
+ * The value last seen for `key`, or null the first time it is asked about.
+ *
+ * Null is the seeding signal and callers must treat it as such: on a first
+ * sight there is no transition to report, only a value to remember. Reporting
+ * on it would announce the entire existing board the first time the sweep ran.
+ */
+export function getWatermark(key: string): string | null {
+  return load().watermarks[key] ?? null;
+}
+
+/** Remember `value` for `key`. A null value forgets it — for a deleted row. */
+export function setWatermark(key: string, value: string | null): void {
+  const marks = load().watermarks;
+  if (value === null) {
+    if (!(key in marks)) return;
+    delete marks[key];
+  } else {
+    if (marks[key] === value) return;
+    marks[key] = value;
+  }
+  persist();
+}
+
+/**
+ * Drop every watermark under `prefix` that is not in `keep`.
+ *
+ * Without this the map grows by one entry per card ever created and never
+ * shrinks — a board that is used properly deletes and archives cards
+ * constantly, and their watermarks would outlive them for the life of the
+ * install.
+ */
+export function pruneWatermarks(prefix: string, keep: ReadonlySet<string>): void {
+  const marks = load().watermarks;
+  let changed = false;
+  for (const key of Object.keys(marks)) {
+    if (!key.startsWith(prefix) || keep.has(key)) continue;
+    delete marks[key];
+    changed = true;
+  }
+  if (changed) persist();
 }
 
 /**

@@ -34,6 +34,7 @@ import { shareRouter } from './routers/share.js';
 import { notificationsRouter } from './routers/notifications.js';
 import { startPushListener, stopPushListener } from './push/events.js';
 import { startCronSweep, stopCronSweep } from './push/cron.js';
+import { startKanbanSweep, stopKanbanSweep } from './push/kanban.js';
 import { flushFeed } from './push/feed.js';
 import { pushPublicKey } from './push/send.js';
 import { attachWsProxy } from './routers/wsProxy.js';
@@ -242,12 +243,17 @@ startPushListener();
 // fires for the active profile's job file, so a job in any other profile is
 // invisible to the listener — see the note in `push/cron.ts`.
 startCronSweep();
+// The board has no event stream that reaches here — the gateway socket carries
+// nothing kanban-shaped and the plugin's own one is a stream, so a card that
+// blocks during a deploy would be lost. State, on a timer, catches up instead.
+startKanbanSweep();
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
     log.info(`${signal} — shutting down`);
     stopPushListener();
     stopCronSweep();
+    stopKanbanSweep();
     // The feed's writes are debounced, so the last one may still be pending.
     flushFeed();
     server.close(() => process.exit(0));
