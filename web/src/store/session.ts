@@ -128,6 +128,19 @@ interface SessionState {
   sessionId: string | null;
   /** Persistent id used by the REST session endpoints. */
   storedSessionId: string | null;
+  /**
+   * Which profile's store holds this conversation, or null for the active one.
+   *
+   * Kept here rather than read from the URL each time, because the URL stops
+   * carrying it: `ChatScreen` clears its `?resume=&profile=` intent the moment
+   * a resume lands, so that a reconnect does not resume all over again. Every
+   * later per-session call then addressed the *active* profile — the reconnect
+   * `session.resume` above all, which a phone makes constantly — and the
+   * routes 404 for a session in another profile, which reads as "deleted".
+   * The rule in CLAUDE.md is that the profile travels with the id everywhere;
+   * this is where it travels.
+   */
+  profile: string | null;
   title: string;
   info: SessionInfo | null;
   messages: ChatMessage[];
@@ -188,6 +201,8 @@ interface SessionState {
   adoptSession: (r: {
     sessionId: string;
     storedSessionId?: string;
+    /** Null (or absent) means the gateway's active profile. */
+    profile?: string | null;
     info?: SessionInfo;
     pendingClarify?: ClarifyRequest;
   }) => void;
@@ -364,6 +379,7 @@ function deltaText(payload: unknown): string | null {
 export const useSession = create<SessionState>((set, get) => ({
   sessionId: null,
   storedSessionId: null,
+  profile: null,
   title: '',
   info: null,
   messages: [],
@@ -386,6 +402,7 @@ export const useSession = create<SessionState>((set, get) => ({
     set({
       sessionId: null,
       storedSessionId: null,
+      profile: null,
       title: '',
       info: null,
       messages: [],
@@ -405,10 +422,11 @@ export const useSession = create<SessionState>((set, get) => ({
       inflightPrompt: null,
     }),
 
-  adoptSession: ({ sessionId, storedSessionId, info, pendingClarify }) =>
+  adoptSession: ({ sessionId, storedSessionId, profile, info, pendingClarify }) =>
     set({
       sessionId,
       storedSessionId: storedSessionId ?? null,
+      profile: profile ?? null,
       info: info ?? null,
       error: null,
       // Restored rather than merely noted: the agent is still blocked on it,

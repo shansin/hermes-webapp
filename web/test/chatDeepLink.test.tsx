@@ -8,7 +8,7 @@
  * until you look at whether `session.resume` or `session.create` went out.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -181,6 +181,54 @@ describe('arriving from a cron notification', () => {
     // Null here on purpose: a notification written before profiles were
     // threaded through carries no profile, and must still resume against the
     // gateway's own launch profile exactly as it always did.
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(CRON_ID, null));
+  });
+});
+
+/**
+ * A reconnect has to resume the same *store*, not merely the same id.
+ *
+ * The boot effect clears the whole query string once a resume lands, so that a
+ * later reconnect does not resume all over again. That took `?profile=` with
+ * it — and the reconnect's own `session.resume` was reading the profile back
+ * out of the URL, where it no longer was. So opening another agent's
+ * conversation worked, and then the first dropped socket (which on a phone is
+ * every time the screen locks) reattached against the *active* profile: the id
+ * is not in that store, so the resume failed and the fallback rebuilt the
+ * conversation somewhere else entirely.
+ *
+ * The profile now travels with the session in the store, which is the rule the
+ * rest of the app already follows.
+ */
+describe('reconnecting to another profile’s conversation', () => {
+  /** Drop the socket and bring it back, which is what the effect keys on. */
+  const cycleSocket = async () => {
+    await act(async () => {
+      useUi.setState({ connection: 'closed' });
+    });
+    await act(async () => {
+      useUi.setState({ connection: 'open' });
+    });
+  };
+
+  it('remembers the profile after the URL intent is cleared', async () => {
+    openAt(`/chat?resume=${CRON_ID}&profile=research`);
+    await waitFor(() => expect(useSession.getState().sessionId).toBe('e185fca3'));
+    expect(useSession.getState().profile).toBe('research');
+
+    resumeSession.mockClear();
+    await cycleSocket();
+
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(CRON_ID, 'research'));
+  });
+
+  it('still resumes against the active profile when no profile was named', async () => {
+    openAt(`/chat?resume=${CRON_ID}`);
+    await waitFor(() => expect(useSession.getState().sessionId).toBe('e185fca3'));
+
+    resumeSession.mockClear();
+    await cycleSocket();
+
     await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(CRON_ID, null));
   });
 });

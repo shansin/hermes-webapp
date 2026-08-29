@@ -73,6 +73,12 @@ export function ChatScreen() {
 
   const sessionId = useSession((s) => s.sessionId);
   const storedSessionId = useSession((s) => s.storedSessionId);
+  /**
+   * The profile this conversation lives in, from the store rather than the
+   * URL — see the field's own note. The URL's `?profile=` is only the *intent*
+   * that opened it, and the boot effect strips it as soon as the resume lands.
+   */
+  const sessionProfile = useSession((s) => s.profile);
   const title = useSession((s) => s.title);
   const info = useSession((s) => s.info);
   const error = useSession((s) => s.error);
@@ -130,7 +136,7 @@ export function ChatScreen() {
    * the link named, and asking the active profile for another one's session
    * answers 404.
    */
-  const actionsRow = useSessionRow(actionsOpen ? storedSessionId : null, resumeProfile);
+  const actionsRow = useSessionRow(actionsOpen ? storedSessionId : null, sessionProfile);
   const wantNew = params.get('new') === '1';
   /**
    * Android share-sheet target, which reaches us in two shapes.
@@ -156,6 +162,9 @@ export function ChatScreen() {
       adopt({
         sessionId: res.session_id,
         storedSessionId: res.stored_session_id,
+        // `session.create` runs as the socket's own profile, so this one is
+        // reached by omitting the parameter — which is what null means.
+        profile: null,
         info: res.info,
       });
       void refreshUsage();
@@ -168,7 +177,7 @@ export function ChatScreen() {
   };
 
   /** Resolves true when a live session was adopted. */
-  const doResume = async (storedId: string): Promise<boolean> => {
+  const doResume = async (storedId: string, profile = resumeProfile): Promise<boolean> => {
     if (bootingRef.current) return false;
     // The socket can still read OPEN for a while after the radio drops, so
     // asking it first would buy a full timeout before learning what the
@@ -194,10 +203,11 @@ export function ChatScreen() {
        * carries the 15s control timeout, and a cron run with a long transcript
        * on a phone's radio is exactly the shape that hits it.
        */
-      const res = await resumeSession(storedId, resumeProfile);
+      const res = await resumeSession(storedId, profile);
       adopt({
         sessionId: res.session_id,
         storedSessionId: res.stored_session_id ?? storedId,
+        profile,
         info: res.info,
       });
 
@@ -234,7 +244,7 @@ export function ChatScreen() {
 
         if (needsAnswers) {
           try {
-            restoreClarifyAnswers(await fetchStoredMessages(storedIdForRest, resumeProfile));
+            restoreClarifyAnswers(await fetchStoredMessages(storedIdForRest, profile));
           } catch {
             // The questions are on screen; only the answers are missing.
           }
@@ -253,7 +263,7 @@ export function ChatScreen() {
       // without this the REST mirror the service worker caches would never be
       // requested while online — and would therefore never be there when it
       // is the only thing that can answer.
-      void fetchStoredMessages(storedIdForRest, resumeProfile).catch(() => {});
+      void fetchStoredMessages(storedIdForRest, profile).catch(() => {});
 
       // Restore the stored title: `session.title` only fires when the agent
       // names a conversation, so a resumed one would keep the placeholder.
@@ -264,7 +274,7 @@ export function ChatScreen() {
         if (typeof carried === 'string' && carried) {
           setTitle(carried);
         } else {
-          const stored = await fetchSessionTitle(storedIdForRest, resumeProfile);
+          const stored = await fetchSessionTitle(storedIdForRest, profile);
           if (stored) setTitle(stored);
         }
       } catch {
@@ -393,13 +403,26 @@ export function ChatScreen() {
           return;
         }
 
-        const res = await resumeSession(storedSessionId, resumeProfile);
+        /**
+         * The conversation's own profile, read from the store.
+         *
+         * Emphatically not `resumeProfile`: the boot effect clears the whole
+         * query string once a resume lands, so by the time a phone drops its
+         * socket — which is constantly — the URL no longer says which profile
+         * this session belongs to. Resuming without it addresses the *active*
+         * profile, so a reconnect on another agent's conversation either
+         * failed outright or reattached to the wrong store, and the fallback
+         * below then rebuilt it there.
+         */
+        const profile = useSession.getState().profile;
+        const res = await resumeSession(storedSessionId, profile);
         if (!alive) return;
         const rebuilt = res.session_id !== sessionId;
         if (rebuilt) {
           adopt({
             sessionId: res.session_id,
             storedSessionId: res.stored_session_id ?? storedSessionId,
+            profile,
             info: res.info,
           });
         }
@@ -425,7 +448,7 @@ export function ChatScreen() {
         // reap still settling), or a socket that dropped again underneath us.
         // The full rebuild is the fallback it always was.
         if (!alive || !storedSessionId) return;
-        await doResume(storedSessionId);
+        await doResume(storedSessionId, useSession.getState().profile);
       }
     })();
     return () => {
@@ -448,7 +471,7 @@ export function ChatScreen() {
     let alive = true;
     void (async () => {
       try {
-        const stored = await fetchStoredMessages(resumeId);
+        const stored = await fetchStoredMessages(resumeId, resumeProfile);
         if (!alive || !stored.length) return;
         loadHistory(
           stored.map((m) => ({
@@ -467,7 +490,7 @@ export function ChatScreen() {
           })),
         );
         setOfflineView(true);
-        const stitle = await fetchSessionTitle(resumeId);
+        const stitle = await fetchSessionTitle(resumeId, resumeProfile);
         if (alive && stitle) setTitle(stitle);
       } catch {
         // Nothing cached for this session — the waiting state below stands.
@@ -476,7 +499,7 @@ export function ChatScreen() {
     return () => {
       alive = false;
     };
-  }, [live, resumeId, sessionId, loadHistory, setTitle]);
+  }, [live, resumeId, resumeProfile, sessionId, loadHistory, setTitle]);
 
   // Drop the read-only view the moment a real session is adopted.
   useEffect(() => {
