@@ -23,6 +23,7 @@ import { Suspense, lazy, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { DefaultModelSection } from './DefaultModelSection';
 import { AuxiliaryModelSection } from './AuxiliaryModelSection';
+import { MoaSection } from './MoaSection';
 import { ProfileFilter } from '../shared/ProfileSelect';
 import { buzz } from '../../lib/haptics';
 
@@ -86,6 +87,7 @@ export function ModelsTab() {
           </div>
           <DefaultModelSection profile={profile} />
           <AuxiliaryModelSection profile={profile} />
+          <MoaSection profile={profile} />
         </div>
       )}
     </>

@@ -37,6 +37,7 @@ export function ModelPicker({
   profile = null,
   onPick,
   busy = false,
+  exclude = [],
 }: {
   /** Model id to mark as active, if any. */
   selected?: string;
@@ -50,6 +51,13 @@ export function ModelPicker({
   profile?: string | null;
   onPick: (model: string, provider: string) => void;
   busy?: boolean;
+  /**
+   * Provider slugs to leave out. Only one caller needs it: a Mixture of Agents
+   * slot cannot itself be MoA — the backend refuses to save a recursive preset
+   * and the runtime only notices mid-turn — so offering the row there would be
+   * offering a choice that cannot be taken.
+   */
+  exclude?: string[];
 }) {
   const [filter, setFilter] = useState('');
   const [refreshing, setRefreshing] = useState(false);
@@ -91,10 +99,16 @@ export function ModelPicker({
     }
   };
 
+  // A default `[]` prop is a new array each render, so the memo is keyed on
+  // the contents rather than the identity.
+  const hiddenKey = exclude.map((s) => s.trim().toLowerCase()).filter(Boolean).join(',');
+
   const groups = useMemo(() => {
     if (!data) return [];
     const q = filter.trim().toLowerCase();
+    const hidden = new Set(hiddenKey.split(',').filter(Boolean));
     return data.providers
+      .filter((p) => !hidden.has(p.slug.trim().toLowerCase()))
       .map((p) => ({
         ...p,
         models: q
@@ -102,7 +116,7 @@ export function ModelPicker({
           : p.models,
       }))
       .filter((p) => p.models.length > 0);
-  }, [data, filter]);
+  }, [data, filter, hiddenKey]);
 
   return (
     <>
@@ -165,6 +179,26 @@ export function ModelPicker({
               <span style={{ color: 'var(--warn)', fontWeight: 400 }}>· no key</span>
             )}
           </div>
+          {/*
+            * Providers can ship a caveat with the row, and exactly one does
+            * something this list cannot express on its own: the Mixture of
+            * Agents row's "models" are preset *names*, and picking one
+            * switches the profile into a routing mode whose real models are
+            * configured elsewhere. Rendered as a whole sentence because that
+            * is the only thing separating it from a list of models.
+            */}
+          {p.warning && (
+            <div
+              style={{
+                fontSize: 'var(--type-label-sm)',
+                color: 'var(--text-faint)',
+                lineHeight: 1.4,
+                margin: '-2px 2px 7px',
+              }}
+            >
+              {p.warning}
+            </div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {p.models.map((m) => {
               const active = selected === m;

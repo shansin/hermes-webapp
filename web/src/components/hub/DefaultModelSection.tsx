@@ -37,6 +37,16 @@ export function DefaultModelSection({ profile = null }: { profile?: string | nul
 
   const main = data?.main;
   const busy = setDefault.isPending;
+  /**
+   * `provider: moa` is not a provider and `main.model` is not a model — it is
+   * the name of a Mixture of Agents preset, whose real models live under
+   * `moa.presets.<name>`. Rendered as-is this card said `default` `via moa`,
+   * which reads as a model called "default" served by something called moa,
+   * and a profile could sit in that state failing every turn with nothing on
+   * the screen suggesting where to look. `MoaSection` below is where the
+   * preset itself is read and edited.
+   */
+  const onMoa = (main?.provider || '').trim().toLowerCase() === 'moa';
 
   const apply = async (model: string, provider: string, confirmExpensive = false) => {
     try {
@@ -46,7 +56,12 @@ export function DefaultModelSection({ profile = null }: { profile?: string | nul
         return;
       }
       buzz('done');
-      toast(`New chats will use ${model}`, 'success');
+      toast(
+        provider.trim().toLowerCase() === 'moa'
+          ? `New chats will route through the "${model}" preset`
+          : `New chats will use ${model}`,
+        'success',
+      );
       setConfirm(null);
       setOpen(false);
     } catch (err) {
@@ -88,7 +103,11 @@ export function DefaultModelSection({ profile = null }: { profile?: string | nul
               {isLoading ? '…' : main?.model || 'Not set'}
             </div>
             <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', marginTop: 2 }}>
-              {main?.provider ? `via ${main.provider}` : 'Hermes picks one automatically'}
+              {onMoa
+                ? 'Mixture of Agents preset — set up below'
+                : main?.provider
+                  ? `via ${main.provider}`
+                  : 'Hermes picks one automatically'}
             </div>
           </div>
           <span style={{ fontSize: 'var(--type-detail)', color: 'var(--accent)' }}>Change</span>

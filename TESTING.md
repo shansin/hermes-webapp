@@ -224,6 +224,27 @@ this was found: every test in this directory passed while the app blanked on
 the first tap of Board health, and only driving the real build in a browser
 showed it.
 
+**`web/test/moaConfig.test.ts`** — what a Mixture of Agents save carries, and
+what it would quietly destroy. `PUT /api/model/moa` merges at the `moa` key,
+not per preset, so the `presets` map it receives *replaces* the stored one: a
+payload naming only the preset being edited deletes every other, with a success
+response and nothing on screen to show for it. The same loss sits one level
+down, where every per-preset field has a default on the payload model — a value
+left out does not stay as it was, it becomes `4096` / `"loud"` / `null`. Also
+`slotCredentialGaps`, which predicts the failure this whole surface exists for:
+an aggregator whose provider has no key here ends every turn on the profile,
+and it must claim nothing at all before the provider catalogue has loaded.
+
+**`web/test/moaSection.test.tsx`** — the same section against the payloads it
+will meet. The MoA body reaches three levels deep
+(`presets[name].reference_models[i].provider`), which is three chances to throw
+on a route a Hermes can predate; the throw blanks the Models screen, whose top
+half is the reason anyone opened it. The warning's silences are tested as
+carefully as its warnings: quiet on a profile not routed through MoA, quiet
+while the catalogue is still loading, quiet on an aggregator that is merely
+unset. A warning that flashes on every load teaches people to ignore the one
+that matters.
+
 **`web/test/fileLinks.test.ts`** — what counts as a file path in a transcript.
 The risk is inventing a link, not missing one: a false positive looks tappable,
 lands on "file not found", and teaches you the feature is unreliable, while a
