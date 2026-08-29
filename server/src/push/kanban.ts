@@ -249,6 +249,19 @@ export async function reconcileKanban(): Promise<void> {
   running = true;
   try {
     const seen = new Set<string>();
+    /**
+     * The boards this pass actually read, as watermark key prefixes.
+     *
+     * The prune below has to be scoped to them rather than to `MARK`. A pass
+     * reaches several boards and any one of them can fail on its own — an
+     * eight-second timeout, a 401 mid-token-rotation — and pruning everything
+     * not seen would then forget every watermark belonging to the board that
+     * failed. Those cards are re-adopted as first sights on the next pass, so
+     * whatever they did in between is announced by nobody. Worse for the same
+     * reason: a failed `/boards` falls back to `[null]`, so one bad request
+     * silently re-adopted every card on every other board.
+     */
+    const swept = new Set<string>();
 
     for (const slug of await boardSlugs()) {
       const path = slug
@@ -256,6 +269,7 @@ export async function reconcileKanban(): Promise<void> {
         : '/api/plugins/kanban/board';
       const board = await gatewayGet<{ columns?: { name?: unknown; tasks?: unknown[] }[] }>(path);
       if (!board?.columns) continue;
+      swept.add(`${MARK}${slug ?? ''}:`);
 
       for (const column of board.columns) {
         for (const raw of column.tasks ?? []) {
@@ -327,10 +341,10 @@ export async function reconcileKanban(): Promise<void> {
       }
     }
 
-    /* Only prune against a pass that actually saw cards. A pass that reached
-       nothing — Hermes down, plugin disabled, a 401 — would otherwise forget
-       every watermark and re-announce the whole board on recovery. */
-    if (seen.size) pruneWatermarks(MARK, seen);
+    /* Only prune the boards this pass actually read. A board it could not
+       reach — Hermes down, plugin disabled, a 401 — keeps its watermarks, so
+       recovery is silent rather than a re-announcement of everything on it. */
+    for (const prefix of swept) pruneWatermarks(prefix, seen);
   } catch (err) {
     log.warn({ err }, 'Kanban sweep failed');
   } finally {

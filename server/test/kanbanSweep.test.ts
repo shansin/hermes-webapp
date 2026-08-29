@@ -387,6 +387,58 @@ describe('failure', () => {
     expect(entries()).toHaveLength(0);
   });
 
+  /**
+   * One board failing must not cost the others their memory.
+   *
+   * The prune used to run once over every `kanban:task:` watermark against the
+   * cards a whole pass had seen, so a board that answered a timeout or a 401
+   * while its neighbours answered normally had all of its watermarks dropped.
+   * Its cards then read as first sights on the next pass and were adopted
+   * silently — so whatever they did while it was unreachable was announced by
+   * nobody, which is precisely the window this module exists to cover.
+   */
+  it('keeps a board’s watermarks when only that board is unreachable', async () => {
+    boards({ slug: 'a' }, { slug: 'b' });
+    cards('a', card({ status: 'todo' }));
+    cards('b', card({ id: 't_9', status: 'todo' }));
+    await seed();
+
+    // Board b alone stops answering; board a is read normally.
+    delete routes['/api/plugins/kanban/board?board=b'];
+    await kanban.reconcileKanban();
+
+    cards('b', card({ id: 't_9', status: 'blocked' }));
+    await kanban.reconcileKanban();
+
+    expect(kinds()).toEqual(['kanban.blocked']);
+  });
+
+  /**
+   * The same failure by its wider road: `/boards` itself falling over.
+   *
+   * `boardSlugs` then falls back to `[null]` — the server's current board —
+   * which is right, and used to be ruinous: that one board's cards were the
+   * whole of `seen`, so the prune forgot every card on every *other* board in
+   * a single pass.
+   */
+  it('keeps every board’s watermarks when /boards falls over for a pass', async () => {
+    boards({ slug: 'a' }, { slug: 'b' });
+    cards('a', card({ status: 'todo' }));
+    cards('b', card({ id: 't_9', status: 'todo' }));
+    // What the unqualified route answers: whatever the server's pointer says.
+    cards(null, card({ status: 'todo' }));
+    await seed();
+
+    statuses['/api/plugins/kanban/boards'] = 503;
+    await kanban.reconcileKanban();
+    delete statuses['/api/plugins/kanban/boards'];
+
+    cards('b', card({ id: 't_9', status: 'blocked' }));
+    await kanban.reconcileKanban();
+
+    expect(kinds()).toEqual(['kanban.blocked']);
+  });
+
   it('drops a stale token so the next pass re-scrapes', async () => {
     statuses['/api/plugins/kanban/boards'] = 401;
     await kanban.reconcileKanban();
