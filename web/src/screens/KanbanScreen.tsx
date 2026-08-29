@@ -475,7 +475,18 @@ export function KanbanScreen() {
   const [drag, setDrag] = useState(0);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const axis = useRef<'none' | 'x' | 'y'>('none');
-  /** Set by a committed drag, so the click it ends with does not open a card. */
+  /**
+   * Set by a committed drag, so the click it ends with does not open a card.
+   *
+   * Cleared at the *start* of every gesture rather than only by the click it
+   * is meant to swallow, because a horizontal swipe does not always end in
+   * one: `touchcancel` — the notification shade, the browser's own back-swipe,
+   * any system gesture taking over mid-drag — runs `onPagerEnd` with no click
+   * to follow. The flag then survived into the next touch and ate the first
+   * genuine tap on a card, which reads as the board simply ignoring you. A
+   * gesture's own `touchstart` always precedes it and always follows the
+   * previous gesture's click, so it is the one place the reset is unambiguous.
+   */
   const swiped = useRef(false);
 
   const pageTo = useCallback(
@@ -494,6 +505,7 @@ export function KanbanScreen() {
     if (!t) return;
     swipeStart.current = { x: t.clientX, y: t.clientY };
     axis.current = 'none';
+    swiped.current = false;
   }, []);
 
   const onPagerMove = useCallback(
