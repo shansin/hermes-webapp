@@ -585,6 +585,79 @@ describe('rewinding', () => {
   });
 });
 
+/**
+ * The two prompts that park a turn, and the two ways the app used to strand
+ * one on screen.
+ *
+ * `approval.request` and `clarify.request` both block the agent until they are
+ * answered, and their sheets are deliberately not dismissible — closing one
+ * without answering would hang the conversation silently. That makes every
+ * path which removes the sheet *without* releasing the agent a trap, because
+ * there is no way back out of it from the UI.
+ */
+describe('a blocked turn always keeps a way out', () => {
+  const raiseApproval = () =>
+    emit('approval.request', { tool: 'Bash', command: 'rm -rf build', choices: ['once', 'deny'] });
+
+  it('clears the approval when the turn ends, the way it clears a clarify', () => {
+    /* The ordinary way out of an approval you do not want to grant is Stop.
+       `session.interrupt` ends the turn with a `message.complete`, which
+       cleared the clarify beside it and left the approval sheet standing over
+       a finished conversation — non-dismissible, and with no button on it that
+       could still do anything. Only opening another session escaped it. */
+    raiseApproval();
+    emit('clarify.request', { request_id: 'r1', question: 'Which branch?' });
+    expect(store().approval).not.toBeNull();
+
+    emit('message.complete', { text: '', status: 'interrupted' });
+
+    expect(store().approval).toBeNull();
+    expect(store().clarify).toBeNull();
+  });
+
+  it('puts the approval back when answering it fails', async () => {
+    /* The sheet is cleared before the round trip so the reply is not covered
+       while it lands. A rejected `approval.respond` — a timeout, a socket that
+       went while the sheet was open — then left the turn parked with the one
+       control that could release it gone. `session.resume` recovers this, but
+       only on a reconnect, and one failed call is not a dropped socket. */
+    raiseApproval();
+    const raised = store().approval;
+    call.mockRejectedValueOnce(new Error('not connected'));
+
+    await store().respondApproval('once');
+
+    expect(store().approval).toBe(raised);
+    expect(store().error).toBe('not connected');
+  });
+
+  it('keeps the id when it puts an approval back, so a stale sheet cannot answer', async () => {
+    raiseApproval();
+    const id = store().approval!.id;
+    call.mockRejectedValueOnce(new Error('not connected'));
+    await store().respondApproval('once');
+    expect(store().approval!.id).toBe(id);
+  });
+
+  it('does not resurrect an approval a newer request has replaced', async () => {
+    raiseApproval();
+    let release: (() => void) | null = null;
+    call.mockImplementationOnce(
+      () => new Promise((_, reject) => (release = () => reject(new Error('gone')))),
+    );
+    const pending = store().respondApproval('once');
+
+    // A second request arrives while the first response is still in flight.
+    emit('approval.request', { tool: 'Write', command: 'notes.md', choices: ['once'] });
+    const newer = store().approval;
+
+    release!();
+    await pending;
+
+    expect(store().approval).toBe(newer);
+  });
+});
+
 describe('metadata', () => {
   it('adopts session info from the gateway', () => {
     emit('session.info', { model: 'opus', approval_mode: 'ask' });

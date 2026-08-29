@@ -729,13 +729,24 @@ export const useSession = create<SessionState>((set, get) => ({
         set({
           running: false,
           /**
-           * The turn is over, so any question it was parked on is moot — it
-           * was answered, interrupted, or hit the gateway's clarify timeout
-           * and auto-proceeded. Leaving the sheet up would be worse than the
+           * The turn is over, so anything it was parked on is moot — it was
+           * answered, interrupted, or hit the gateway's own timeout and
+           * auto-proceeded. Leaving either sheet up would be worse than the
            * bug it replaced: a modal that cannot be dismissed, over a turn
            * that has already moved on.
+           *
+           * `approval` belongs here for exactly the same reason and was
+           * missing, which made the ordinary way out of an approval the one
+           * that trapped you: an `approval.request` is deliberately not
+           * dismissible, so a person who does not want to grant it reaches for
+           * Stop — and `session.interrupt` ends the turn with a
+           * `message.complete` that cleared the clarify beside it and left the
+           * approval sheet standing over a finished conversation, with no
+           * button on it that could still do anything. Only starting or
+           * resuming another session got out of it.
            */
           clarify: null,
+          approval: null,
           streamingText: '',
           streamingReasoning: '',
           thinkingHint: '',
@@ -1070,6 +1081,22 @@ export const useSession = create<SessionState>((set, get) => ({
     }
   },
 
+  /**
+   * Answer the pending approval.
+   *
+   * The sheet is cleared first so the turn is not covered while the round trip
+   * lands — and **put back if the call fails**, which is the half that was
+   * missing. An `approval.request` blocks the agent until it is answered and
+   * nothing re-emits it: a rejected `approval.respond` (a timeout, a socket
+   * that went while the sheet was open) left the turn parked with the only
+   * control that could release it gone from the screen. There is a recovery
+   * path through `session.resume`'s `pending_approval`, but it only runs on a
+   * *reconnect* — and the socket failing one call is not the same as the
+   * socket dropping, so the common case reached it never.
+   *
+   * Restoring the same object keeps its `id`, which is what stops a revived
+   * sheet from answering a request that has since been replaced.
+   */
   respondApproval: async (choice, all = false) => {
     const { sessionId, approval } = get();
     if (!sessionId || !approval) return;
@@ -1077,7 +1104,11 @@ export const useSession = create<SessionState>((set, get) => ({
     try {
       await hermes.call('approval.respond', { session_id: sessionId, choice, all });
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : 'approval failed' });
+      set({
+        error: err instanceof Error ? err.message : 'approval failed',
+        // Only if nothing newer has arrived in the meantime.
+        approval: get().approval ?? approval,
+      });
     }
   },
 
@@ -1123,7 +1154,19 @@ export const useSession = create<SessionState>((set, get) => ({
         }
       }
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : 'Could not send that answer' });
+      /**
+       * Put the question back. Same reasoning as `respondApproval`, with one
+       * extra edge: a batch is sent one call per `qid` and the gateway
+       * releases the turn only once every one of them has landed, so a failure
+       * partway through leaves the agent parked on the questions that did not
+       * send. Clearing the sheet and leaving it cleared meant no way to finish
+       * answering and no way to see that anything had gone wrong beyond a
+       * banner.
+       */
+      set({
+        error: err instanceof Error ? err.message : 'Could not send that answer',
+        clarify: get().clarify ?? clarify,
+      });
     }
   },
 

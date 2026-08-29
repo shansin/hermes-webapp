@@ -193,6 +193,62 @@ describe('answering', () => {
   });
 });
 
+/**
+ * A send that fails must not take the question with it.
+ *
+ * The sheet is cleared before the calls go out, so the reply is not covered
+ * while the round trip lands. It was never put back — and a batch is one call
+ * per `qid`, released only once every one of them has landed, so a failure
+ * partway through parked the agent on the questions that did not send with
+ * nothing on screen to finish answering them.
+ */
+describe('when the answer cannot be sent', () => {
+  it('puts a single question back', async () => {
+    emit('clarify.request', single);
+    const raised = store().clarify;
+    call.mockRejectedValueOnce(new Error('not connected'));
+
+    await store().respondClarify({ '': 'RSS feed' });
+
+    expect(store().clarify).toBe(raised);
+    expect(store().error).toBe('not connected');
+  });
+
+  it('puts a batch back when it fails partway through', async () => {
+    emit('clarify.request', batch);
+    const raised = store().clarify;
+    call
+      .mockResolvedValueOnce({ status: 'ok' })
+      .mockRejectedValueOnce(new Error('socket closed'));
+
+    await store().respondClarify({ q1: 'RSS', q2: 'Daily' });
+
+    expect(clarifyCalls()).toHaveLength(2);
+    expect(store().clarify).toBe(raised);
+  });
+
+  /* The id is what stops a revived sheet answering a request that has since
+     been replaced, so restoring must not mint a new one. */
+  it('restores it under the same id', async () => {
+    emit('clarify.request', single);
+    const id = store().clarify!.id;
+    call.mockRejectedValueOnce(new Error('not connected'));
+    await store().respondClarify({ '': 'RSS feed' });
+    expect(store().clarify!.id).toBe(id);
+  });
+
+  /* An expired request is not a failure: the gateway answered, the agent had
+     already moved on, and the question is genuinely gone. */
+  it('leaves the sheet closed when the gateway says the request expired', async () => {
+    emit('clarify.request', single);
+    call.mockResolvedValueOnce({ status: 'expired' });
+
+    await store().respondClarify({ '': 'RSS feed' });
+
+    expect(store().clarify).toBeNull();
+  });
+});
+
 describe('not outliving its turn', () => {
   /**
    * The failure a non-dismissible sheet would make permanent. The gateway
