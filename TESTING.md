@@ -224,6 +224,17 @@ this was found: every test in this directory passed while the app blanked on
 the first tap of Board health, and only driving the real build in a browser
 showed it.
 
+**`web/test/unreadCount.test.ts`** — the count on the jump-to-bottom button.
+Its only job is to be believed, and every way it can be wrong involves a
+transcript that did not simply grow — which is the common case, not an exotic
+one: a rewind drops turns, an edit replaces one, and every reconnect loads
+history over the top. Measured from a remembered *length*, each of those reads
+as a burst of arrivals and puts a double-digit badge on a conversation that just
+got shorter. So the anchor is an id and a missing id counts nothing; most of
+this file pins that deliberate undercount, because a badge that says less than
+it could is survivable and one that invents arrivals is read once and then
+ignored for ever.
+
 **`web/test/moaConfig.test.ts`** — what a Mixture of Agents save carries, and
 what it would quietly destroy. `PUT /api/model/moa` merges at the `moa` key,
 not per preset, so the `presets` map it receives *replaces* the stored one: a

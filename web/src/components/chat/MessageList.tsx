@@ -54,6 +54,24 @@ import { chatToMarkdown, copyText, messageText, outcomeToast, shareText } from '
 const NEAR_BOTTOM_PX = 120;
 
 /**
+ * How many messages landed after `anchorId`.
+ *
+ * Pure and exported so it can be tested: every interesting case is a
+ * transcript that did *not* simply grow, and all of them look plausible on
+ * screen. A rewind, an edit or a reconnect's history load replaces the array
+ * outright — a count remembered as a length would read that as a burst of
+ * arrivals and put a double-digit badge on a conversation that just got
+ * shorter. An anchor that is no longer present therefore counts nothing:
+ * undercounting for one scroll is the better failure, because the badge's
+ * only job is to be believed.
+ */
+export function unreadSince(messages: { id: string }[], anchorId: string | null): number {
+  if (!anchorId) return 0;
+  const idx = messages.findIndex((m) => m.id === anchorId);
+  return idx < 0 ? 0 : messages.length - 1 - idx;
+}
+
+/**
  * How often the streaming bubble is allowed to re-render, in ms. ~10 fps: fast
  * enough to read as continuous, slow enough that markdown parsing stops
  * dominating the frame budget on a phone.
@@ -101,11 +119,30 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [stuck, setStuck] = useState(true);
   /**
+   * The last message present when the user scrolled away from the bottom, and
+   * the thing the unread count is measured from.
+   *
+   * An **id** rather than a count, because the transcript is not append-only:
+   * a rewind, an edit or a reconnect's history load replaces the array
+   * outright, and a remembered length would read that as a burst of new
+   * messages arriving. An id that is no longer in the list is simply a lost
+   * anchor, which counts nothing — an undercount for one scroll is a far
+   * better failure than a badge claiming twenty new messages on a transcript
+   * that just got shorter.
+   */
+  const [anchorId, setAnchorId] = useState<string | null>(null);
+  /**
    * Mirrors `stuck` for `followTail`, which must keep a stable identity: it is
    * handed to the streaming bubble, and a new function each render would make
    * memoizing that bubble pointless.
    */
   const stuckRef = useRef(true);
+  /**
+   * Latest messages for the effects that must not re-run when they change —
+   * the anchor is taken at the moment of leaving the bottom, so that effect
+   * keys on `stuck` alone.
+   */
+  const messagesRef = useRef<ChatMessage[]>([]);
   /** The user message whose bubble is showing its actions, if any. */
   const [openActions, setOpenActions] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
@@ -382,6 +419,33 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
     setStuck(true);
   };
 
+  messagesRef.current = messages;
+
+  /**
+   * Take the anchor on the way up, drop it on the way back down.
+   *
+   * Keyed on `stuck` alone so it fires on the transition rather than on every
+   * message: the whole point is what the transcript looked like at the moment
+   * the user stopped following it.
+   */
+  useEffect(() => {
+    setAnchorId(stuck ? null : (messagesRef.current.at(-1)?.id ?? null));
+  }, [stuck]);
+
+  /**
+   * How much arrived while the user was reading further up.
+   *
+   * Counts *messages*, so a single reply still streaming reads as zero — it is
+   * one message that has not landed yet, and counting its blocks would make
+   * the badge climb through a turn and then drop. That case is carried by the
+   * pulse instead, which says "something is happening down there" without
+   * claiming a number it would have to take back.
+   */
+  const unread = useMemo(
+    () => (stuck ? 0 : unreadSince(messages, anchorId)),
+    [messages, anchorId, stuck],
+  );
+
   /**
    * Jump to the previous/next user turn.
    *
@@ -524,8 +588,33 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
               </button>
             </>
           )}
-          <button className="jump-fab" onClick={jump} aria-label="Jump to latest">
+          {/*
+            * Two signals, and they are not the same claim. The badge is a
+            * count of messages that landed while you were up here. The pulse
+            * only says a turn is running below — no number, because a reply
+            * mid-stream is one message that has not arrived yet.
+            */}
+          <button
+            className={`jump-fab${unread ? ' jump-fab--unread' : ''}${
+              running && !unread ? ' jump-fab--live' : ''
+            }`}
+            onClick={jump}
+            aria-label={
+              unread
+                ? `Jump to latest, ${unread} new ${unread === 1 ? 'message' : 'messages'}`
+                : running
+                  ? 'Jump to latest, a reply is coming in'
+                  : 'Jump to latest'
+            }
+          >
             <IconDown size={19} />
+            {unread > 0 && (
+              /* Capped so the badge stays a badge: a turn with a dozen tool
+                 cards would otherwise widen the button mid-scroll. */
+              <span className="jump-fab__badge" aria-hidden="true">
+                {unread > 9 ? '9+' : unread}
+              </span>
+            )}
           </button>
         </div>
       )}

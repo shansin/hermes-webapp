@@ -590,6 +590,7 @@
 }
 
 .jump-fab {
+  position: relative;
   width: 42px;
   height: 42px;
   border-radius: 50%;
@@ -599,6 +600,58 @@
   display: grid;
   place-items: center;
   box-shadow: var(--shadow);
+}
+
+/* Carrying a count, so the button reads as the thing to press. */
+.jump-fab--unread {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.jump-fab__badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: var(--type-micro);
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+/*
+ * A turn is running below with nothing countable yet. Deliberately quieter
+ * than the badge: it is a "still going" signal, not an unread one.
+ *
+ * Honoured only where motion is welcome — this sits at the bottom of the
+ * screen for the whole of a long reply, which is exactly the kind of
+ * indefinite animation `prefers-reduced-motion` exists for. The border colour
+ * stays, so the signal survives the animation being dropped.
+ */
+.jump-fab--live {
+  border-color: var(--accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .jump-fab--live {
+    animation: jump-fab-pulse 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes jump-fab-pulse {
+  0%,
+  100% {
+    box-shadow: var(--shadow);
+  }
+  50% {
+    box-shadow: var(--shadow), 0 0 0 3px var(--accent-soft);
+  }
 }
 
 /* --- slash-command output ------------------------------------------------- */

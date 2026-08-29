@@ -142,6 +142,19 @@ export function Composer({
   const queued = useSession((s) => s.queued);
   const clearQueued = useSession((s) => s.clearQueued);
   const toast = useUi((s) => s.toast);
+  /**
+   * Whether a send would reach anything. `hermes.call` rejects immediately
+   * with "not connected" on a socket that is not OPEN, so a press while the
+   * connection is down did not hang — it produced a bubble stamped `failed`
+   * and an error banner, a second after the press, for a message that had
+   * simply never left. Recoverable (the bubble carries a resend) and still the
+   * wrong shape: the answer arrives after the action rather than before it.
+   *
+   * The textarea deliberately stays live. A drop on a phone is routine and
+   * usually brief, and drafting through one is the normal thing to be doing —
+   * taking the keyboard away would cost more than the failed send did.
+   */
+  const live = useUi((s) => s.connection) === 'open';
 
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -601,7 +614,9 @@ export function Composer({
             // Any further typing means the user wants suggestions again.
             setPopoverOpen(true);
           }}
-          placeholder={recording ? 'Listening…' : 'Message Hem…'}
+          placeholder={
+            recording ? 'Listening…' : live ? 'Message Hem…' : 'Reconnecting…'
+          }
           rows={1}
           // The on-screen keyboard offers a newline key rather than "send",
           // matching what Enter now does. Sending is the button beside it.
@@ -682,8 +697,18 @@ export function Composer({
           <button
             className="composer__btn composer__btn--send"
             onClick={send}
-            disabled={!sendable || !sessionId}
-            aria-label={running ? 'Queue this message' : 'Send'}
+            /*
+             * Gated on the socket only where the press would actually use it.
+             * A send *during* a turn never touches the gateway — the gateway
+             * runs one turn per session, so `submitPrompt` holds the message
+             * locally and fires it when the turn ends — and that is worth
+             * having offline, since a drop mid-turn is exactly when queueing
+             * the next thing is useful.
+             */
+            disabled={!sendable || !sessionId || (!live && !running)}
+            aria-label={
+              running ? 'Queue this message' : live ? 'Send' : 'Waiting for the connection'
+            }
           >
             <IconSend size={18} />
           </button>
