@@ -221,13 +221,21 @@ describe('lookup cost', () => {
   /**
    * `hasRun` is called once per run in the gateway's history on every
    * reconcile pass, and the seen-run list is bounded at four figures. A linear
-   * scan per lookup makes that quadratic in the size of the history.
+   * scan per lookup makes that quadratic in the size of the history — and
+   * `markRunSeen`'s own membership check made a catch-up over a long history
+   * quadratic a second time.
+   *
+   * The threshold is deliberately far below what a scan can reach and far
+   * above what an indexed lookup needs. A wall-clock assertion sized to the
+   * scan's own time is the worst of both: it passes on an idle machine and
+   * flakes under a parallel test run, which is exactly how this one behaved
+   * while the code it was guarding was still linear.
    */
-  it('answers a full seen-list quickly', () => {
-    for (let i = 0; i < 1200; i++) feed.markRunSeen(`run-${i}`, false);
+  it('answers a full seen-list without scanning it', () => {
     const started = performance.now();
-    for (let i = 0; i < 20_000; i++) feed.hasRun(`run-${i % 1200}`);
-    expect(performance.now() - started).toBeLessThan(150);
+    for (let i = 0; i < 1200; i++) feed.markRunSeen(`run-${i}`, false);
+    for (let i = 0; i < 200_000; i++) feed.hasRun(`run-${i % 1200}`);
+    expect(performance.now() - started).toBeLessThan(300);
   });
 });
 

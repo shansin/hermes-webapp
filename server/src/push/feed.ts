@@ -155,6 +155,27 @@ const FILE = resolve(stateDir, '.hermes-cron-feed.json');
 let state: FileShape = { entries: [], seenRuns: [], seeded: false, lastReadAt: 0, watermarks: {} };
 let loaded = false;
 
+/**
+ * `seenRuns` as a set, built on demand and kept in step with the array.
+ *
+ * The array is the stored form — order is what makes the bound below drop the
+ * *oldest* ids — but it is the wrong shape for the question actually asked of
+ * it. `hasRun` is called once per run in the gateway's history on every
+ * reconcile pass, and the list is bounded at four figures, so a scan per
+ * lookup makes a pass quadratic in the size of the history it is walking.
+ * `markRunSeen` had the same scan on its own membership check, which made a
+ * catch-up over a long history quadratic a second time.
+ *
+ * Null means "not built yet", which is also how it is invalidated: `load()`
+ * replaces the array wholesale, and the bound below rewrites it.
+ */
+let seenIndex: Set<string> | null = null;
+
+function seenSet(): Set<string> {
+  if (!seenIndex) seenIndex = new Set(load().seenRuns);
+  return seenIndex;
+}
+
 function load(): FileShape {
   if (loaded) return state;
   loaded = true;
@@ -163,6 +184,7 @@ function load(): FileShape {
     const parsed = FileSchema.safeParse(JSON.parse(readFileSync(FILE, 'utf8')));
     if (parsed.success) {
       state = parsed.data;
+      seenIndex = null;
     } else {
       log.warn(`Ignoring unreadable ${FILE} — the updates feed starts empty.`);
     }
@@ -320,7 +342,7 @@ export function appendUpdate(entry: FeedEntryInput): FeedEntry {
 
 /** Whether this run has already produced an entry (or was adopted silently). */
 export function hasRun(runId: string): boolean {
-  return load().seenRuns.includes(runId);
+  return seenSet().has(runId);
 }
 
 /**
@@ -345,12 +367,18 @@ export function markSeeded(): void {
 }
 
 export function markRunSeen(runId: string, write = true): void {
+  const index = seenSet();
+  if (index.has(runId)) return;
   const seen = load().seenRuns;
-  if (seen.includes(runId)) return;
   seen.push(runId);
+  index.add(runId);
   // Bounded well above MAX_ENTRIES: this is the memory that stops a cleared
   // feed from re-announcing everything, so it must outlive the entries.
-  if (seen.length > MAX_ENTRIES * 4) seen.splice(0, seen.length - MAX_ENTRIES * 4);
+  if (seen.length > MAX_ENTRIES * 4) {
+    seen.splice(0, seen.length - MAX_ENTRIES * 4);
+    // The dropped ids are no longer answers, so the index cannot keep them.
+    seenIndex = null;
+  }
   if (write) persist();
 }
 
