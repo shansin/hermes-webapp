@@ -42,6 +42,12 @@ let feed: Feed;
 
 /** Gateway responses, keyed by the path the pass will ask for. */
 let routes: Record<string, unknown>;
+/**
+ * Responses keyed by path *and* query string, for the cases where the two
+ * profiles of the same endpoint have to answer differently. `routes` ignores
+ * the query, which is what almost every test wants.
+ */
+let routesUrl: Record<string, unknown>;
 /** Paths that should answer with a status instead of a body. */
 let statuses: Record<string, number>;
 let requested: string[];
@@ -54,6 +60,7 @@ beforeEach(async () => {
   feed?.flushFeed();
   rmSync(join(dir, '.hermes-cron-feed.json'), { force: true });
   routes = {};
+  routesUrl = {};
   statuses = {};
   requested = [];
   requestedUrls = [];
@@ -69,8 +76,10 @@ beforeEach(async () => {
     requestedUrls.push(path + parsed.search);
     const status = statuses[path];
     if (status) return new Response(null, { status });
-    if (!(path in routes)) return new Response(null, { status: 404 });
-    return new Response(JSON.stringify(routes[path]), {
+    const key = path + parsed.search;
+    const body = key in routesUrl ? routesUrl[key] : path in routes ? routes[path] : undefined;
+    if (body === undefined) return new Response(null, { status: 404 });
+    return new Response(JSON.stringify(body), {
       headers: { 'content-type': 'application/json' },
     });
   });
@@ -554,6 +563,136 @@ describe('malformed gateway payloads', () => {
     routes['/api/sessions/run-1/messages'] = { messages: [null, 42, { role: 'assistant' }] };
     await cron.reconcile();
     expect(feed.listEntries()[0]!.body).toBe('Nightly digest finished');
+  });
+});
+
+/**
+ * A run filed under a different profile than the job.
+ *
+ * A session row is written by whichever gateway *executed* the job, into that
+ * process's own home, and only tagged with the profile it ran as. One gateway
+ * ticking every profile's cron store — the shape of any machine where a
+ * profile's own gateway is not running — therefore runs a `fitness` job
+ * correctly and files its session under `default`.
+ *
+ * The runs endpoint cannot see it from either direction: an omitted profile
+ * makes Hermes look the job's own profile up (`profile or
+ * _find_cron_job_profile(job_id)`) and open that store, so scoped and unscoped
+ * are the same request. The fallback reads `/api/sessions?source=cron`, whose
+ * omitted profile *is* the active store.
+ *
+ * This went unnoticed on a live install for five days because it is silent and
+ * asymmetric: `reportFailedExecution` reads the job record rather than the runs
+ * endpoint, so failures kept arriving while every successful run vanished.
+ */
+describe('a run filed outside its job\'s profile', () => {
+  const scoped = '/api/cron/jobs/job-2/runs?profile=fitness';
+  const sessions = '/api/sessions?source=cron&limit=100';
+  const runId = 'cron_job-2_20260830_063037';
+
+  beforeEach(() => {
+    jobs(job({ id: 'job-2', name: 'Suggested training today', profile: 'fitness' }));
+    routesUrl[scoped] = { runs: [] };
+    routesUrl[sessions] = { sessions: [run({ id: runId })] };
+    messages(runId, { role: 'assistant', content: '5 × 1,000 m at goal pace.' });
+  });
+
+  it('finds the run in the active session store when its profile reports none', async () => {
+    await seed();
+    routesUrl[sessions] = {
+      sessions: [run({ id: runId }), run({ id: 'cron_job-2_20260831_063041', ended_at: 1_755_000_100 })],
+    };
+    messages('cron_job-2_20260831_063041', { role: 'assistant', content: 'Easy 4 miles.' });
+
+    await cron.reconcile();
+
+    const entries = feed.listEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.body).toBe('Easy 4 miles.');
+  });
+
+  /**
+   * The reply and the link have to follow the store that answered, not the
+   * job's profile. Sending either to `profile=fitness` 404s, and the reply's
+   * 404 is silent — the row still goes out, saying "<job> finished" where the
+   * agent's actual reply should be.
+   */
+  it('reads the reply from the store that answered', async () => {
+    await seed();
+    routesUrl[sessions] = {
+      sessions: [run({ id: runId }), run({ id: 'cron_job-2_x', ended_at: 1_755_000_100 })],
+    };
+    messages('cron_job-2_x', { role: 'assistant', content: 'Threshold day.' });
+
+    await cron.reconcile();
+
+    expect(requestedUrls).toContain('/api/sessions/cron_job-2_x/messages');
+    expect(requestedUrls).not.toContain('/api/sessions/cron_job-2_x/messages?profile=fitness');
+    expect(feed.listEntries()[0]!.body).toBe('Threshold day.');
+  });
+
+  it('points the row at the store that holds the session', async () => {
+    await seed();
+    routesUrl[sessions] = {
+      sessions: [run({ id: runId }), run({ id: 'cron_job-2_y', ended_at: 1_755_000_100 })],
+    };
+    await cron.reconcile();
+
+    expect(feed.listEntries()[0]!.url).toBe('/chat?session=cron_job-2_y');
+  });
+
+  /**
+   * The page holds every profile's cron sessions, so the prefix is the only
+   * thing binding a row to this job. Another job's runs must not be adopted.
+   */
+  it('ignores cron sessions belonging to a different job', async () => {
+    await seed();
+    routesUrl[sessions] = {
+      sessions: [run({ id: 'cron_other-job_20260830_070000', ended_at: 1_755_000_100 })],
+    };
+    messages('cron_other-job_20260830_070000', { role: 'assistant', content: 'Not yours.' });
+
+    await cron.reconcile();
+
+    expect(feed.listEntries()).toEqual([]);
+    expect(sendPush).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The normal topology keeps its addressing: a run its own profile reported
+   * is still read and linked through that profile, and appearing in the active
+   * store's cron page as well must not duplicate it.
+   */
+  it('keeps a run its profile reported addressed to that profile', async () => {
+    routesUrl[scoped] = { runs: [run({ id: 'run-9' })] };
+    routesUrl[sessions] = { sessions: [] };
+    messages('run-9', { role: 'assistant', content: 'Scoped.' });
+    await seed();
+
+    routesUrl[scoped] = { runs: [run({ id: 'run-9' }), run({ id: 'run-10', ended_at: 1_755_000_100 })] };
+    // The same run also visible in the active store's page.
+    routesUrl[sessions] = { sessions: [run({ id: 'run-10', ended_at: 1_755_000_100 })] };
+    messages('run-10', { role: 'assistant', content: 'Still scoped.' });
+    await cron.reconcile();
+
+    const entries = feed.listEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.url).toBe('/chat?session=run-10&profile=fitness');
+    expect(requestedUrls).toContain('/api/sessions/run-10/messages?profile=fitness');
+  });
+
+  /**
+   * The merge costs one request per pass, not one per job — the reason it can
+   * run unconditionally rather than only when a profile looks empty.
+   */
+  it('reads the cron session page once per pass', async () => {
+    jobs(
+      job({ id: 'job-2', name: 'Suggested training today', profile: 'fitness' }),
+      job({ id: 'job-3', name: 'Another', profile: 'research' }),
+    );
+    await cron.reconcile();
+
+    expect(requestedUrls.filter((u) => u === sessions)).toHaveLength(1);
   });
 });
 

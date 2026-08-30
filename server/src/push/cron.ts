@@ -56,6 +56,21 @@
  *     unqualified read 404s. That one fails quietly in the worst way: the
  *     notification still goes out, with the fallback "<job> finished" where
  *     the agent's actual reply should be.
+ *
+ * ## And the profile a run is filed under is not always the job's
+ *
+ * The scoped read is necessary but not sufficient. A session row is written by
+ * whichever gateway *executed* the job, into that process's own `HERMES_HOME`,
+ * and only tagged with the profile it ran as — so one gateway ticking every
+ * profile's cron store runs a `fitness` job correctly against the fitness home
+ * and files the session under `default`. That is the normal shape of a machine
+ * whenever a profile's own gateway is not running, and it makes the scoped read
+ * correctly find nothing, every sweep, indefinitely.
+ *
+ * `runsFor` falls back to an unscoped read when the profile reports none,
+ * keeping only sessions whose id carries the job's own id — see the note there
+ * for why an unscoped read cannot be trusted wholesale, and why the profile
+ * that *answered* has to travel downstream instead of the job's.
  */
 import { clearToken, getToken, resolveToken, upstreamHttp, upstreamHost } from '../config.js';
 import { log } from '../log.js';
@@ -182,6 +197,82 @@ async function replyOf(runId: string, profile: string | null): Promise<string | 
     if (content) return fullText(content);
   }
   return null;
+}
+
+/**
+ * A job's runs, and the profile whose store actually answered for them.
+ *
+ * The two are returned together because they have to stay together: the
+ * messages read and the notification's `/chat` link are both profile-scoped,
+ * and pointing either at a store that does not hold the session 404s. That
+ * failure is silent in the worst way — the notification still goes out, with
+ * "<job> finished" where the agent's reply should be.
+ *
+ * ## Why a fallback is needed at all
+ *
+ * A run's session row is written by whichever gateway *executed* the job, into
+ * that process's own `HERMES_HOME`, and only tagged with the profile it ran
+ * as. So a single gateway ticking every profile's cron store — which is what a
+ * machine has whenever a profile's own gateway is not running — executes a
+ * `fitness` job correctly against the fitness home and files the session under
+ * `default`. The runs endpoint then cannot see it from either direction:
+ *
+ *   selected = profile or _find_cron_job_profile(job_id)
+ *   db = _open_session_db_for_profile(selected, read_only=True)
+ *
+ * An **omitted** profile is not "the active store" here — Hermes looks the
+ * job's own profile up and opens that one, so scoped and unscoped are the same
+ * request. The runs endpoint is therefore a dead end for this case by
+ * construction, and the fallback has to read the session store directly.
+ *
+ * Observed here: the fitness profile's gateway exited on 2026-08-25 and the
+ * last run this module recorded for its daily job was seven minutes earlier.
+ * Every run after that was invisible while the job itself kept working. The
+ * asymmetry is what makes it hard to spot from the feed — `reportFailedExecution`
+ * reads the job record rather than the runs endpoint, so *failures* still
+ * arrived and successes never did.
+ *
+ * ## What is read instead
+ *
+ * `/api/sessions?source=cron`, whose omitted profile *is* the active one — the
+ * store the executing gateway actually wrote to. Cron runs are ordinary
+ * sessions (`cron_<jobId>_<timestamp>`, the gateway's own naming) and the rows
+ * carry the same columns the runs endpoint returns, so nothing downstream
+ * changes shape. The prefix is what binds a row to a job: the page holds every
+ * profile's cron sessions.
+ *
+ * It is a **merge, not a fallback**, and that distinction is the whole fix. The
+ * obvious shape — read the session list only when the job's own profile reports
+ * nothing — does not work, because the profile is rarely *empty*: it holds
+ * every run from before its gateway stopped. Here the fitness store still
+ * answered with one session from 2026-08-25, so a length check saw a healthy
+ * job and never looked further, which is exactly the bug it was meant to fix.
+ * Union the two and dedupe by id instead; a run's own source decides which
+ * profile addresses it.
+ *
+ * The session list is fetched **once per pass** rather than once per job, so
+ * the whole mechanism costs one extra request every few minutes regardless of
+ * how many jobs exist.
+ */
+function runsFor(
+  jobId: string,
+  profile: string | null,
+  scoped: unknown[] | null,
+  cronSessions: unknown[],
+): { run: GatewayRun; profile: string | null }[] {
+  const found = (scoped ?? []).map((raw) => ({ run: raw as GatewayRun, profile }));
+  const seen = new Set(found.map((f) => str(f.run.id)).filter(Boolean));
+
+  for (const raw of cronSessions) {
+    const run = raw as GatewayRun;
+    const id = str(run.id);
+    if (!id || seen.has(id) || !id.startsWith(`cron_${jobId}_`)) continue;
+    seen.add(id);
+    // Found in the active store, so that is what addresses it — the job's own
+    // profile 404s for a session it does not hold.
+    found.push({ run, profile: null });
+  }
+  return found;
 }
 
 /**
@@ -350,6 +441,16 @@ export async function reconcile(): Promise<void> {
      */
     const seeding = !hasSeeded();
 
+    /**
+     * The active profile's cron sessions, read once for the whole pass — see
+     * `runsFor` for why the runs endpoint alone cannot see a run filed under a
+     * profile other than its job's.
+     */
+    const listed = await gatewayGet<{ sessions?: unknown[] } | unknown[]>(
+      '/api/sessions?source=cron&limit=100',
+    );
+    const cronSessions = listed ? (Array.isArray(listed) ? listed : (listed.sessions ?? [])) : [];
+
     for (const raw of jobs) {
       const job = raw as GatewayJob;
       const jobId = str(job.id);
@@ -358,14 +459,21 @@ export async function reconcile(): Promise<void> {
 
       await reportFailedExecution(job, jobId, seeding);
 
-      const runsBody = await gatewayGet<{ runs?: unknown[] } | unknown[]>(
+      const body = await gatewayGet<{ runs?: unknown[] } | unknown[]>(
         withProfile(`/api/cron/jobs/${encodeURIComponent(jobId)}/runs`, profile),
       );
-      if (!runsBody) continue;
-      const runs = Array.isArray(runsBody) ? runsBody : (runsBody.runs ?? []);
+      const scoped = body ? (Array.isArray(body) ? body : (body.runs ?? [])) : null;
+      const found = runsFor(jobId, profile, scoped, cronSessions);
+      if (!found.length) continue;
 
-      for (const rawRun of runs) {
-        const run = rawRun as GatewayRun;
+      for (const candidate of found) {
+        const run = candidate.run;
+        /**
+         * The store that answered for *this run*, which is not always the
+         * job's own profile. Everything addressing the session — the reply
+         * read and the `/chat` link — has to use it, not `job.profile`.
+         */
+        const runProfile = candidate.profile;
         const runId = str(run.id);
         // A run still in flight has no `ended_at`; it will be picked up by the
         // signal that fires when it finishes.
@@ -380,7 +488,7 @@ export async function reconcile(): Promise<void> {
         const jobName = jobNameFromTitle(str(run.title), str(job.name) ?? jobId);
         const endReason = str(run.end_reason);
         const failed = looksFailed(endReason);
-        const reply = failed ? null : await replyOf(runId, profile);
+        const reply = failed ? null : await replyOf(runId, runProfile);
 
         /**
          * The reply is the headline when there is one. A run that produced no
@@ -403,7 +511,7 @@ export async function reconcile(): Promise<void> {
            * lookup in `default`, which 404s. The row is the one thing standing
            * between the notification and the transcript, so it has to carry it.
            */
-          url: withProfile(`/chat?session=${encodeURIComponent(runId)}`, profile),
+          url: withProfile(`/chat?session=${encodeURIComponent(runId)}`, runProfile),
           jobId,
           jobName,
           runId,
