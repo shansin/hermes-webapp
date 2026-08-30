@@ -41,6 +41,7 @@ import {
   IconUp,
 } from '../shared/Icons';
 import { useSessions } from '../../api/sessions';
+import { kindOf } from '../../lib/sessionKinds';
 import { Empty, formatTokens, relTime } from '../shared/misc';
 import { useSession, type ChatMessage, type MessageTime } from '../../store/session';
 import { onSpeakingChange, speak, stopSpeaking } from '../../lib/audio';
@@ -988,6 +989,18 @@ const StreamingTail = memo(function StreamingTail({ onGrow }: { onGrow: () => vo
  * gap, used only to work out how many will fit.
  */
 const MAX_RECENTS = 8;
+/**
+ * How many rows to ask for so that eight *conversations* survive the filter.
+ *
+ * The list below shows only what a person started, and on this install the
+ * automated sessions outnumber those heavily — a morning of cron runs and a
+ * decomposed board can be thirty rows deep before yesterday's chat. Asking for
+ * eight and filtering would routinely render one row, or none. The endpoint
+ * has no `source` filter, so the pool is fetched and narrowed here; it is
+ * still one request, of compact rows, and it is the only `useSessions` call in
+ * the app.
+ */
+const RECENTS_POOL = 60;
 const ROW_PX = 50;
 /** Never fewer than this, even on a short screen — one row reads as an error. */
 const MIN_RECENTS = 3;
@@ -1010,12 +1023,25 @@ const MIN_RECENTS = 3;
  * One query either way. `useSessions` is keyed on its limit, so fetching the
  * maximum once and slicing is a single request that survives a resize, where
  * fetching the measured count would refetch every time the window changed.
+ *
+ * Cron runs and kanban workers are excluded. This is "pick up where you left
+ * off", and neither of those is somewhere you left off — they are the agent's
+ * own scheduled and dispatched work, they carry no thread of yours to resume,
+ * and on a busy machine they are most of the list. `kindOf` is the Sessions
+ * screen's own rule, including its one guarantee: an unrecognised source
+ * counts as yours, so a surface a future Hermes adds appears here rather than
+ * disappearing silently.
  */
 function RecentSessions() {
   const navigate = useNavigate();
-  const { data } = useSessions(MAX_RECENTS);
+  const { data } = useSessions(RECENTS_POOL);
   const [fits, setFits] = useState(MIN_RECENTS);
   const box = useRef<HTMLDivElement | null>(null);
+
+  const mine = useMemo(
+    () => (data?.sessions ?? []).filter((s) => kindOf(s.source) === 'mine'),
+    [data?.sessions],
+  );
 
   /**
    * Work out how many rows fit.
@@ -1068,9 +1094,9 @@ function RecentSessions() {
        count stayed at its floor for ever. Depending on the *displayed* count
        instead would tear the observer down and rebuild it on every adjustment
        it made. */
-  }, [data?.sessions?.length]);
+  }, [mine.length]);
 
-  const rows = data?.sessions?.slice(0, fits) ?? [];
+  const rows = mine.slice(0, fits);
   if (rows.length === 0) return null;
 
   return (
