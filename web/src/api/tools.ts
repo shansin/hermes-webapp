@@ -188,6 +188,32 @@ export function useInstallMcpCatalogEntry() {
   });
 }
 
+export interface McpServerCreate {
+  name: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+  transport?: string;
+  enabled?: boolean;
+}
+
+/**
+ * Ad-hoc server, for the one the catalog does not carry.
+ *
+ * Permissive body on purpose: Hermes versions disagree on required keys, and
+ * a 422 names the missing one better than a form that refuses to submit.
+ */
+export function useCreateMcpServer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: McpServerCreate) => api.post('/api/mcp/servers', body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: toolKeys.mcpServers });
+      void qc.invalidateQueries({ queryKey: toolKeys.mcpCatalog });
+    },
+  });
+}
+
 // --- Hermes config -----------------------------------------------------------
 
 /**
@@ -206,5 +232,42 @@ export function useHermesConfig(enabled: boolean) {
     enabled,
     queryFn: () => api.get<Record<string, unknown>>('/api/config'),
     staleTime: 60_000,
+  });
+}
+
+/** Set a nested value from a dotted path (`a.b.c`), for the guarded editor. */
+function setPath(obj: Record<string, unknown>, path: string[], value: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = Array.isArray(obj) ? [...(obj as unknown[])] as unknown as Record<string, unknown> : { ...obj };
+  let cur = out;
+  for (let i = 0; i < path.length - 1; i++) {
+    const key = path[i]!;
+    const next = cur[key];
+    const fresh: Record<string, unknown> =
+      next && typeof next === 'object' && !Array.isArray(next) ? { ...(next as Record<string, unknown>) } : {};
+    cur[key] = fresh;
+    cur = fresh;
+  }
+  cur[path[path.length - 1]!] = value;
+  return out;
+}
+
+/**
+ * Guarded single-key write.
+ *
+ * `PUT /api/config` merges a dict over the stored config, so sending
+ * `{a: {b: v}}` touches only that leaf — unlike `PUT /api/config/raw`, which
+ * replaces the whole file from YAML. The screen still gates this behind a
+ * typed section name, because a bad value can stop Hermes starting and there
+ * is no undo. Value must be valid JSON.
+ */
+export function useUpdateHermesConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, value }: { path: string; value: unknown }) => {
+      const keys = path.split('.').map((k) => k.trim()).filter(Boolean);
+      if (keys.length === 0) throw new Error('Enter a dotted path like logging.level.');
+      return api.put('/api/config', setPath({}, keys, value));
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: toolKeys.config }),
   });
 }

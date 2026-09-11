@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import { IconChevron } from '../shared/Icons';
 import { Skeleton } from '../shared/misc';
 import { useMemoryProviders, useTextFile, useWriteTextFile } from '../../api/hub';
+import { ActiveProfileRow } from '../shared/ProfileSelect';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 
@@ -104,6 +105,12 @@ export function MemoryTab() {
 
   return (
     <div style={{ padding: 12 }}>
+      {/*
+        These files are read for whichever profile is active, so the agent
+        being edited has to be on screen — otherwise a second profile's
+        memory is edited thinking it is this one's.
+      */}
+      <ActiveProfileRow hint="Memory, persona and backend below are this agent's." />
       {FILES.map((f) => (
         <FileCard key={f.path} {...f} />
       ))}
@@ -125,6 +132,18 @@ export function MemoryTab() {
             ))}
         </div>
       )}
+
+      <div className="card" style={{ marginTop: 10 }}>
+        <div className="group-head">DERIVED MEMORY</div>
+        <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+          Journeys, learned facts and the memory graph live behind chat commands
+          with no screen of their own. From any chat, type{' '}
+          <code>/journey</code>, <code>/learning</code> or <code>/memory-graph</code>{' '}
+          to read them, and use <code>/queue</code> / <code>/background</code> output
+          in the transcript. Live work across agents is on{' '}
+          <a href="/activity" style={{ color: 'var(--accent)' }}>Activity</a>.
+        </div>
+      </div>
     </div>
   );
 }

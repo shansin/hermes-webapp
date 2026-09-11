@@ -18,6 +18,7 @@ import { useMemo, useState } from 'react';
 import { Switch, SkeletonList, ErrorNote, Empty } from '../shared/misc';
 import { IconSearch, IconTrash } from '../shared/Icons';
 import {
+  useCreateMcpServer,
   useDeleteMcpServer,
   useInstallMcpCatalogEntry,
   useMcpCatalog,
@@ -46,10 +47,14 @@ export function McpSection() {
   const remove = useDeleteMcpServer();
   const test = useTestMcpServer();
   const install = useInstallMcpCatalogEntry();
+  const create = useCreateMcpServer();
   const toast = useUi((s) => s.toast);
 
   const [testing, setTesting] = useState<string | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualName, setManualName] = useState('');
+  const [manualTarget, setManualTarget] = useState('');
 
   const results = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -118,6 +123,30 @@ export function McpSection() {
     }
   };
 
+  /**
+   * Ad-hoc server the catalog does not carry. A target starting with http(s)
+   * is sent as `url`, anything else as a shell `command` split on spaces —
+   * the backend names the missing key in its 422, which is surfaced as-is.
+   */
+  const doCreate = async () => {
+    const name = manualName.trim();
+    const target = manualTarget.trim();
+    if (!name || !target || create.isPending) return;
+    buzz('tap');
+    try {
+      const body = /^https?:\/\//i.test(target)
+        ? { name, url: target, enabled: true }
+        : { name, command: target.split(/\s+/)[0], args: target.split(/\s+/).slice(1), enabled: true };
+      await create.mutateAsync(body);
+      toast(`${name} added`, 'success');
+      setManualName('');
+      setManualTarget('');
+      setManualOpen(false);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not add that server', 'error');
+    }
+  };
+
   return (
     <div style={{ padding: 12 }}>
       <div style={{ display: 'flex', gap: 7, marginBottom: 12 }}>
@@ -156,6 +185,36 @@ export function McpSection() {
               onChange={(e) => setQ(e.target.value)}
             />
           </div>
+
+          <details style={{ marginBottom: 12 }} open={manualOpen} onToggle={(e) => setManualOpen((e.target as HTMLDetailsElement).open)}>
+            <summary style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-dim)', cursor: 'pointer', minHeight: 'var(--tap-min)', display: 'flex', alignItems: 'center' }}>
+              Add a server the catalog doesn&apos;t carry
+            </summary>
+            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <input
+                className="field"
+                placeholder="Name (e.g. my-tools)"
+                value={manualName}
+                onChange={(e) => setManualName(e.target.value)}
+                aria-label="Server name"
+              />
+              <input
+                className="field"
+                placeholder="https://… or a command line"
+                value={manualTarget}
+                onChange={(e) => setManualTarget(e.target.value)}
+                aria-label="Server URL or command"
+                style={{ fontFamily: 'var(--mono)' }}
+              />
+              <button
+                className="btn btn--sm"
+                disabled={!manualName.trim() || !manualTarget.trim() || create.isPending}
+                onClick={() => void doCreate()}
+              >
+                {create.isPending ? 'Adding…' : 'Add server'}
+              </button>
+            </div>
+          </details>
 
           {catalog.isLoading ? (
             <SkeletonList n={5} h={72} />

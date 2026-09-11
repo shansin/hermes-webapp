@@ -4,7 +4,7 @@
  */
 import { Suspense, lazy, useEffect, useState } from 'react';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { ChatScreen } from './screens/ChatScreen';
 import { HubPage, HubRedirect } from './screens/HubPage';
 import {
@@ -92,6 +92,7 @@ export function App() {
      (a profile filter, `?tab=`, `?resume=`), which would remount the
      screen and throw its state away. */
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const setConnection = useUi((s) => s.setConnection);
   const token = useUi((s) => s.token);
   const [showBanner, setShowBanner] = useState(false);
@@ -99,6 +100,25 @@ export function App() {
   // Warm the markdown chunk while the socket is still connecting, so the first
   // assistant message doesn't wait on it.
   useEffect(preloadMarkdown, []);
+
+  /**
+   * Global command palette shortcut. The palette itself lives in ChatScreen
+   * (it opens model/context sheets that only exist there), so from anywhere
+   * else this navigates to `/chat?palette=1`, which opens it on arrival.
+   * Skipped while typing in a field, where Ctrl+K may belong to the input.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        const t = e.target;
+        if (t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        e.preventDefault();
+        navigate('/chat?palette=1');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navigate]);
 
   // Open the socket once for the app's lifetime and mirror its state into the
   // UI store so any screen can react to a drop.

@@ -156,8 +156,35 @@ export async function setApprovalMode(sessionId: string, mode: string): Promise<
   );
 }
 
-export async function compressSession(sessionId: string): Promise<void> {
-  await hermes.call('session.compress', { session_id: sessionId });
+export async function compressSession(sessionId: string, focusTopic?: string): Promise<void> {
+  await hermes.call(
+    'session.compress',
+    focusTopic ? { session_id: sessionId, focus_topic: focusTopic } : { session_id: sessionId },
+  );
+}
+
+/** Persist the transcript to a file; returns the gateway's confirmation text. */
+export async function saveSession(sessionId: string): Promise<string> {
+  const raw = (await hermes.call('session.save', { session_id: sessionId })) as Record<
+    string,
+    unknown
+  > | null;
+  const path =
+    (typeof raw?.path === 'string' && raw.path) ||
+    (typeof raw?.file === 'string' && raw.file) ||
+    '';
+  return path ? `Saved to ${path}` : 'Session saved.';
+}
+
+/** Rename via the dedicated RPC (preferred over slash.exec: structured reply). */
+export async function titleSession(sessionId: string, title?: string): Promise<string> {
+  const raw = (await hermes.call(
+    'session.title',
+    title ? { session_id: sessionId, title } : { session_id: sessionId },
+    { timeoutMs: CONTROL_TIMEOUT_MS },
+  )) as Record<string, unknown> | null;
+  const next = typeof raw?.title === 'string' && raw.title ? raw.title : (title ?? '');
+  return next ? `Session titled “${next}”.` : 'Session renamed.';
 }
 
 /**

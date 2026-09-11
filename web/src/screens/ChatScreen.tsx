@@ -49,6 +49,19 @@ export function ChatScreen() {
   const [commandSeed, setCommandSeed] = useState('');
   const [booting, setBooting] = useState(false);
   /**
+   * Global shortcut landing: any screen's Ctrl/Cmd+K navigates here with
+   * `?palette=1`, which opens the command palette once arrived. Cleared on
+   * open so a reload does not reopen it.
+   */
+  useEffect(() => {
+    if (params.get('palette') === '1') {
+      setPalette(true);
+      setParams({}, { replace: true });
+    }
+    // Once per navigation intent, not per render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
+  /**
    * Transcript read from the REST cache because the socket is down. The
    * conversation is visible but frozen — the composer already refuses to send
    * without a gateway session, and the banner says why.

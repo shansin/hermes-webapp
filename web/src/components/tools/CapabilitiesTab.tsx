@@ -14,6 +14,7 @@ import { useSearchParams } from 'react-router-dom';
 import { ToolsetsSection } from './ToolsetsSection';
 import { McpSection } from './McpSection';
 import { ConfigSection } from './ConfigSection';
+import { ActiveProfileRow } from '../shared/ProfileSelect';
 import { buzz } from '../../lib/haptics';
 
 const SECTIONS = [
@@ -32,6 +33,14 @@ export function CapabilitiesTab() {
 
   return (
     <>
+      <div style={{ padding: '12px 12px 0' }}>
+        {/*
+          Toolsets, MCP servers and config all answer for the active profile
+          when no profile is named. Name it so a second agent's surface is
+          never mistaken for this one's.
+        */}
+        <ActiveProfileRow hint="Toolsets, servers and config below are this agent's." />
+      </div>
       <div className="btn-group" role="tablist" aria-label="Capabilities section">
         {SECTIONS.map((s) => (
           <button

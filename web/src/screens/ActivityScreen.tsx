@@ -195,6 +195,11 @@ function Row({
       <span className="activity__main">
         <span className="activity__title">{item.title}</span>
         {item.detail && <span className="activity__detail">{item.detail}</span>}
+        {item.kind === 'subagent' && (
+          <span className="activity__detail" style={{ color: 'var(--text-faint)' }}>
+            Steering and stopping live in the parent chat — tap to open it.
+          </span>
+        )}
         <span className="activity__meta">
           {/* Which agent this is. All three sources here span profiles, so a
               row saying "running" is close to useless when it could equally be

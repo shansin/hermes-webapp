@@ -45,8 +45,9 @@ import {
 } from './Icons';
 import { useUi } from '../../store/ui';
 import { useUnreadCount } from '../../api/notifications';
-import { useActiveProfile } from '../../api/profiles';
+import { useActiveProfile, useProfiles, useSwitchProfile } from '../../api/profiles';
 import { useActivity } from '../../lib/useActivity';
+import { SelectSheet } from './SelectSheet';
 import { buzz } from '../../lib/haptics';
 import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
 import { useWideLayout } from '../../lib/useMediaQuery';
@@ -124,6 +125,10 @@ export function NavDrawer() {
    * on a normal open.
    */
   const activeProfile = useActiveProfile();
+  const profiles = useProfiles().data?.profiles ?? [];
+  const switchProfile = useSwitchProfile();
+  const toast = useUi((s) => s.toast);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   const [dragX, setDragX] = useState(0);
   const startX = useRef<number | null>(null);
@@ -200,6 +205,26 @@ export function NavDrawer() {
                 <span className="drawer__profile"> · {activeProfile.data.active}</span>
               )}
             </div>
+            {/*
+              The agent switcher. Switching swaps model, skills, memory and
+              cron together, and until now nothing outside Profiles said which
+              one was live — while Memory, Capabilities and Usage silently
+              followed it. One row, only on multi-profile installs.
+            */}
+            {profiles.length > 1 && (
+              <button
+                type="button"
+                className="chip"
+                style={{ marginTop: 8 }}
+                onClick={() => {
+                  buzz('tap');
+                  setProfileOpen(true);
+                }}
+                aria-label={`Switch agent, currently ${activeProfile.data?.active ?? 'active'}`}
+              >
+                ✻ {activeProfile.data?.active ?? '…'} · switch
+              </button>
+            )}
           </div>
           {/* Nothing to close when the rail is part of the layout. */}
           {!docked && (
@@ -230,6 +255,26 @@ export function NavDrawer() {
           ))}
         </div>
       </nav>
+      <SelectSheet
+        open={profileOpen}
+        title="Agent"
+        options={profiles.map((p) => ({
+          value: p.name,
+          label: p.name,
+          hint: p.name === activeProfile.data?.active ? 'The profile Hem is running as' : undefined,
+          meta: p.name === activeProfile.data?.active ? 'active' : undefined,
+        }))}
+        value={activeProfile.data?.active ?? null}
+        onChange={(name) => {
+          if (name === activeProfile.data?.active) return;
+          void switchProfile
+            .mutateAsync(name)
+            .then(() => toast(`Now running as ${name}`, 'success'))
+            .catch((e) => toast(e instanceof Error ? e.message : 'Could not switch profile', 'error'));
+        }}
+        onClose={() => setProfileOpen(false)}
+        empty="No profiles found."
+      />
     </>
   );
 }

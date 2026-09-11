@@ -16,9 +16,10 @@
 import { useMemo, useState } from 'react';
 import { IconSearch, IconChevron } from '../shared/Icons';
 import { SkeletonList, ErrorNote, Empty } from '../shared/misc';
-import { useHermesConfig } from '../../api/tools';
+import { useHermesConfig, useUpdateHermesConfig } from '../../api/tools';
 import { displayValue, searchConfig } from '../../lib/configTree';
 import { useDebounced } from '../../lib/useDebounced';
+import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 
 export function ConfigSection() {
@@ -26,6 +27,12 @@ export function ConfigSection() {
   const [q, setQ] = useState('');
   const query = useDebounced(q, 180);
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const update = useUpdateHermesConfig();
+  const toast = useUi((s) => s.toast);
+  const [editPath, setEditPath] = useState('');
+  const [editValue, setEditValue] = useState('');
+  const [editConfirm, setEditConfirm] = useState('');
+  const [advanced, setAdvanced] = useState(false);
 
   const sections = useMemo(() => (data ? searchConfig(data, query) : []), [data, query]);
   const searching = query.trim().length > 0;
@@ -102,9 +109,75 @@ export function ConfigSection() {
       )}
 
       <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', margin: '14px 2px 0', lineHeight: 1.5 }}>
-        Read-only. A bad value here can stop Hermes starting, and there is no undo on a
+        Read-only by default. A bad value here can stop Hermes starting, and there is no undo on a
         phone — edit <code>~/.hermes/config.yaml</code> where you can see it fail.
       </p>
+
+      <details style={{ marginTop: 12 }} open={advanced} onToggle={(e) => setAdvanced((e.target as HTMLDetailsElement).open)}>
+        <summary style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-dim)', cursor: 'pointer', minHeight: 'var(--tap-min)', display: 'flex', alignItems: 'center' }}>
+          Advanced — change one setting
+        </summary>
+        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <input
+            className="field"
+            placeholder="Dotted path (e.g. logging.level)"
+            value={editPath}
+            onChange={(e) => setEditPath(e.target.value)}
+            aria-label="Setting path"
+            style={{ fontFamily: 'var(--mono)' }}
+          />
+          <input
+            className="field"
+            placeholder='New value as JSON (e.g. "debug", 3, true)'
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            aria-label="Setting value as JSON"
+            style={{ fontFamily: 'var(--mono)' }}
+          />
+          <input
+            className="field"
+            placeholder="Type the top-level section name to confirm"
+            value={editConfirm}
+            onChange={(e) => setEditConfirm(e.target.value)}
+            aria-label="Confirmation"
+          />
+          <button
+            className="btn btn--sm"
+            disabled={
+              update.isPending ||
+              !editPath.trim() ||
+              !editValue.trim() ||
+              editConfirm.trim() !== editPath.trim().split('.')[0]
+            }
+            onClick={() => {
+              const path = editPath.trim();
+              let value: unknown;
+              try {
+                value = JSON.parse(editValue);
+              } catch {
+                toast('Value must be valid JSON — wrap text in quotes.', 'error');
+                return;
+              }
+              buzz('tap');
+              void update
+                .mutateAsync({ path, value })
+                .then(() => {
+                  toast(`${path} updated`, 'success');
+                  setEditPath('');
+                  setEditValue('');
+                  setEditConfirm('');
+                })
+                .catch((e) => toast(e instanceof Error ? e.message : 'Update failed', 'error'));
+            }}
+          >
+            {update.isPending ? 'Writing…' : 'Write setting'}
+          </button>
+          <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', lineHeight: 1.5 }}>
+            Sends only that leaf via <code>PUT /api/config</code> (merged, not
+            replaced). Credentials stay masked here and cannot be revealed.
+          </div>
+        </div>
+      </details>
     </div>
   );
 }

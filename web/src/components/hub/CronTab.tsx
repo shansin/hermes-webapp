@@ -84,6 +84,44 @@ function jobName(j: CronJob): string {
 }
 
 /**
+ * Read-only view of the record fields this sheet never writes.
+ *
+ * A job holds ~30 keys and the form edits seven; `PUT` merges, so showing
+ * these is what keeps "the sheet doesn't touch them" an honest statement.
+ * `no_agent` decides whether run history lives in sessions or on disk
+ * (`ScriptRuns`); `deliver` / `context_from` decide where a run's output goes.
+ */
+function AdvancedRows({ job }: { job: CronJob }) {
+  const rec = job as unknown as Record<string, unknown>;
+  const rows: { label: string; value: string }[] = [];
+  const str = (v: unknown): string | null =>
+    typeof v === 'string' && v ? v : typeof v === 'number' ? String(v) : null;
+  const noAgent = rec.no_agent;
+  if (noAgent !== undefined) rows.push({ label: 'no_agent', value: String(Boolean(noAgent)) });
+  for (const key of ['script', 'deliver', 'context_from', 'model_snapshot', 'state']) {
+    const v = str(rec[key]) ?? (rec[key] != null && typeof rec[key] === 'object' ? JSON.stringify(rec[key]) : null);
+    if (v) rows.push({ label: key, value: v });
+  }
+  if (rows.length === 0) {
+    return (
+      <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>
+        No advanced fields set on this job.
+      </div>
+    );
+  }
+  return (
+    <div>
+      {rows.map((r) => (
+        <div key={r.label} style={{ display: 'flex', gap: 8, padding: '5px 0', borderBottom: '1px solid var(--border-soft)', fontSize: 'var(--type-detail)' }}>
+          <span style={{ color: 'var(--text-faint)', fontFamily: 'var(--mono)', flexShrink: 0 }}>{r.label}</span>
+          <span style={{ color: 'var(--text-dim)', fontFamily: 'var(--mono)', overflowWrap: 'anywhere', minWidth: 0 }}>{r.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
  * The schedule as one line of text.
  *
  * Current Hermes sends `schedule` as an object and a pre-rendered
@@ -841,6 +879,30 @@ export function CronTab() {
               does not need shell access.
             </div>
           </div>
+        )}
+
+        {editing && (
+          <details style={{ margin: '4px 2px 12px' }}>
+            <summary
+              style={{
+                fontSize: 'var(--type-body-sm)',
+                color: 'var(--text-dim)',
+                cursor: 'pointer',
+                minHeight: 'var(--tap-min)',
+                display: 'flex',
+                alignItems: 'center',
+              }}
+            >
+              Advanced — fields this sheet never writes
+            </summary>
+            <div style={{ marginTop: 8 }}>
+              <AdvancedRows job={editing} />
+              <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginTop: 8, lineHeight: 1.45 }}>
+                Edits here send only the fields above that changed — these travel
+                untouched. Made by CLI or blueprint jobs; edit the file to change them.
+              </div>
+            </div>
+          </details>
         )}
 
         <button
