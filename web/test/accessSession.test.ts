@@ -311,3 +311,77 @@ describe('the login marker', () => {
     expect(replaceState).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Which side is down.
+ *
+ * Three causes produce one dead socket — this device's network, an expired
+ * Access session, and Hermes not being there — and the app used to say
+ * "Reconnecting…" for all three, which reads as the agent being broken even
+ * when the agent is the only healthy part. `/healthz` already answers it, and
+ * the probe already fetches `/healthz`, so the only thing tested here is that
+ * the answer is read and, crucially, that it is *dropped* when it cannot be.
+ */
+describe('backendState', () => {
+  const health = (body: unknown) =>
+    ({ type: 'basic', status: 200, ok: true, json: async () => body }) as unknown as Response;
+
+  it('has no opinion before a probe has landed', async () => {
+    const { backendState } = await load();
+    expect(backendState()).toBe('unknown');
+  });
+
+  it.each(['up', 'down', 'unauthorized'] as const)('reads %s off /healthz', async (state) => {
+    const { probeAccess, backendState } = await load();
+    vi.stubGlobal('fetch', vi.fn(async () => health({ backend: state })));
+
+    await probeAccess();
+    expect(backendState()).toBe(state);
+  });
+
+  /**
+   * The failure that matters most: a stale "Hermes is offline" outliving the
+   * outage that produced it would blame the agent for this phone's own
+   * network, which is the exact confusion the whole mechanism exists to end.
+   */
+  it('forgets what it knew when the probe cannot reach the proxy', async () => {
+    const { probeAccess, backendState } = await load();
+    const fetchMock = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(health({ backend: 'down' }))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await probeAccess();
+    expect(backendState()).toBe('down');
+
+    await probeAccess();
+    expect(backendState()).toBe('unknown');
+  });
+
+  it('treats an older proxy, and an unreadable body, as no answer', async () => {
+    const { probeAccess, backendState } = await load();
+    vi.stubGlobal('fetch', vi.fn(async () => health({ ok: true })));
+    await probeAccess();
+    expect(backendState()).toBe('unknown');
+
+    const second = await load();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ type: 'basic', status: 200, ok: true, json: async () => { throw new Error('not json'); } }) as unknown as Response),
+    );
+    await second.probeAccess();
+    expect(second.backendState()).toBe('unknown');
+  });
+
+  it('notifies subscribers only when the answer flips', async () => {
+    const { probeAccess, onBackendStateChange } = await load();
+    const seen: string[] = [];
+    onBackendStateChange((state) => seen.push(state));
+    vi.stubGlobal('fetch', vi.fn(async () => health({ backend: 'down' })));
+
+    await probeAccess();
+    await probeAccess();
+    expect(seen).toEqual(['down']);
+  });
+});

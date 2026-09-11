@@ -11,6 +11,15 @@
  *    `events.ts` and then forgotten. A push you did not see while the phone was
  *    face-down is gone; the whole point of the feed is that it is not.
  *
+ *  - **A restart that cost you something.** Hermes announces its own restarts
+ *    to the chat platforms it is connected to — "⚠️ Gateway restarting — Your
+ *    current task will be interrupted" — and the dashboard socket this proxy
+ *    holds is not one of them: `_notify_active_sessions_of_shutdown` walks the
+ *    adapters, so a phone gets nothing. The proxy cannot be told in advance
+ *    either; all it ever sees is its own socket closing. So the row is written
+ *    on the way back up instead, and only when there was work to lose — see
+ *    `backendCameBack`.
+ *
  *  - **The backend going away and coming back.** Nothing recorded this before.
  *    A Hermes that died at 3am and came back at 3:05 was invisible unless you
  *    happened to be looking at Settings at the time, which is precisely when
@@ -29,6 +38,7 @@ import { appendUpdate } from './feed.js';
 import { log } from '../log.js';
 import { fullText } from './preview.js';
 import { sendPush } from './send.js';
+import { inFlightSessions, type InFlightSession } from './sessions.js';
 import { listSubscriptions } from './store.js';
 
 /**
@@ -133,11 +143,42 @@ export function recordGatewayEvent(
  */
 const OUTAGE_GRACE_MS = 20_000;
 
+/**
+ * Below this, the link never really went away.
+ *
+ * A socket that closes and reopens inside a couple of seconds is the proxy's
+ * own reconnect racing a blip, not a restart anyone experienced. Hermes'
+ * shutdown alone spends longer than this draining.
+ */
+const RESTART_FLOOR_MS = 2_000;
+
 let outageTimer: ReturnType<typeof setTimeout> | null = null;
 /** Whether an outage was actually announced, so recovery only speaks if so. */
 let outageReported = false;
 /** When the link dropped, so the recovery line can say how long it was gone. */
 let downSince: number | null = null;
+/**
+ * What the gateway was mid-turn on when the link dropped.
+ *
+ * Captured at close rather than read at recovery, because by recovery it is
+ * gone: a restarted gateway's live registry is empty, and the sessions sweep
+ * will have replaced this list with the new one before anybody asks. This is
+ * the only moment the answer exists.
+ */
+let interrupted: InFlightSession[] = [];
+
+/**
+ * "your turn in “X”", or a count. Never a list — three titles is a paragraph
+ * on a lock screen, and the row links to where they are anyway.
+ */
+function describeInterrupted(rows: InFlightSession[]): string | null {
+  if (!rows.length) return null;
+  if (rows.length === 1) {
+    const title = rows[0]?.title;
+    return title ? `the turn running in “${title}”` : 'the turn that was running';
+  }
+  return `${rows.length} running turns`;
+}
 
 function humanDuration(ms: number): string {
   const mins = Math.round(ms / 60_000);
@@ -157,6 +198,7 @@ function humanDuration(ms: number): string {
 export function backendWentDown(): void {
   if (outageTimer || outageReported) return;
   downSince = Date.now();
+  interrupted = inFlightSessions();
   outageTimer = setTimeout(() => {
     outageTimer = null;
     outageReported = true;
@@ -167,7 +209,16 @@ export function backendWentDown(): void {
       source: 'system',
       severity: 'warn',
       title: 'Hermes backend',
-      body: 'The agent backend went offline. Nothing can run until it is back.',
+      body: [
+        'The agent backend went offline. Nothing can run until it is back.',
+        /* Named here as well as on the recovery row: an outage announced at
+           3am is read at 8am, and by then the recovery row is the one above
+           it. Whichever of the two is seen first should say what it cost. */
+        describeInterrupted(interrupted) &&
+          `It interrupted ${describeInterrupted(interrupted)}.`,
+      ]
+        .filter(Boolean)
+        .join(' '),
       // Not a conversation — the status this row is about lives in Settings.
       url: '/settings',
       dedupeKey: 'backend-state',
@@ -196,6 +247,70 @@ export function backendWentDown(): void {
 }
 
 /**
+ * A restart that healed inside the grace window — the case that used to be
+ * entirely silent, and mostly should be.
+ *
+ * Hermes bouncing costs nothing when nothing was running, and a row per
+ * `start.sh` is the noise the grace window exists to suppress. What is *not*
+ * nothing is the same restart landing on a turn in progress: the runtime is
+ * hard-interrupted, the transcript stops mid-sentence, and from the phone that
+ * is indistinguishable from the agent having gone quiet. Hermes says exactly
+ * this on Discord and Telegram before it goes; this is the same sentence,
+ * arriving afterwards because afterwards is when the proxy learns of it.
+ *
+ * So: silent unless work was actually lost.
+ */
+function reportRestart(since: number | null, lost: InFlightSession[]): void {
+  const what = describeInterrupted(lost);
+  if (!what) return;
+  // A close and reopen inside a breath is the proxy's own reconnect, not a
+  // restart. Unknown timing counts as long enough — the work was still lost.
+  if (since !== null && Date.now() - since < RESTART_FLOOR_MS) return;
+
+  const body =
+    `Hermes restarted and interrupted ${what}. ` +
+    'Send a message and it will try to resume where it left off.';
+
+  /* One interrupted turn has a conversation to land in; several do not, and
+     Activity is the screen that lists live work across profiles. */
+  const url =
+    lost.length === 1 && lost[0]
+      ? `/chat?session=${encodeURIComponent(lost[0].key)}`
+      : '/activity';
+
+  appendUpdate({
+    at: Date.now(),
+    kind: 'backend.restarted',
+    source: 'system',
+    severity: 'warn',
+    title: 'Hermes restarted',
+    body,
+    url,
+    // Shared with the down/up rows so a gateway flapping through several
+    // restarts collapses to the newest one rather than filling the screen.
+    dedupeKey: 'backend-state',
+    jobId: null,
+    jobName: null,
+    runId: null,
+    status: 'restarted',
+    failed: false,
+    sessionId: lost.length === 1 ? (lost[0]?.key ?? null) : null,
+  });
+
+  log.warn(`Hermes restarted while ${lost.length} turn(s) were running — recorded in the feed.`);
+
+  if (listSubscriptions().length) {
+    void sendPush({
+      title: 'Hermes restarted',
+      body,
+      url: '/notifications',
+      tag: 'backend-state',
+      kind: 'backend.restarted',
+    }).catch((err) => log.warn({ err }, 'Restart push failed'));
+  }
+}
+
+/**
  * The link is back.
  *
  * Silent unless an outage was announced: the first connect after start-up, and
@@ -208,8 +323,14 @@ export function backendCameBack(): void {
     outageTimer = null;
   }
   const since = downSince;
+  const lost = interrupted;
   downSince = null;
-  if (!outageReported) return;
+  interrupted = [];
+
+  if (!outageReported) {
+    reportRestart(since, lost);
+    return;
+  }
   outageReported = false;
 
   const away = since ? humanDuration(Date.now() - since) : null;
@@ -220,7 +341,12 @@ export function backendCameBack(): void {
     source: 'system',
     severity: 'ok',
     title: 'Hermes backend',
-    body: away ? `Back online after ${away} offline.` : 'Back online.',
+    body: [
+      away ? `Back online after ${away} offline.` : 'Back online.',
+      lost.length && 'Send a message and it will try to resume where it left off.',
+    ]
+      .filter(Boolean)
+      .join(' '),
     url: '/settings',
     dedupeKey: 'backend-state',
     jobId: null,
@@ -256,4 +382,8 @@ export function resetBackendWatch(): void {
   outageTimer = null;
   outageReported = false;
   downSince = null;
+  /* Including the snapshot: a proxy shutting down took the socket with it, so
+     the next `backendCameBack` — which is the *next process* connecting — must
+     not report the previous one's live sessions as freshly interrupted. */
+  interrupted = [];
 }

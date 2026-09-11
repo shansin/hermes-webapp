@@ -12,6 +12,8 @@ import {
   isAccessExpired,
   goToAccessLogin,
   onHostReachabilityChange,
+  onBackendStateChange,
+  backendState,
   isHostUnreachable,
   stripLoginMarker,
 } from './lib/accessSession';
@@ -137,6 +139,15 @@ export function App() {
   const [hostUnreachable, setHostUnreachable] = useState(isHostUnreachable);
   useEffect(() => onHostReachabilityChange(setHostUnreachable), []);
 
+  /**
+   * Which side is actually down — see `backendState` in `lib/accessSession.ts`.
+   * Read from the `/healthz` probe the reconnect loop already runs, so this
+   * adds no traffic; `unknown` until one has landed, which is why the banner
+   * below falls back to the old wording rather than guessing.
+   */
+  const [backend, setBackend] = useState(backendState);
+  useEffect(() => onBackendStateChange(setBackend), []);
+
   useEffect(() => {
     const off = hermes.onState(setConnection);
     hermes.setUrl(defaultWsUrl(token || undefined));
@@ -226,11 +237,21 @@ export function App() {
             connection === 'reconnecting' || connection === 'connecting' ? 'reconnecting' : 'closed'
           }`}
         >
-          {connection === 'connecting'
-            ? 'Connecting to Hem…'
-            : connection === 'reconnecting'
-              ? 'Reconnecting…'
-              : 'Disconnected'}
+          {/* Hermes announces its own restarts to the chat platforms it is
+              connected to and to nothing else — a dashboard client is told
+              only by its socket dying, which is also what a flat phone
+              battery looks like. The probe behind `backend` is what separates
+              them, so say which one it is when the proxy has answered and
+              keep the old wording when it has not. */}
+          {backend === 'down'
+            ? 'Hermes is offline — restarting? Hem is fine and will reconnect.'
+            : backend === 'unauthorized'
+              ? 'Hermes is running but won’t accept Hem’s credentials — it may need restarting through start.sh.'
+              : connection === 'connecting'
+                ? 'Connecting to Hem…'
+                : connection === 'reconnecting'
+                  ? 'Reconnecting…'
+                  : 'Disconnected'}
         </div>
         )
       )}

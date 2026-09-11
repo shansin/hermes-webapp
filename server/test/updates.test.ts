@@ -27,6 +27,14 @@ vi.mock('../src/push/send.js', () => ({ sendPush, pushEnabled: () => false }));
 let subscriptions: unknown[] = [];
 vi.mock('../src/push/store.js', () => ({ listSubscriptions: () => subscriptions }));
 
+/**
+ * What the sessions sweep last saw the gateway doing. This is the whole input
+ * to the restart lane: the proxy learns of a restart only from its own socket
+ * closing, so whether the row is written at all comes down to this list.
+ */
+let live: { key: string; title: string | null }[] = [];
+vi.mock('../src/push/sessions.js', () => ({ inFlightSessions: () => live }));
+
 type Updates = typeof import('../src/push/updates.js');
 type Feed = typeof import('../src/push/feed.js');
 let updates: Updates;
@@ -35,6 +43,7 @@ let feed: Feed;
 beforeEach(async () => {
   rmSync(join(dir, '.hermes-cron-feed.json'), { force: true });
   subscriptions = [];
+  live = [];
   sendPush.mockClear();
   vi.resetModules();
   vi.useFakeTimers();
@@ -235,5 +244,123 @@ describe('the backend going away', () => {
     expect(sendPush).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'backend.down', url: '/notifications', tag: 'backend-state' }),
     );
+  });
+});
+
+/**
+ * The lane that replaces Hermes' own "⚠️ Gateway restarting" chat message,
+ * which never reaches a dashboard client. Its whole job is to be quiet: the
+ * grace window already suppresses the row for a restart, and this may only
+ * speak for the restarts that actually cost something.
+ */
+describe('a restart that interrupted a turn', () => {
+  it('says nothing about a restart with nothing running', () => {
+    live = [];
+    updates.backendWentDown();
+    vi.advanceTimersByTime(5_000);
+    updates.backendCameBack();
+    expect(feed.listEntries()).toEqual([]);
+  });
+
+  it('names the conversation whose turn was lost, and links to it', () => {
+    live = [{ key: 's-42', title: 'Roof quotes' }];
+    updates.backendWentDown();
+    vi.advanceTimersByTime(5_000);
+    updates.backendCameBack();
+
+    const rows = feed.listEntries();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'backend.restarted',
+      source: 'system',
+      severity: 'warn',
+      title: 'Hermes restarted',
+      url: '/chat?session=s-42',
+      sessionId: 's-42',
+    });
+    expect(rows[0]?.body).toContain('Roof quotes');
+    expect(rows[0]?.body).toContain('resume where it left off');
+  });
+
+  it('falls back to a count, and to Activity, for several', () => {
+    live = [
+      { key: 'a', title: 'One' },
+      { key: 'b', title: 'Two' },
+    ];
+    updates.backendWentDown();
+    vi.advanceTimersByTime(5_000);
+    updates.backendCameBack();
+
+    const row = feed.listEntries()[0];
+    expect(row?.body).toContain('2 running turns');
+    expect(row?.url).toBe('/activity');
+    expect(row?.sessionId).toBeNull();
+  });
+
+  it('still speaks when the session has no title yet', () => {
+    live = [{ key: 's-1', title: null }];
+    updates.backendWentDown();
+    vi.advanceTimersByTime(5_000);
+    updates.backendCameBack();
+    expect(feed.listEntries()[0]?.body).toContain('the turn that was running');
+  });
+
+  /**
+   * A socket that closes and reopens in the same breath is the proxy's own
+   * reconnect, not something a person experienced — and the turn it was
+   * "interrupting" is still running.
+   */
+  it('ignores a blip shorter than the restart floor', () => {
+    live = [{ key: 's-1', title: 'Roof quotes' }];
+    updates.backendWentDown();
+    vi.advanceTimersByTime(500);
+    updates.backendCameBack();
+    expect(feed.listEntries()).toEqual([]);
+  });
+
+  it('pushes the restart when a device is registered', () => {
+    subscriptions = [{ endpoint: 'https://push.example/1' }];
+    live = [{ key: 's-1', title: 'Roof quotes' }];
+    updates.backendWentDown();
+    vi.advanceTimersByTime(5_000);
+    updates.backendCameBack();
+    expect(sendPush).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'backend.restarted', tag: 'backend-state' }),
+    );
+  });
+
+  /**
+   * A full outage is already announced by its own pair of rows; adding a third
+   * for the restart at the end of it would be the same news twice.
+   */
+  it('leaves a real outage to the down/up rows, but says what it cost', () => {
+    live = [{ key: 's-1', title: 'Roof quotes' }];
+    updates.backendWentDown();
+    vi.advanceTimersByTime(21_000);
+    expect(feed.listEntries()[0]?.body).toContain('Roof quotes');
+
+    // Past the collapse window, so the two rows stand separately — inside it
+    // they are one row by design, for a backend that flaps.
+    vi.advanceTimersByTime(2 * 60_000);
+    updates.backendCameBack();
+    const rows = feed.listEntries();
+    expect(rows.map((r) => r.kind)).toEqual(['backend.up', 'backend.down']);
+    expect(rows[0]?.body).toContain('resume where it left off');
+    // And no third row: the outage pair already told this story.
+    expect(rows.some((r) => r.kind === 'backend.restarted')).toBe(false);
+  });
+
+  /**
+   * The snapshot is taken at the close. A proxy that shuts down and comes back
+   * must not report the previous process's live sessions as freshly lost.
+   */
+  it('drops the snapshot on shutdown', () => {
+    live = [{ key: 's-1', title: 'Roof quotes' }];
+    updates.backendWentDown();
+    updates.resetBackendWatch();
+    live = [];
+    vi.advanceTimersByTime(5_000);
+    updates.backendCameBack();
+    expect(feed.listEntries()).toEqual([]);
   });
 });

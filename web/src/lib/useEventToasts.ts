@@ -152,6 +152,14 @@ function oneLine(body: string): string {
   return flat.length > TOAST_CHARS ? `${flat.slice(0, TOAST_CHARS - 1).trimEnd()}…` : flat;
 }
 
+/** A feed row's severity, in the vocabulary the toast store speaks. */
+const TONE: Record<string, 'info' | 'success' | 'warn' | 'error'> = {
+  ok: 'success',
+  info: 'info',
+  warn: 'warn',
+  error: 'error',
+};
+
 export function useCronFeedToasts(): void {
   const toast = useUi.getState().toast;
   const { data } = useNotifications();
@@ -169,8 +177,13 @@ export function useCronFeedToasts(): void {
     for (const entry of [...data].reverse()) {
       if (seen.current.has(entry.id)) continue;
       seen.current.add(entry.id);
-      buzz(entry.failed ? 'warn' : 'done');
-      toast(`${entry.title}: ${oneLine(entry.body)}`, entry.failed ? 'error' : 'success');
+      /* `severity`, not `failed`: `failed` is cron's own "the run did not
+         deliver" and says nothing about the rows the other two writers add.
+         Hermes going offline, or restarting on top of a running turn, is not
+         a scheduled job succeeding — and toasting it green said it was. */
+      const tone = TONE[entry.severity] ?? (entry.failed ? 'error' : 'success');
+      buzz(tone === 'error' || tone === 'warn' ? 'warn' : 'done');
+      toast(`${entry.title}: ${oneLine(entry.body)}`, tone);
     }
   }, [data, toast]);
 }

@@ -149,6 +149,41 @@ interface SessionDetail {
  */
 const detailOf = new Map<string, SessionDetail>();
 
+/** A session the gateway was mid-turn on. See `inFlightSessions`. */
+export interface InFlightSession {
+  key: string;
+  title: string | null;
+}
+
+/**
+ * The live statuses that mean a turn is open — see `_session_live_status` in
+ * the gateway. `waiting` is one of them: an approval or a clarify is a turn
+ * that has stopped in the middle, and a restart destroys the request along
+ * with the runtime holding it.
+ */
+const IN_FLIGHT = new Set(['working', 'starting', 'waiting']);
+
+let inFlight: InFlightSession[] = [];
+
+/**
+ * What the gateway was in the middle of, as of the last pass that answered.
+ *
+ * `updates.ts` reads this the moment the listener socket drops, which is the
+ * one moment it cannot be asked: the backend is already gone. That works
+ * because a pass which got `null` leaves this alone, exactly as it leaves the
+ * watermarks alone — the last known answer is the only honest one available,
+ * and it is what makes a restart row able to say *what* it interrupted rather
+ * than only that something restarted.
+ *
+ * It is a floor, not a census. A turn that started since the last pass is
+ * invisible here, so the restart row under-reports rather than inventing work;
+ * in practice `sessions.changed` fires on every message append, so a streaming
+ * turn is swept within a couple of seconds of starting.
+ */
+export function inFlightSessions(): InFlightSession[] {
+  return inFlight;
+}
+
 interface LiveSession {
   id?: unknown;
   session_key?: unknown;
@@ -435,6 +470,10 @@ export async function reconcileSessions(): Promise<void> {
 
     const rows = body.sessions ?? [];
     const seen = new Set<string>();
+    /* Rebuilt from scratch each pass rather than mutated, so it can be swapped
+       in at the end: a pass that throws half way must not leave a half-emptied
+       list behind for `updates.ts` to report from. */
+    const live: InFlightSession[] = [];
 
     for (const raw of rows) {
       const row = raw as LiveSession;
@@ -457,6 +496,8 @@ export async function reconcileSessions(): Promise<void> {
        * and finishes inside one sweep interval never shows as `working` to
        * anybody here — the message count is the only trace it leaves.
        */
+      if (IN_FLIGHT.has(status)) live.push({ key, title: str(row.title) });
+
       const value = `${status}:${count}`;
       const previous = getWatermark(mark);
       if (previous === value) continue;
@@ -495,6 +536,7 @@ export async function reconcileSessions(): Promise<void> {
      * watermark, and if it is resumed later its first sight is silent again.
      */
     pruneWatermarks(MARK, seen);
+    inFlight = live;
 
     /* Keep the lookup cache from growing with every session the gateway has
        ever held. It is a shortcut, not state — a dropped entry costs one extra

@@ -63,6 +63,43 @@ const reachabilityHandlers = new Set<(unreachable: boolean) => void>();
  */
 const UNREACHABLE_AFTER = 2;
 
+/**
+ * What the proxy last said about Hermes itself.
+ *
+ * The third question hiding behind "Reconnecting…", and the one the app could
+ * not previously ask. A dead gateway socket has three quite different causes —
+ * this device's network (see `unreachable`), an expired Access session (see
+ * `expired`), and Hermes not being there — and only the last of those is the
+ * agent's fault. Telling them apart matters because the honest advice differs
+ * for each: wait, sign in, or go and start the backend.
+ *
+ * `/healthz` already answers it and the probe already fetches `/healthz`, so
+ * this costs no extra request. `unauthorized` is the answer worth having most:
+ * it is Hermes running with a token this proxy does not hold, which every
+ * screen in the app renders as a total, unexplained failure while the health
+ * endpoint cheerfully reports the backend reachable.
+ */
+export type BackendState = 'up' | 'down' | 'unauthorized' | 'unknown';
+
+let backend: BackendState = 'unknown';
+const backendHandlers = new Set<(state: BackendState) => void>();
+
+export function backendState(): BackendState {
+  return backend;
+}
+
+/** Subscribe to backend-state changes. Fires only when the answer flips. */
+export function onBackendStateChange(handler: (state: BackendState) => void): () => void {
+  backendHandlers.add(handler);
+  return () => backendHandlers.delete(handler);
+}
+
+function setBackendState(next: BackendState): void {
+  if (backend === next) return;
+  backend = next;
+  for (const handler of backendHandlers) handler(next);
+}
+
 export function onAccessExpired(handler: Handler): () => void {
   handlers.add(handler);
   return () => handlers.delete(handler);
@@ -142,6 +179,28 @@ export function markAccessRefused(): void {
   markExpired();
 }
 
+/**
+ * Pull `backend` out of a `/healthz` response.
+ *
+ * Tolerant on purpose: an `opaqueredirect` has no readable body, an older
+ * proxy may not carry the field, and a body that fails to parse says nothing
+ * about Hermes either way. All three land on `unknown`, which the banner
+ * treats as "no opinion" rather than as bad news.
+ */
+async function readBackendState(res: Response): Promise<void> {
+  if (!res.ok) return setBackendState('unknown');
+  try {
+    const body = (await res.json()) as { backend?: unknown };
+    setBackendState(
+      body.backend === 'up' || body.backend === 'down' || body.backend === 'unauthorized'
+        ? body.backend
+        : 'unknown',
+    );
+  } catch {
+    setBackendState('unknown');
+  }
+}
+
 export function probeAccess(): Promise<boolean> {
   if (expired) return Promise.resolve(true);
   if (probing) return probing;
@@ -152,6 +211,7 @@ export function probeAccess(): Promise<boolean> {
       // Any response at all means the round trip completed, so whatever else is
       // wrong, this device's own network is not it.
       markHostReached();
+      await readBackendState(res);
       // status 0 + opaqueredirect is the edge bouncing us to the login page.
       if (res.type === 'opaqueredirect') {
         markExpired();
@@ -169,6 +229,11 @@ export function probeAccess(): Promise<boolean> {
       // row it is worth saying which side of the wire the fault is on, rather
       // than leaving "Reconnecting…" to imply the agent is down.
       markNetworkFailure();
+      /* Nothing was learned about Hermes: the probe never got far enough to
+         ask. Holding the last answer would let a stale "Hermes is offline"
+         outlive the outage that produced it and blame the agent for the
+         phone's own network. */
+      setBackendState('unknown');
       return false;
     } finally {
       probing = null;
