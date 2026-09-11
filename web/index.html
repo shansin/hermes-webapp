@@ -8,8 +8,66 @@
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no"
     />
-    <meta name="theme-color" content="#0b0b0f" />
+    <!-- Two, media-scoped, because this is the value Android paints the
+         standalone status bar with and JS has not run yet at that moment. A
+         single hardcoded dark one is what put a black band above a light app:
+         the live meta `applyTheme` writes was picked up for the icon tint,
+         while the bar kept the colour it was launched with. `applyTheme`
+         replaces both with one resolved tag as soon as it runs, which is what
+         makes an explicit theme (or amoled) override the OS preference. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f7f7fa" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0b0b0f" />
     <meta name="color-scheme" content="dark light" />
+    <!-- Resolve the stored theme *during parse*, before anything paints.
+         `/src/main.tsx` is a module script, so it is deferred until after the
+         document is parsed — `applyTheme` running there is too late for two
+         things. The status bar of an installed Android PWA is coloured from
+         `theme-color` as the document loads, so a value written afterwards
+         reaches the icon tint and leaves the bar itself painted whatever the
+         tags above resolved to: an explicit `light` on a phone set to dark
+         kept a black band above a white app, which is the bug this exists
+         for. And `data-theme` set after parse means one frame rendered
+         against the `:root` dark palette.
+
+         Duplicated from `applyTheme` in `store/ui.ts` on purpose — nothing
+         can be imported here — so the palette values and the storage key are
+         in two places. `web/test/themeBoot.test.ts` fails if they drift. -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('hermes.theme') || 'dark';
+          var resolved =
+            stored === 'system'
+              ? matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+              : stored;
+          document.documentElement.dataset.theme = resolved;
+          /* Both media-scoped tags go: the first *matching* one wins, so
+             editing or adding alongside them leaves a dark tag still
+             matching on a dark phone. */
+          var stale = document.querySelectorAll('meta[name="theme-color"]');
+          for (var i = 0; i < stale.length; i++) stale[i].remove();
+          var meta = document.createElement('meta');
+          meta.name = 'theme-color';
+          var palette =
+            resolved === 'light' ? '#f7f7fa' : resolved === 'amoled' ? '#000000' : '#0b0b0f';
+          /* Installed, this tag does not paint the status bar — the manifest
+             does, with one fixed colour — and all it still decides is the
+             icon tint. Reporting the palette there put dark icons on the
+             manifest's near-black bar under Light. So report the fill Chrome
+             actually used and let the tint follow it; a browser tab, where
+             this tag really does paint the URL bar, keeps the palette. */
+          meta.content = matchMedia('(display-mode: standalone)').matches
+            ? '#0b0b0f'
+            : palette;
+          document.head.appendChild(meta);
+        } catch (e) {
+          /* A wedged localStorage must not stop the page loading. The tags
+             above still carry a sensible colour for the OS preference. */
+        }
+      })();
+    </script>
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />

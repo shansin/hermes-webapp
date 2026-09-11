@@ -235,12 +235,55 @@ export const useUi = create<UiState>((set, get) => ({
  * rule for `system`, and writing it there would fall back to the `:root` dark
  * values whatever the device actually prefers.
  */
+/**
+ * The fill Chrome paints the installed app's status bar with, and the reason
+ * this function does not simply write the palette colour.
+ *
+ * In an installed PWA the bar's *fill* comes from the manifest — one value for
+ * all four palettes, unreachable from here (see `theme_color` in
+ * `vite.config.ts`) — while only the *icon tint* comes from the tag below. So
+ * the two can disagree, and when they do the bar is unreadable rather than
+ * merely mismatched: writing the light palette colour while the bar is painted
+ * `#0b0b0f` earns dark icons on a near-black band, which is what Light looked
+ * like on the phone — and, with the fill briefly flipped the other way, what
+ * Dark then looked like. Reporting the fill Chrome actually used is the only
+ * way to make the tint follow it. Must equal `theme_color` in `vite.config.ts`;
+ * `web/test/themeBoot.test.ts` fails if the two drift.
+ */
+export const STANDALONE_STATUS_BAR = '#0b0b0f';
+
+/** Whether Chrome is painting a status bar we do not control. */
+function isStandalone(): boolean {
+  if (typeof matchMedia === 'undefined') return false;
+  return matchMedia('(display-mode: standalone)').matches;
+}
+
 export function applyTheme(theme: Theme): void {
   const resolved = resolveTheme(theme);
   document.documentElement.dataset.theme = resolved;
-  const meta = document.querySelector('meta[name="theme-color"]');
-  const color = resolved === 'light' ? '#f7f7fa' : resolved === 'amoled' ? '#000000' : '#0b0b0f';
-  meta?.setAttribute('content', color);
+
+  const palette = resolved === 'light' ? '#f7f7fa' : resolved === 'amoled' ? '#000000' : '#0b0b0f';
+  /* In a tab this tag paints the URL bar, so it tracks the palette. Installed,
+     it only picks the icons for a bar the manifest already painted. */
+  const color = isStandalone() ? STANDALONE_STATUS_BAR : palette;
+
+  /**
+   * Replace the tag rather than rewrite its `content`, and drop *every* copy
+   * first.
+   *
+   * `index.html` carries two media-scoped tags so the colour is right during
+   * the launch frame, before this module has run, and the *first matching* one
+   * in document order wins. Editing `content` on whichever happened to be
+   * first leaves the other still matching, so an explicit theme chosen against
+   * the device's own preference kept the wrong colour.
+   */
+  for (const stale of document.querySelectorAll('meta[name="theme-color"]')) {
+    stale.remove();
+  }
+  const meta = document.createElement('meta');
+  meta.name = 'theme-color';
+  meta.content = color;
+  document.head.appendChild(meta);
 }
 
 /**

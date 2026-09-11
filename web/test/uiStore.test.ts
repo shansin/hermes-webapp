@@ -21,7 +21,28 @@ async function launch(stored: Record<string, string> = {}) {
 beforeEach(() => {
   document.documentElement.removeAttribute('data-theme');
   document.documentElement.removeAttribute('data-accent');
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) meta.remove();
 });
+
+/** Stand in for the two media-scoped tags `index.html` ships. */
+function seedIndexHtmlMetas(): void {
+  for (const [media, content] of [
+    ['(prefers-color-scheme: light)', '#f7f7fa'],
+    ['(prefers-color-scheme: dark)', '#0b0b0f'],
+  ]) {
+    const meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    meta.setAttribute('media', media!);
+    meta.content = content!;
+    document.head.appendChild(meta);
+  }
+}
+
+const themeColors = () =>
+  [...document.querySelectorAll('meta[name="theme-color"]')].map((m) => ({
+    content: m.getAttribute('content'),
+    media: m.getAttribute('media'),
+  }));
 
 describe('defaults', () => {
   /**
@@ -135,18 +156,20 @@ describe('theme resolution', () => {
     expect(['dark', 'light', 'amoled']).toContain(document.documentElement.dataset.theme);
   });
 
+  /**
+   * Read the *live* tag each time rather than holding a reference: the tag is
+   * replaced on every theme change, not edited in place. See the
+   * `the theme-color meta` block below for why that matters.
+   */
   it('updates the theme-color meta tag so the OS chrome matches', async () => {
-    const meta = document.createElement('meta');
-    meta.setAttribute('name', 'theme-color');
-    document.head.append(meta);
+    const content = () =>
+      document.querySelector('meta[name="theme-color"]')?.getAttribute('content');
 
     const { useUi } = await launch();
     useUi.getState().setTheme('light');
-    expect(meta.getAttribute('content')).toBe('#f7f7fa');
+    expect(content()).toBe('#f7f7fa');
     useUi.getState().setTheme('amoled');
-    expect(meta.getAttribute('content')).toBe('#000000');
-
-    meta.remove();
+    expect(content()).toBe('#000000');
   });
 });
 
@@ -260,6 +283,76 @@ describe('the Sessions lane filter', () => {
     for (const stored of ['archived', '', 'MINE', 'null']) {
       const { useUi } = await launch({ 'hermes.sessionFilter': stored });
       expect(useUi.getState().sessionFilter, stored).toBe('all');
+    }
+  });
+});
+
+/**
+ * The status bar on an installed Android PWA, which is painted from
+ * `meta[name="theme-color"]` — and which spent the app's whole life so far
+ * rendering a black band above a light app. Two separate causes, both pinned
+ * here because neither is visible anywhere a unit test normally looks: the
+ * band is drawn by the OS, not by the page.
+ */
+describe('the theme-color meta', () => {
+  it('leaves exactly one tag, carrying the resolved palette', async () => {
+    const { applyTheme } = await launch();
+    seedIndexHtmlMetas();
+
+    applyTheme('light');
+    expect(themeColors()).toEqual([{ content: '#f7f7fa', media: null }]);
+  });
+
+  /**
+   * The half a `setAttribute` could never fix. `index.html` ships one tag per
+   * OS scheme so the launch frame is right before any JS has run, and the
+   * first *matching* tag wins — so an explicit light chosen on a phone set to
+   * dark leaves a dark tag still matching, and the bar stays black.
+   */
+  it('drops the media-scoped tags rather than editing one of them', async () => {
+    const { applyTheme } = await launch();
+    seedIndexHtmlMetas();
+
+    applyTheme('light');
+    expect(themeColors().some((m) => m.media)).toBe(false);
+    expect(themeColors()).toHaveLength(1);
+  });
+
+  /**
+   * Replacing the element, not rewriting `content`: Chrome picked an in-place
+   * edit up for the status-bar icon tint and not for the bar fill, which is
+   * what made the band unreadable — dark icons chosen for the light colour,
+   * on a bar still painted the dark one.
+   */
+  it('inserts a new node each time rather than mutating the old one', async () => {
+    const { applyTheme } = await launch();
+    applyTheme('light');
+    const first = document.querySelector('meta[name="theme-color"]');
+
+    applyTheme('dark');
+    const second = document.querySelector('meta[name="theme-color"]');
+
+    expect(second).not.toBe(first);
+    expect(second?.getAttribute('content')).toBe('#0b0b0f');
+  });
+
+  it('gives amoled its own true black, not the dark palette’s', async () => {
+    const { applyTheme } = await launch();
+    applyTheme('amoled');
+    expect(themeColors()).toEqual([{ content: '#000000', media: null }]);
+  });
+
+  it('repaints when the theme changes back and forth', async () => {
+    const { applyTheme } = await launch();
+    seedIndexHtmlMetas();
+
+    for (const [theme, color] of [
+      ['light', '#f7f7fa'],
+      ['dark', '#0b0b0f'],
+      ['light', '#f7f7fa'],
+    ] as const) {
+      applyTheme(theme);
+      expect(themeColors()).toEqual([{ content: color, media: null }]);
     }
   });
 });

@@ -147,7 +147,43 @@ export default defineConfig({
         name: 'Hem',
         short_name: 'Hem',
         description: 'Hem — phone-first control center for the Hermes Agent backend',
+        /**
+         * The installed app's status bar, and the one colour in this app that
+         * cannot follow the theme.
+         *
+         * In a browser tab `theme-color` in the document paints the URL bar and
+         * tracks the palette perfectly. In an installed PWA it does not paint
+         * the status bar at all — Chrome takes the *fill* from here and only
+         * the icon tint from the document, which is why a light app sat under
+         * a black band with dark-on-black icons while every screenshot of the
+         * same build in Chrome looked right. A manifest cannot be media-scoped
+         * or rewritten at runtime, so no amount of work in `applyTheme` or the
+         * boot script in `index.html` can reach it: this is one value for all
+         * four palettes and therefore a choice, not a fix.
+         *
+         * Dark, and the reason is worth stating because flipping it is the
+         * obvious wrong fix — it was tried here and made things worse.
+         *
+         * The bug this file was blamed for was never the band's *colour*: it
+         * was a black band carrying *dark* icons, i.e. the fill and the tint
+         * disagreeing. Tint comes from the document, so writing the light
+         * palette there against this dark fill is what made the icons vanish.
+         * Flipping this value to `#f7f7fa` therefore fixed nothing and only
+         * mirrored the failure — white icons on a near-white bar the moment
+         * the palette was dark, which on a `system` install is half of every
+         * day. The fix is `STANDALONE_STATUS_BAR` in `store/ui.ts`, which
+         * reports *this* value back to the document whenever
+         * `(display-mode: standalone)` matches so the tint follows the fill;
+         * `web/test/themeBoot.test.ts` pins the two together.
+         *
+         * Given it must be one colour, it is the dark one: it disappears under
+         * Dark and AMOLED, and under Light it is a black strip with legible
+         * white icons. Flipping both pinned values takes that trade the other
+         * way and is a preference, not a fix.
+         */
         theme_color: '#0b0b0f',
+        /* The splash screen behind the icon at cold launch. Left dark: it is
+           shown for a moment against the app icon, not against a screen. */
         background_color: '#0b0b0f',
         display: 'standalone',
         orientation: 'portrait',
