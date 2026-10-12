@@ -329,7 +329,10 @@ export function UsageTab() {
           <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginTop: 2, lineHeight: 1.45 }}>
             {days === 1
               ? 'Last 24 hours, local time. A conversation counts in the hour it started, so a tall bar can be one long session.'
-              : `Last ${Math.min(days, 14)} days, UTC — the backend groups by UTC date, so a late-night session may land on the next bar.`}
+              : // Hermes 0.21.6 moved its daily buckets from UTC dates to the
+                // machine's local date; before that a late-night session
+                // landed on the next bar.
+                `Last ${Math.min(days, 14)} days, by the Hermes machine's local date.`}
           </div>
 
           <div style={{ marginTop: 10 }}>

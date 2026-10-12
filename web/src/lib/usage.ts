@@ -47,9 +47,10 @@ export interface HourBucket {
  * A rolling window rather than a calendar day, and that choice is load-bearing:
  * `/api/analytics/usage?days=1` is itself rolling (`now - 86400`), so the tiles
  * above the chart and the bars in it describe the same span. A calendar day
- * would have put a UTC-bucketed total over a locally-bucketed chart — the
- * backend groups by `date(started_at, 'unixepoch')` with no `'localtime'` — and
- * the two would silently disagree by whatever the device's offset is.
+ * would have put a total bucketed by the backend's calendar day over a chart
+ * bucketed by the device's — UTC before Hermes 0.21.6, the backend machine's
+ * local zone since — and the two would silently disagree whenever those zones
+ * differ.
  */
 export function hourSlots(now: number, hours = 24): number[] {
   const endOfCurrentHour = Math.floor(now / HOUR) * HOUR + HOUR;
