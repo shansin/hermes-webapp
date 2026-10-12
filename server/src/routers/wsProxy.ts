@@ -91,6 +91,13 @@ const CLIENT_PING_INTERVAL_MS = 45_000;
 const KEEPALIVE_FRAMES = new Map<string, string>([
   ['/api/ws', '\n'],
   ['/api/plugins/kanban/events', '{"keepalive":true}'],
+  // `/api/audio/transcribe-stream` deliberately has none. It is never idle —
+  // the phone streams microphone PCM for as long as it is open, and closes it
+  // the moment dictation ends — so there is no quiet period for anything in
+  // the middle to time out. And the stream is not inert to any frame we could
+  // add: the client parses every text frame as a transcript message, while
+  // Hermes reads the client→server leg as audio, so a stray frame is either
+  // noise in a partial or a byte of corruption in the PCM.
 ]);
 
 /**
@@ -132,6 +139,11 @@ const WS_PATHS = new Set([
   '/api/events',
   '/api/pub',
   '/api/audio/speak-stream',
+  // Live dictation: mic PCM up, partial transcripts down. Same two reasons
+  // as the rest — Hermes gates the upgrade on loopback Host/Origin and reads
+  // the credential from `?token=` — and the composer falls back to uploading
+  // the recording if this is refused, so nothing breaks without it.
+  '/api/audio/transcribe-stream',
   '/api/plugins/kanban/events',
 ]);
 
@@ -282,8 +294,15 @@ export function attachWsProxy(server: {
  */
 function bridge(client: WebSocket, pathname: string, search: string): void {
   // Frames produced before the upstream socket finishes opening would be lost,
-  // so hold them until it is ready.
-  const pending: RawData[] = [];
+  // so hold them until it is ready — each with whether it was binary.
+  //
+  // `ws` hands a text frame over as a Buffer, and `send(buffer)` defaults to
+  // binary, so a held frame replayed bare changed type on the way through.
+  // Harmless for the JSON-RPC path, whose server accepts either; fatal for
+  // dictation, whose first frame is the `{"sample_rate": N}` header that
+  // Hermes reads with `receive_text()` — and which the phone sends the instant
+  // the socket opens, which is exactly when the upstream leg is not up yet.
+  const pending: { data: RawData; isBinary: boolean }[] = [];
   let upstreamOpen = false;
   let upstream: WebSocket | null = null;
   /** Set when the bridge is torn down before the upstream leg ever opened. */
@@ -315,7 +334,7 @@ function bridge(client: WebSocket, pathname: string, search: string): void {
         closeBoth(1013, 'upstream not ready');
         return;
       }
-      pending.push(data);
+      pending.push({ data, isBinary });
       return;
     }
     if (upstream.bufferedAmount > MAX_BUFFERED_BYTES) {
@@ -408,7 +427,7 @@ function bridge(client: WebSocket, pathname: string, search: string): void {
 
     sock.on('open', () => {
       upstreamOpen = true;
-      for (const frame of pending) sock.send(frame);
+      for (const frame of pending) sock.send(frame.data, { binary: frame.isBinary });
       pending.length = 0;
       log.debug({ pathname }, 'ws bridge established');
     });

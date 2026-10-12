@@ -127,6 +127,13 @@ export function Composer({
 }: ComposerProps) {
   const [text, setText] = useState('');
   const [recording, setRecording] = useState(false);
+  /**
+   * What the live transcript says so far, while recording. Shown above the
+   * input rather than written into it: the final transcript can differ from
+   * the last partial, and text the user may already have typed must not be
+   * rewritten under them as the recogniser changes its mind.
+   */
+  const [partial, setPartial] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [voiceOk, setVoiceOk] = useState(false);
   const [completions, setCompletions] = useState<CompletionItem[]>([]);
@@ -293,8 +300,9 @@ export function Composer({
         toast('Voice input is not available on this device', 'warn');
         return;
       }
+      setPartial('');
       recRef.current =
-        caps.stt && canRecord() ? await startRecording() : webSpeechDictate();
+        caps.stt && canRecord() ? await startRecording({ onPartial: setPartial }) : webSpeechDictate();
       setRecording(true);
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not start recording', 'error');
@@ -309,6 +317,7 @@ export function Composer({
     buzz('tap');
     try {
       const transcript = await rec.stop();
+      setPartial('');
       if (transcript) {
         setText((t) => (t ? `${t} ${transcript}` : transcript));
         taRef.current?.focus();
@@ -518,6 +527,16 @@ export function Composer({
             onOpenPalette();
           }}
         />
+      )}
+
+      {recording && partial && (
+        <div
+          className="composer__running"
+          aria-live="polite"
+          style={{ fontFamily: 'inherit', fontSize: 'var(--type-body-sm)', color: 'var(--text-dim)', overflowWrap: 'anywhere' }}
+        >
+          {partial}
+        </div>
       )}
 
       {commandBusy && (

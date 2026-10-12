@@ -6,10 +6,15 @@
  *   POST /api/audio/transcribe  {data_url, mime_type} -> {text}
  *   POST /api/audio/speak       {text}                -> {ok, data_url}
  *
+ * Recording also streams to `WS /api/audio/transcribe-stream` while it runs,
+ * for a live transcript (`liveDictation.ts`); the upload above stays the
+ * fallback and is what runs whenever the live path does not finish cleanly.
+ *
  * Either can be unconfigured on a given install, so callers must treat both as
  * optional features — `probeAudio()` reports what is actually available.
  */
 import { api } from '../api/client';
+import type { LiveTranscriber } from './liveDictation';
 
 // --- capability probe --------------------------------------------------------
 
@@ -229,8 +234,12 @@ export interface Recorder {
  * Start recording and return a handle whose `stop()` resolves to a transcript.
  * The caller owns the lifetime — hold-to-talk calls `stop`, a drag-away
  * gesture calls `cancel`.
+ *
+ * `onPartial` receives the live transcript while recording, when the backend
+ * can stream one. It may never be called; `stop()` resolves the same way
+ * either way.
  */
-export async function startRecording(): Promise<Recorder> {
+export async function startRecording(opts: { onPartial?: (text: string) => void } = {}): Promise<Recorder> {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   // Let the browser choose; Chrome yields webm/opus, Safari mp4.
   const mime = MediaRecorder.isTypeSupported('audio/webm')
@@ -245,10 +254,24 @@ export async function startRecording(): Promise<Recorder> {
   };
   rec.start();
 
+  // Alongside, never instead: see `liveDictation.ts`. Loaded on demand so the
+  // composer's eager chunk does not carry it, and a failure to load is just
+  // one more way of falling back to the upload.
+  let live: LiveTranscriber | null = null;
+  let cancelled = false;
+  const liveReady = import('./liveDictation')
+    .then(({ openLiveTranscriber }) => {
+      if (cancelled) return;
+      live = openLiveTranscriber(stream, (text) => opts.onPartial?.(text));
+    })
+    .catch(() => undefined);
+
   const release = () => stream.getTracks().forEach((t) => t.stop());
 
   return {
     cancel() {
+      cancelled = true;
+      live?.cancel();
       try {
         rec.stop();
       } catch {
@@ -257,13 +280,25 @@ export async function startRecording(): Promise<Recorder> {
       release();
     },
     stop() {
+      // Ask for the live final now, while the recorder is still flushing its
+      // last chunk — the two run in parallel rather than one after the other.
+      const liveFinal = liveReady.then(() => (live ? live.finish() : null));
       return new Promise<string>((resolve, reject) => {
         rec.onstop = async () => {
           release();
           try {
             const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
             if (blob.size < 1200) {
+              live?.cancel();
               resolve(''); // Too short to be speech — treat as a cancelled tap.
+              return;
+            }
+            // An empty live final is not trusted over a recording long enough
+            // to be speech: the upload is a second opinion, and costs nothing
+            // the live path did not already fail to deliver.
+            const streamed = await liveFinal;
+            if (streamed) {
+              resolve(streamed);
               return;
             }
             const dataUrl = await blobToDataUrl(blob);

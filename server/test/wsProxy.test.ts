@@ -62,6 +62,8 @@ let upgrades: Upgrade[];
 /** The fake Hermes' end of each bridge, so a teardown is observable there. */
 let upstreamSockets: WebSocket[];
 let upstreamFrames: string[];
+/** Whether each of `upstreamFrames` arrived as a binary frame. */
+let upstreamBinary: boolean[];
 /** Resolved by the fake Hermes on each frame, so tests can await delivery. */
 let onUpstreamFrame: (() => void) | null;
 
@@ -82,8 +84,9 @@ beforeAll(async () => {
       host: req.headers.host,
       origin: req.headers.origin as string | undefined,
     });
-    socket.on('message', (data: RawData) => {
+    socket.on('message', (data: RawData, isBinary: boolean) => {
       upstreamFrames.push(data.toString());
+      upstreamBinary.push(isBinary);
       onUpstreamFrame?.();
       socket.send(`echo:${data.toString()}`);
     });
@@ -109,6 +112,7 @@ beforeEach(() => {
   upgrades = [];
   upstreamSockets = [];
   upstreamFrames = [];
+  upstreamBinary = [];
   onUpstreamFrame = null;
   resolveDelayMs = 0;
   token = 'discovered-token';
@@ -169,6 +173,9 @@ describe('path allowlist', () => {
     '/api/events',
     '/api/pub',
     '/api/audio/speak-stream',
+    /* Live dictation. Same loopback gate and query-string credential as the
+       rest; the composer falls back to uploading the recording without it. */
+    '/api/audio/transcribe-stream',
     /* The board's live-update stream. It needs the bridge for the same two
        reasons `/api/ws` does — Hermes checks Host and Origin against the
        loopback interface, and the plugin's upgrade gate reads the credential
@@ -189,6 +196,8 @@ describe('path allowlist', () => {
     // upgrade the bridge would then dial upstream.
     '/api/plugins/kanban/board',
     '/api/plugins/kanban/events/extra',
+    // The upload fallback is REST, never an upgrade.
+    '/api/audio/transcribe',
   ])('refuses %s', (path) => {
     expect(isProxiedWsPath(path)).toBe(false);
   });
@@ -258,6 +267,21 @@ describe('the Access gate on upgrades', () => {
     expect(upgrades).toEqual([]);
   });
 
+  /* Dictation streams the microphone to the agent's machine; an open path
+     here would be a way to feed it audio without signing in. */
+  it('refuses an unauthenticated dictation upgrade too', async () => {
+    accessOn = true;
+    accessVerdict = { ok: false, reason: 'missing' };
+
+    const err = await openClient('/api/audio/transcribe-stream').then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err?.message).toMatch(/401/);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(upgrades).toEqual([]);
+  });
+
   it('proxies normally once the assertion checks out', async () => {
     accessOn = true;
     accessVerdict = { ok: true, email: 'owner@example.com' };
@@ -280,6 +304,20 @@ describe('the loopback disguise', () => {
     expect(up.host).toBe(upstreamHostValue);
     expect(up.origin).toBe(`http://${upstreamHostValue}`);
     expect(up.origin).not.toContain('192.168.1.50');
+  });
+
+  /* Hermes answers a non-loopback upgrade on the dictation path with 4403
+     just as it does the gateway — and the token has to ride along the same
+     way, because `_ws_auth_ok` reads it from the query string. */
+  it('disguises the dictation stream and gives it the token', async () => {
+    track(await openClient('/api/audio/transcribe-stream?profile=fitness'));
+    const up = await upgraded();
+    const params = new URL(up.url, 'http://x').searchParams;
+    expect(new URL(up.url, 'http://x').pathname).toBe('/api/audio/transcribe-stream');
+    expect(up.host).toBe(upstreamHostValue);
+    expect(up.origin).toBe(`http://${upstreamHostValue}`);
+    expect(params.get('token')).toBe('discovered-token');
+    expect(params.get('profile')).toBe('fitness');
   });
 });
 
@@ -370,10 +408,12 @@ describe('the client keepalive', () => {
    * other bridged paths are request-scoped streams that are never idle anyway;
    * what they still get is the stall check and the interval's own cleanup.
    */
-  it('sends no keepalive frame on a path that is not JSON-RPC', async () => {
+  it.each(['/api/audio/speak-stream', '/api/audio/transcribe-stream'])(
+    'sends no keepalive frame on %s, which is not JSON-RPC',
+    async (path) => {
     vi.useFakeTimers({ toFake: ['setInterval'] });
     try {
-      const client = track(await openClient('/api/audio/speak-stream'));
+      const client = track(await openClient(path));
       await upgraded();
 
       let frames = 0;
@@ -388,7 +428,8 @@ describe('the client keepalive', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
+  },
+  );
 
   /**
    * The kanban events socket is the other long-idle one — the plugin sends
@@ -567,6 +608,32 @@ describe('relaying', () => {
     client.send('second');
     await framesReceived(2, 3000);
     expect(upstreamFrames).toEqual(['first', 'second']);
+  });
+
+  /**
+   * A held frame has to keep its type. Dictation opens with a text
+   * `{"sample_rate": N}` header — sent the instant the socket opens, so it is
+   * always held — that Hermes reads with `receive_text()`, then streams binary
+   * PCM. Replayed as binary, the header made every dictation fail at once.
+   */
+  it('keeps text frames text and binary frames binary across the pre-open hold', async () => {
+    resolveDelayMs = 120;
+    const client = track(await openClient('/api/audio/transcribe-stream'));
+    client.send('{"sample_rate":16000}');
+    client.send(Buffer.from([1, 2, 3, 4]), { binary: true });
+    await framesReceived(2, 3000);
+    expect(upstreamFrames[0]).toBe('{"sample_rate":16000}');
+    expect(upstreamBinary).toEqual([false, true]);
+  });
+
+  it('keeps frame types once the bridge is open as well', async () => {
+    const client = track(await openClient('/api/audio/transcribe-stream'));
+    await upgraded();
+    await new Promise((r) => setTimeout(r, 50));
+    client.send('{"eos":true}');
+    client.send(Buffer.from([9, 9]), { binary: true });
+    await framesReceived(2);
+    expect(upstreamBinary).toEqual([false, true]);
   });
 
   it('closes the client when the upstream goes away', async () => {
