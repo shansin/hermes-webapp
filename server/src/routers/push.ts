@@ -5,6 +5,7 @@
  * `/api` is proxied verbatim to Hermes, which knows nothing about browser push
  * subscriptions and would answer 404.
  */
+import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
 
@@ -13,6 +14,15 @@ import { pushPublicKey, sendPush } from '../push/send.js';
 import { listSubscriptions, removeSubscription, saveSubscription } from '../push/store.js';
 
 export const pushRouter = new Hono();
+
+/**
+ * A stable handle for a device that is not its endpoint.
+ *
+ * The endpoint is a capability URL — anyone holding it can push to that
+ * device with our keys — so it is not sent back to the page just so a row can
+ * name itself. A short digest is enough to address one for removal.
+ */
+const deviceId = (endpoint: string) => createHash('sha256').update(endpoint).digest('hex').slice(0, 12);
 
 const SubscribeBody = z.object({
   subscription: z.object({
@@ -36,7 +46,47 @@ pushRouter.get('/push/config', (c) => {
     enabled: Boolean(key),
     publicKey: key || null,
     devices: listSubscriptions().length,
+    /**
+     * Per-device health, so "this phone has never received anything" is on
+     * the screen instead of in the proxy log. `host` names the push service
+     * (Apple, Google, Mozilla), which is usually the quickest way to tell
+     * the rows apart.
+     */
+    deviceList: listSubscriptions().map((r) => ({
+      id: deviceId(r.subscription.endpoint),
+      label: r.label,
+      host: safeHost(r.subscription.endpoint),
+      createdAt: r.createdAt,
+      lastSentAt: r.lastSentAt,
+      lastError: r.lastError,
+      lastFailedAt: r.lastFailedAt,
+      failures: r.failures,
+    })),
   });
+});
+
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
+}
+
+/** Remove a device by its `deviceId`, for one that is not the browser asking. */
+pushRouter.post('/push/remove', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  const id = (body as { id?: unknown } | null)?.id;
+  if (typeof id !== 'string' || !id) return c.json({ error: 'invalid_id' }, 400);
+
+  const row = listSubscriptions().find((r) => deviceId(r.subscription.endpoint) === id);
+  const removed = row ? removeSubscription(row.subscription.endpoint) : false;
+  return c.json({ ok: true, removed, devices: listSubscriptions().length });
 });
 
 pushRouter.post('/push/subscribe', async (c) => {

@@ -219,3 +219,38 @@ export async function sendTestPush(): Promise<number> {
   const body = (await res.json()) as { delivered?: number };
   return body.delivered ?? 0;
 }
+
+/** One registered device, as `/push/config` reports its health. */
+export interface PushDevice {
+  id: string;
+  label: string;
+  /** The push service's host — Apple, Google, Mozilla. */
+  host: string;
+  createdAt: number;
+  lastSentAt: number | null;
+  lastError: string | null;
+  lastFailedAt: number | null;
+  failures: number;
+}
+
+/**
+ * Every device the proxy pushes to, this one or not.
+ *
+ * Empty from a proxy that predates the field, which is the same as saying
+ * nothing — the section simply does not render.
+ */
+export async function fetchPushDevices(): Promise<PushDevice[]> {
+  const config = await fetchConfig();
+  if (config === 'missing') return [];
+  const list = (config as PushConfig & { deviceList?: unknown }).deviceList;
+  return Array.isArray(list) ? (list as PushDevice[]) : [];
+}
+
+export async function removePushDevice(id: string): Promise<void> {
+  const res = await fetch('/push/remove', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  if (!res.ok) throw new Error('Could not remove that device.');
+}

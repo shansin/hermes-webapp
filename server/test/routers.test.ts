@@ -64,6 +64,7 @@ describe('GET /push/config', () => {
       enabled: true,
       publicKey: 'BPublicKeyLooksLikeThis',
       devices: 0,
+      deviceList: [],
     });
   });
 
@@ -77,7 +78,7 @@ describe('GET /push/config', () => {
     vi.resetModules();
     pushRouter = (await import('../src/routers/push.js')).pushRouter;
     const body = await (await pushRouter.request('http://proxy.test/push/config')).json();
-    expect(body).toEqual({ enabled: false, publicKey: null, devices: 0 });
+    expect(body).toEqual({ enabled: false, publicKey: null, devices: 0, deviceList: [] });
   });
 
   it('counts registered devices', async () => {
@@ -86,6 +87,60 @@ describe('GET /push/config', () => {
       devices: number;
     };
     expect(body.devices).toBe(1);
+  });
+});
+
+/**
+ * A device whose push service refuses every send looked, from the app, exactly
+ * like one receiving everything: the only record was a warning in the proxy
+ * log. The list is what puts that on the settings screen.
+ */
+describe('device health', () => {
+  type Device = { id: string; label: string; host: string; lastSentAt: number | null; lastError: string | null; failures: number };
+  const devices = async () =>
+    ((await (await pushRouter.request('http://proxy.test/push/config')).json()) as { deviceList: Device[] }).deviceList;
+
+  it('lists each device without handing back its endpoint', async () => {
+    await post('/push/subscribe', { subscription, label: 'iPhone' });
+    const [d] = await devices();
+
+    expect(d).toMatchObject({ label: 'iPhone', lastSentAt: null, lastError: null, failures: 0 });
+    expect(d!.host).toBe(new URL(subscription.endpoint).host);
+    expect(JSON.stringify(d)).not.toContain(subscription.endpoint);
+  });
+
+  it('carries the last refusal and how many in a row', async () => {
+    await post('/push/subscribe', { subscription });
+    const store = await import('../src/push/store.js');
+    store.markFailed([{ endpoint: subscription.endpoint, reason: '403 BadJwtToken' }]);
+    store.markFailed([{ endpoint: subscription.endpoint, reason: '403 BadJwtToken' }]);
+
+    expect((await devices())[0]).toMatchObject({ lastError: '403 BadJwtToken', failures: 2 });
+  });
+
+  it('clears the failure on the next delivery', async () => {
+    await post('/push/subscribe', { subscription });
+    const store = await import('../src/push/store.js');
+    store.markFailed([{ endpoint: subscription.endpoint, reason: '403 BadJwtToken' }]);
+    store.markSent([subscription.endpoint]);
+
+    const [d] = await devices();
+    expect(d).toMatchObject({ lastError: null, failures: 0 });
+    expect(d!.lastSentAt).not.toBeNull();
+  });
+
+  it('removes a device by its id', async () => {
+    await post('/push/subscribe', { subscription });
+    const [d] = await devices();
+    const res = await post('/push/remove', { id: d!.id });
+
+    expect(await res.json()).toEqual({ ok: true, removed: true, devices: 0 });
+  });
+
+  it('removes nothing for an id it does not know', async () => {
+    await post('/push/subscribe', { subscription });
+    const res = await post('/push/remove', { id: 'nope' });
+    expect(await res.json()).toEqual({ ok: true, removed: false, devices: 1 });
   });
 });
 

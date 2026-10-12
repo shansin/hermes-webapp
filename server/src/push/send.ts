@@ -11,7 +11,7 @@ import webpush from 'web-push';
 
 import { config } from '../config.js';
 import { log } from '../log.js';
-import { listSubscriptions, markSent, removeSubscription, storeVapid, storedVapid } from './store.js';
+import { listSubscriptions, markFailed, markSent, removeSubscription, storeVapid, storedVapid } from './store.js';
 
 export interface PushMessage {
   title: string;
@@ -90,6 +90,7 @@ export async function sendPush(message: PushMessage): Promise<number> {
 
   const payload = JSON.stringify(message);
   const delivered: string[] = [];
+  const failed: { endpoint: string; reason: string }[] = [];
 
   await Promise.all(
     rows.map(async (row) => {
@@ -113,6 +114,7 @@ export async function sendPush(message: PushMessage): Promise<number> {
           removeSubscription(endpoint);
           log.info(`Dropped an expired push subscription (${status}).`);
         } else {
+          failed.push({ endpoint, reason: failureReason(err, status) });
           log.warn({ err, status }, 'Push delivery failed');
         }
       }
@@ -120,9 +122,32 @@ export async function sendPush(message: PushMessage): Promise<number> {
   );
 
   markSent(delivered);
+  markFailed(failed);
   // Logged per send, not just on failure: "the banner never arrived" is
   // otherwise impossible to split into "we never sent it" and "the phone
   // never showed it", which is exactly the question worth answering first.
   log.info(`Pushed ${message.kind} to ${delivered.length}/${rows.length} device(s).`);
   return delivered.length;
+}
+
+/**
+ * A short, human-readable reason for a refused send.
+ *
+ * Push services put the useful part in the body — Apple answers
+ * `{"reason":"BadJwtToken"}` — while the error's own message is a generic
+ * "Received unexpected response code". The status alone is the fallback.
+ */
+function failureReason(err: unknown, status: number | undefined): string {
+  const body = (err as { body?: unknown }).body;
+  if (typeof body === 'string' && body.trim()) {
+    try {
+      const reason = (JSON.parse(body) as { reason?: unknown }).reason;
+      if (typeof reason === 'string' && reason) return status ? `${status} ${reason}` : reason;
+    } catch {
+      // Not JSON; fall through to the raw text.
+    }
+    return `${status ?? ''} ${body.trim().slice(0, 120)}`.trim();
+  }
+  if (status) return `HTTP ${status}`;
+  return err instanceof Error ? err.message.slice(0, 120) : 'unknown error';
 }

@@ -86,6 +86,7 @@ const KEYS = {
   theme: 'hermes.theme',
   accent: 'hermes.accent',
   haptics: 'hermes.haptics',
+  reasoning: 'hermes.reasoning',
   token: 'hermes.token',
   devPanel: 'hermes.devPanel',
   sessionFilter: 'hermes.sessionFilter',
@@ -115,6 +116,13 @@ interface UiState {
   /** The accent hue, applied on top of whichever palette is resolved. */
   accent: Accent;
   haptics: boolean;
+  /**
+   * Whether the agent's chain of thought is drawn, live and in finished
+   * replies. Rendering only: whether the backend *sends* it live is
+   * `display.show_reasoning` in its config.yaml, a global key that also
+   * drives the CLI and the chat platforms, so the app does not write it.
+   */
+  showReasoning: boolean;
   /** Optional explicit token, only needed when bypassing the proxy. */
   token: string;
   devPanel: boolean;
@@ -138,6 +146,7 @@ interface UiState {
   setTheme: (t: Theme) => void;
   setAccent: (a: Accent) => void;
   setHaptics: (on: boolean) => void;
+  setShowReasoning: (on: boolean) => void;
   setToken: (t: string) => void;
   setDevPanel: (on: boolean) => void;
   setSessionFilter: (f: SessionFilter) => void;
@@ -170,6 +179,7 @@ export const useUi = create<UiState>((set, get) => ({
   resolvedTheme: resolveTheme(initialTheme),
   accent: initialAccent,
   haptics: initialHaptics,
+  showReasoning: read(KEYS.reasoning, 'on') === 'on',
   token: read(KEYS.token, ''),
   devPanel: read(KEYS.devPanel, 'off') === 'on',
   // Validated on the way in: a hand-edited or stale value must not leave the
@@ -197,6 +207,11 @@ export const useUi = create<UiState>((set, get) => ({
     write(KEYS.haptics, on ? 'on' : 'off');
     setHapticsEnabled(on);
     set({ haptics: on });
+  },
+
+  setShowReasoning: (on) => {
+    write(KEYS.reasoning, on ? 'on' : 'off');
+    set({ showReasoning: on });
   },
 
   setToken: (token) => {

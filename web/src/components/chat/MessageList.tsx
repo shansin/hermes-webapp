@@ -666,6 +666,7 @@ interface RowProps {
  */
 const MessageRow = memo(function MessageRow(p: RowProps) {
   const { m, selecting, isSelected, register } = p;
+  const showReasoning = useUi((s) => s.showReasoning);
 
   const { handlers, consumed } = useLongPress(() => p.onBeginSelection(m.id));
 
@@ -795,7 +796,7 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
 
     return (
       <>
-        {m.reasoning && <ThinkingBlock text={m.reasoning} />}
+        {m.reasoning && showReasoning && <ThinkingBlock text={m.reasoning} />}
         <div className="msg__body">
           <Markdown>{m.text}</Markdown>
         </div>
@@ -936,7 +937,8 @@ const StreamingTail = memo(function StreamingTail({ onGrow }: { onGrow: () => vo
   const running = useSession((s) => s.running);
 
   const text = useThrottled(streamingText, STREAM_RENDER_MS);
-  const reasoning = useThrottled(streamingReasoning, STREAM_RENDER_MS);
+  const showReasoning = useUi((s) => s.showReasoning);
+  const reasoning = useThrottled(showReasoning ? streamingReasoning : '', STREAM_RENDER_MS);
   /**
    * Throttled like the other two, and for exactly the same reason.
    *

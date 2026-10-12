@@ -31,6 +31,19 @@ const RecordSchema = z.object({
   createdAt: z.number(),
   /** Bumped on every successful send; lets a stale row be spotted by eye. */
   lastSentAt: z.number().nullable().default(null),
+  /**
+   * The push service's refusal, kept so it can be shown rather than logged.
+   *
+   * Only 404/410 mean a subscription is gone; anything else — Apple's
+   * `BadJwtToken` is the one that happened — is retried on every send, and a
+   * device that has never received a single banner looked exactly like one
+   * that had, because the only record was a warning in the proxy log. Cleared
+   * by the next delivery that succeeds.
+   */
+  lastError: z.string().nullable().default(null),
+  lastFailedAt: z.number().nullable().default(null),
+  /** Consecutive failures since the last success. */
+  failures: z.number().default(0),
 });
 export type PushRecord = z.infer<typeof RecordSchema>;
 
@@ -108,7 +121,15 @@ export function saveSubscription(subscription: PushSubscription, label: string):
     existing.subscription = subscription;
     if (label) existing.label = label;
   } else {
-    rows.push({ subscription, label, createdAt: Date.now(), lastSentAt: null });
+    rows.push({
+      subscription,
+      label,
+      createdAt: Date.now(),
+      lastSentAt: null,
+      lastError: null,
+      lastFailedAt: null,
+      failures: 0,
+    });
   }
   persist();
 }
@@ -127,7 +148,23 @@ export function markSent(endpoints: string[]): void {
   if (!endpoints.length) return;
   const now = Date.now();
   for (const row of load().subscriptions) {
-    if (endpoints.includes(row.subscription.endpoint)) row.lastSentAt = now;
+    if (!endpoints.includes(row.subscription.endpoint)) continue;
+    row.lastSentAt = now;
+    row.lastError = null;
+    row.failures = 0;
+  }
+  persist();
+}
+
+export function markFailed(failed: { endpoint: string; reason: string }[]): void {
+  if (!failed.length) return;
+  const now = Date.now();
+  for (const row of load().subscriptions) {
+    const hit = failed.find((f) => f.endpoint === row.subscription.endpoint);
+    if (!hit) continue;
+    row.lastError = hit.reason;
+    row.lastFailedAt = now;
+    row.failures += 1;
   }
   persist();
 }

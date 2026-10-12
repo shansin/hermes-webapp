@@ -10,7 +10,9 @@ import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useHealth } from '../../api/hub';
 import { ACCENTS, useUi, type Accent, type Theme } from '../../store/ui';
-import { Skeleton, Switch } from '../shared/misc';
+import { Skeleton, Switch, relTime } from '../shared/misc';
+import { BackendControls } from './BackendControls';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { hermes } from '../../ws/client';
 import { buzz } from '../../lib/haptics';
 import {
@@ -18,10 +20,82 @@ import {
   enablePush,
   isIosSafari,
   isStandalone,
+  fetchPushDevices,
   pushStatus,
+  removePushDevice,
   sendTestPush,
   type PushState,
 } from '../../lib/push';
+
+const ago = (ms: number) => {
+  const t = relTime(ms / 1000);
+  return t === 'now' ? 'just now' : `${t} ago`;
+};
+
+/**
+ * Every device the proxy pushes to, and whether it is getting anything.
+ *
+ * The section above only knows about *this* browser. A device whose push
+ * service refuses every send — an iPhone that never received a single banner,
+ * because Apple rejected the VAPID subject — was otherwise visible only as a
+ * warning in the proxy log, so the list says when each one last got through
+ * and what the last refusal was. Remove is for the row nobody can unsubscribe
+ * from any more: a reinstalled phone, a retired laptop.
+ */
+function PushDevices() {
+  const qc = useQueryClient();
+  const toast = useUi((s) => s.toast);
+  const devices = useQuery({ queryKey: ['push-devices'], queryFn: fetchPushDevices, staleTime: 30_000 });
+  const rows = devices.data ?? [];
+  if (!rows.length) return null;
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ fontWeight: 550, fontSize: 'var(--type-title-sm)', marginBottom: 6 }}>Devices</div>
+      {rows.map((d) => {
+        const failing = d.failures > 0 && d.lastError;
+        return (
+          <div
+            key={d.id}
+            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: '1px solid var(--border-soft)' }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 'var(--type-detail)', overflowWrap: 'anywhere' }}>{d.label || d.host || 'Device'}</div>
+              <div
+                style={{
+                  fontSize: 'var(--type-body-sm)',
+                  color: failing ? 'var(--error)' : 'var(--text-faint)',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {failing
+                  ? `Failing ×${d.failures}: ${d.lastError}`
+                  : d.lastSentAt
+                    ? `Last delivered ${ago(d.lastSentAt)}`
+                    : 'Nothing delivered yet'}
+              </div>
+            </div>
+            <button
+              className="btn"
+              style={{ fontSize: 'var(--type-detail)', padding: '6px 10px' }}
+              onClick={async () => {
+                buzz('tap');
+                try {
+                  await removePushDevice(d.id);
+                  await qc.invalidateQueries({ queryKey: ['push-devices'] });
+                } catch (err) {
+                  toast(err instanceof Error ? err.message : 'Could not remove that device.', 'error');
+                }
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 /**
  * Web push.
@@ -34,6 +108,7 @@ import {
  */
 function NotificationsSection() {
   const toast = useUi((s) => s.toast);
+  const qc = useQueryClient();
   const [state, setState] = useState<PushState | 'loading'>('loading');
   const [busy, setBusy] = useState(false);
 
@@ -161,6 +236,8 @@ function NotificationsSection() {
               buzz('tap');
               try {
                 const delivered = await sendTestPush();
+                // The send just moved every row's last-delivered or failure.
+                void qc.invalidateQueries({ queryKey: ['push-devices'] });
                 toast(
                   delivered ? `Sent to ${delivered} device(s)` : 'No devices registered',
                   delivered ? 'success' : 'warn',
@@ -183,6 +260,7 @@ function NotificationsSection() {
           </button>
         )}
       </div>
+      <PushDevices />
     </>
   );
 }
@@ -348,6 +426,8 @@ export function SettingsTab() {
   const setTheme = useUi((s) => s.setTheme);
   const haptics = useUi((s) => s.haptics);
   const setHaptics = useUi((s) => s.setHaptics);
+  const showReasoning = useUi((s) => s.showReasoning);
+  const setShowReasoning = useUi((s) => s.setShowReasoning);
   const devPanel = useUi((s) => s.devPanel);
   const setDevPanel = useUi((s) => s.setDevPanel);
   const connection = useUi((s) => s.connection);
@@ -462,6 +542,19 @@ export function SettingsTab() {
         <Switch checked={haptics} onChange={setHaptics} label="Haptics" />
       </div>
 
+      <div
+        className="card"
+        style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}
+      >
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 550, fontSize: 'var(--type-title-sm)' }}>Show reasoning</div>
+          <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)' }}>
+            The agent's thinking, above its replies. Live only when Hermes has display.show_reasoning on
+          </div>
+        </div>
+        <Switch checked={showReasoning} onChange={setShowReasoning} label="Show reasoning" />
+      </div>
+
       <NotificationsSection />
 
       <div className="group-head">
@@ -496,6 +589,8 @@ export function SettingsTab() {
           tone={typeof window !== 'undefined' && window.isSecureContext ? 'ok' : 'warn'}
         />
       </div>
+
+      <BackendControls />
 
       {!(typeof window !== 'undefined' && window.isSecureContext) && (
         <div
