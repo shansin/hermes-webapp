@@ -43,94 +43,24 @@ import {
   type SessionInfo,
   type Usage,
 } from '../ws/types';
-import { hermes, CONTROL_TIMEOUT_MS, type ServerRequest } from '../ws/client';
+import { hermes, type ServerRequest } from '../ws/client';
 import { undoTurns } from '../api/gateway';
-import { clarifyQuestionsOf, indexClarifyResults } from '../lib/clarifyExchange';
+import { indexClarifyResults } from '../lib/clarifyExchange';
 import { buzz } from '../lib/haptics';
+import {
+  LIVE_TURN_EVENTS,
+  NOT_REPLAYED,
+  answersFrom,
+  deltaText,
+  lastIndexOf,
+  replaceLast,
+  withClarifyAnswers,
+  type ChatMessage,
+  type MessageTime,
+} from './sessionModel';
+import { answerServerRequest, liveRequests } from './serverRequests';
 
-/**
- * When a message happened, or null when that isn't known.
- *
- * Replayed history carries no timestamps — `session.history` projects role and
- * text only — so restored messages get null rather than the moment the app
- * loaded them, which would be a plausible-looking lie on every line.
- */
-export type MessageTime = number | null;
-
-export type ChatMessage =
-  /**
-   * `displayText` exists for skill/bundle commands: `command.dispatch` hands
-   * back an expanded, model-facing prompt, but the transcript must keep
-   * showing the short invocation the user actually typed.
-   */
-  | {
-      kind: 'user';
-      id: string;
-      text: string;
-      displayText?: string;
-      at: MessageTime;
-      /**
-       * The submit RPC rejected, so the gateway never saw this turn. The
-       * bubble stays in the transcript — losing what someone typed is the
-       * worst possible response to a dropped connection — and offers to send
-       * it again.
-       */
-      failed?: boolean;
-    }
-  /** Local output — slash-command results, and why one wouldn't run. */
-  | {
-      kind: 'notice';
-      id: string;
-      text: string;
-      tone: 'info' | 'error';
-      label?: string;
-      /** An in-app route that fixes what the notice reports. */
-      action?: { label: string; to: string };
-      at: MessageTime;
-    }
-  | {
-      kind: 'assistant';
-      id: string;
-      text: string;
-      reasoning?: string;
-      at: MessageTime;
-      usage?: Usage;
-      interrupted?: boolean;
-    }
-  /**
-   * A delegated child agent. One card per spawn, updated in place as its
-   * `subagent.*` events arrive — the child's own reply body never reaches the
-   * parent, so the card shows progress and a final summary, not a transcript.
-   */
-  | {
-      kind: 'subagent';
-      id: string;
-      /** Stable key across the spawn's events. */
-      agentId: string;
-      goal: string;
-      model?: string;
-      depth?: number;
-      /** What it's doing right now, from the latest tool/thinking event. */
-      activity?: string;
-      summary?: string;
-      status: 'running' | 'done';
-      durationS?: number;
-      tokens?: number;
-      filesWritten?: string[];
-      at: MessageTime;
-    }
-  | {
-      kind: 'tool';
-      id: string;
-      toolId: string;
-      name: string;
-      context?: string;
-      args?: Record<string, unknown>;
-      result?: unknown;
-      durationS?: number;
-      status: 'running' | 'done';
-      at: MessageTime;
-    };
+export type { ChatMessage, MessageTime } from './sessionModel';
 
 interface SessionState {
   /** Gateway session handle (8-hex), distinct from the stored session id. */
@@ -277,107 +207,9 @@ const vibrate: typeof buzz = (...args) => {
  */
 let replayFloor: number | null = null;
 
-/** Events a replay must not fold in again — see `applyReplay`. */
-const NOT_REPLAYED = new Set(['message.start', 'message.delta', 'reasoning.delta', 'thinking.delta']);
-
 /** Approval sheets are keyed so a stale sheet can't answer a newer request. */
 let approvalSeq = 0;
 let clarifySeq = 0;
-
-/**
- * Server requests this client has accepted and not yet answered, by `srq-` id.
- *
- * Held outside the store because what is held is a capability — the
- * `respond` bound to the socket the request arrived on — not something to
- * render. A request for a conversation other than the one on screen is held
- * here unanswered rather than declined: declining withdraws it and fails the
- * agent's tool call, while holding it leaves it in the session's
- * `open_requests` for the resume that opens that conversation again.
- */
-const liveRequests = new Map<string, ServerRequest>();
-
-/**
- * Answer a server request: the response frame if its socket is still live,
- * otherwise `request.answer` over the one that is. Resolves to false when the
- * backend says the request already ended.
- */
-async function answerServerRequest(id: string, result: Record<string, unknown>): Promise<boolean> {
-  const req = liveRequests.get(id);
-  liveRequests.delete(id);
-  if (req?.respond(result)) return true;
-  const res = await hermes.call<{ status?: string }>(
-    'request.answer',
-    { id, result },
-    { timeoutMs: CONTROL_TIMEOUT_MS },
-  );
-  return res?.status !== 'expired';
-}
-
-/**
- * Fill in clarify results from the remembered answers.
- *
- * Applied on every history load, because every history load comes from the
- * projection that dropped them. Matching is by question text — never by
- * position — so a transcript that gained or lost a row cannot slide a real
- * answer under a question it does not belong to.
- */
-function withClarifyAnswers(
-  messages: ChatMessage[],
-  answers: Record<string, unknown>,
-): ChatMessage[] {
-  if (!Object.keys(answers).length) return messages;
-
-  return messages.map((m) => {
-    if (m.kind !== 'tool' || m.name !== 'clarify' || m.result !== undefined) return m;
-    for (const question of clarifyQuestionsOf(m.args)) {
-      const result = answers[question];
-      if (result !== undefined) return { ...m, result };
-    }
-    return m;
-  });
-}
-
-/** The remembered-answer entries a clarify result is worth filing under. */
-function answersFrom(result: unknown): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [question, value] of indexClarifyResults([{ role: 'tool', content: result }])) {
-    out[question] = value;
-  }
-  return out;
-}
-
-function lastIndexOf<T>(items: T[], pred: (item: T) => boolean): number {
-  for (let i = items.length - 1; i >= 0; i--) if (pred(items[i]!)) return i;
-  return -1;
-}
-
-/**
- * Replace one message, from the end, and touch nothing else.
- *
- * The events that update a message in place — a tool finishing, a subagent
- * reporting — used to `map` the whole array, calling the predicate on every
- * historical message and allocating a new one of them per event. In a long
- * tool-heavy session that is O(transcript) work per tool call, on the same
- * socket handler as the token deltas.
- *
- * Searching backwards is what makes the common case cheap rather than merely
- * cheaper: the thing being updated is nearly always the last tool card or the
- * one before it, so the scan stops within a few steps of the end regardless of
- * how long the transcript is.
- *
- * Returns the original array when nothing matches, so `set` is handed the same
- * reference and every subscriber's identity check holds. That matters here:
- * a `tool.complete` for a tool card this client never saw (a resume mid-run,
- * a duplicate frame) previously rewrote the array anyway and re-rendered the
- * whole transcript to change nothing.
- */
-function replaceLast<T>(items: T[], pred: (item: T) => boolean, update: (item: T) => T): T[] {
-  const idx = lastIndexOf(items, pred);
-  if (idx === -1) return items;
-  const next = items.slice();
-  next[idx] = update(items[idx]!);
-  return next;
-}
 
 type Get = () => SessionState;
 type Set = (partial: Partial<SessionState>) => void;
@@ -416,37 +248,6 @@ async function rewind(get: Get, set: Set, idx: number, replacement?: string): Pr
   } finally {
     set({ rewinding: false });
   }
-}
-
-/**
- * Events that only ever occur inside a turn.
- *
- * Two kinds of event are deliberately absent. `message.complete` and
- * `tool.complete` can each be the last thing a finished turn emits, and a
- * completion must never be the reason the UI decides work has started. And
- * `status.update` is not turn-scoped at all: a manual `/compress` is refused
- * while a turn is running and emits one anyway, so trusting it would light the
- * stop button on an idle session with no `message.complete` coming to put it
- * out again.
- */
-const LIVE_TURN_EVENTS = new Set([
-  'message.delta',
-  'reasoning.delta',
-  'thinking.delta',
-  'tool.generating',
-  'tool.start',
-  'subagent.start',
-  'subagent.tool',
-  'subagent.thinking',
-  'approval.request',
-  'clarify.request',
-]);
-
-/** The `text` of a streaming delta, or null when the payload isn't one. */
-function deltaText(payload: unknown): string | null {
-  if (typeof payload !== 'object' || payload === null) return null;
-  const t = (payload as { text?: unknown }).text;
-  return typeof t === 'string' ? t : null;
 }
 
 export const useSession = create<SessionState>((set, get) => ({
