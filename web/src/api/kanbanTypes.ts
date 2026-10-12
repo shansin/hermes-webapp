@@ -43,6 +43,28 @@ export const COLUMN_LABEL: Record<Column, string> = {
   done: 'Done',
 };
 
+/**
+ * Where "advance this card" sends it, per column.
+ *
+ * `blocked` and `scheduled` both send to **`ready`**, and that is not a
+ * cosmetic choice of destination. Only `ready` routes through Hermes'
+ * `unblock_task`, which closes a dangling run pointer, clears the failure
+ * counter and re-gates on the parents before deciding where the card actually
+ * lands. `blocked` used to advance to `todo`, which is a direct status write:
+ * the card left the column looking unblocked while the run pointer it was
+ * holding stayed dangling. Where the card ends up is Hermes' answer, not this
+ * table's — which is why `advanceById` reports the status that comes back.
+ */
+export const NEXT_STAGE: Partial<Record<Column, Column>> = {
+  triage: 'todo',
+  todo: 'ready',
+  scheduled: 'ready',
+  ready: 'running',
+  running: 'review',
+  blocked: 'ready',
+  review: 'done',
+};
+
 /** Every status label, including the one that is not a column. */
 export const STATUS_LABEL: Record<string, string> = { ...COLUMN_LABEL, archived: 'Archived' };
 

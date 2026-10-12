@@ -40,10 +40,14 @@ import { TaskSheet } from '../components/kanban/TaskSheet';
 import { NewTaskSheet } from '../components/kanban/NewTaskSheet';
 import { BoardHealthSheet } from '../components/kanban/BoardHealthSheet';
 import { BoardSettingsSheet } from '../components/kanban/BoardSettingsSheet';
+import { BoardMenuSheet } from '../components/kanban/BoardMenuSheet';
+import { BulkBar } from '../components/kanban/BulkBar';
+import { Lane } from '../components/kanban/Lane';
 import {
   ARCHIVED,
   COLUMNS,
   COLUMN_LABEL,
+  NEXT_STAGE,
   useBoard,
   useBulkTasks,
   useDeleteTask,
@@ -57,34 +61,11 @@ import { useUi } from '../store/ui';
 import { buzz } from '../lib/haptics';
 import { UNDO_WINDOW_MS, scheduleUndoable } from '../lib/undo';
 import { SelectChip, SelectSheet } from '../components/shared/SelectSheet';
-import { Sheet } from '../components/shared/Sheet';
 import { MenuButton } from '../components/shared/MenuButton';
 import { BackButton } from '../components/shared/BackButton';
 import { useWideLayout } from '../lib/useMediaQuery';
 import { useDebounced } from '../lib/useDebounced';
 import { useKanbanEvents } from '../lib/useKanbanEvents';
-
-/**
- * Where "advance this card" sends it, per column.
- *
- * `blocked` and `scheduled` both send to **`ready`**, and that is not a
- * cosmetic choice of destination. Only `ready` routes through Hermes'
- * `unblock_task`, which closes a dangling run pointer, clears the failure
- * counter and re-gates on the parents before deciding where the card actually
- * lands. `blocked` used to advance to `todo`, which is a direct status write:
- * the card left the column looking unblocked while the run pointer it was
- * holding stayed dangling. Where the card ends up is Hermes' answer, not this
- * table's — which is why `advanceById` reports the status that comes back.
- */
-const NEXT_STAGE: Partial<Record<Column, Column>> = {
-  triage: 'todo',
-  todo: 'ready',
-  scheduled: 'ready',
-  ready: 'running',
-  running: 'review',
-  blocked: 'ready',
-  review: 'done',
-};
 
 /** The option that means "no assignee filter". Leading space: never a real name. */
 const ALL = ' all';
@@ -899,234 +880,5 @@ export function KanbanScreen() {
         onCreated={() => qc.invalidateQueries({ queryKey: ['kanban', board ?? null, 'board'] })}
       />
     </div>
-  );
-}
-
-/**
- * The overflow. One sheet rather than four more icons in a header that already
- * carries a menu, a back arrow, a title and a search.
- *
- * Built on `Sheet` directly rather than on `SelectSheet`, which is what it was
- * first: these are *actions*, not values. `SelectSheet` renders a
- * `role="radiogroup"` of `role="radio"` rows with a checkmark on the current
- * one, which announces "Board health" to a screen reader as an option that can
- * be selected or not — and there is no current one to mark, so it was passed
- * `value={null}` to suppress a control it should never have had.
- */
-type BoardAction = 'health' | 'settings' | 'select' | 'archived';
-
-function BoardMenuSheet({
-  open,
-  archived,
-  onClose,
-  onPick,
-}: {
-  open: boolean;
-  archived: boolean;
-  onClose: () => void;
-  onPick: (action: BoardAction) => void;
-}) {
-  const items: { action: BoardAction; label: string; hint: string }[] = [
-    { action: 'health', label: 'Board health', hint: 'Queue age, diagnostics, live workers' },
-    { action: 'settings', label: 'Board settings', hint: 'Routing, orchestration, boards' },
-    { action: 'select', label: 'Select cards', hint: 'Move, assign or archive several at once' },
-    {
-      action: 'archived',
-      label: archived ? 'Hide archived cards' : 'Show archived cards',
-      hint: archived ? 'Back to the eight working columns' : 'Adds a ninth column',
-    },
-  ];
-
-  return (
-    <Sheet open={open} title="Board" onClose={onClose}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {items.map((item) => (
-          <button
-            key={item.action}
-            onClick={() => {
-              buzz('tap');
-              onPick(item.action);
-            }}
-            style={{
-              display: 'block',
-              width: '100%',
-              padding: '10px 12px',
-              borderRadius: 'var(--radius-sm)',
-              background: 'var(--bg-elev-2)',
-              border: '1px solid var(--border-soft)',
-              textAlign: 'left',
-              minHeight: 'var(--tap-min)',
-            }}
-          >
-            <span style={{ display: 'block', fontSize: 'var(--type-body-md)', color: 'var(--text)' }}>
-              {item.label}
-            </span>
-            <span
-              style={{
-                display: 'block',
-                fontSize: 'var(--type-label-sm)',
-                color: 'var(--text-faint)',
-              }}
-            >
-              {item.hint}
-            </span>
-          </button>
-        ))}
-      </div>
-    </Sheet>
-  );
-}
-
-/**
- * What can be done to a selection.
- *
- * Deliberately three verbs and not the whole PATCH surface: a bulk action is a
- * blunt instrument, and the ones worth having are the ones that are tedious
- * card by card. Archiving is offered instead of deleting because there is no
- * undo on a bulk delete anywhere in Hermes, and a mis-tapped selection is
- * exactly how one happens.
- */
-function BulkBar({
-  count,
-  busy,
-  assignees,
-  onApply,
-}: {
-  count: number;
-  busy: boolean;
-  assignees: string[];
-  onApply: (patch: {
-    status?: string;
-    assignee?: string | null;
-    archive?: boolean;
-    reclaim_first?: boolean;
-  }) => void;
-}) {
-  const [picking, setPicking] = useState<'status' | 'assignee' | null>(null);
-
-  return (
-    <>
-      <div
-        style={{
-          display: 'flex',
-          gap: 7,
-          padding: '10px 12px',
-          background: 'var(--bg-elev)',
-          borderTop: '1px solid var(--border-soft)',
-          flexShrink: 0,
-        }}
-      >
-        <button className="btn btn--sm" style={{ flex: 1 }} disabled={busy} onClick={() => setPicking('status')}>
-          Move
-        </button>
-        <button
-          className="btn btn--sm"
-          style={{ flex: 1 }}
-          disabled={busy}
-          onClick={() => setPicking('assignee')}
-        >
-          Assign
-        </button>
-        <button
-          className="btn btn--sm"
-          style={{ flex: 1 }}
-          disabled={busy}
-          onClick={() => onApply({ archive: true })}
-        >
-          Archive {count}
-        </button>
-      </div>
-
-      <SelectSheet
-        open={picking === 'status'}
-        title={`Move ${count} card${count > 1 ? 's' : ''} to`}
-        value={null}
-        /* `running` is missing on purpose: Hermes answers 400 for a direct
-           write to it — the dispatcher owns that transition — so offering it
-           would be offering a guaranteed failure. */
-        options={COLUMNS.filter((c) => c !== 'running').map((c) => ({
-          value: c,
-          label: COLUMN_LABEL[c],
-        }))}
-        onChange={(status) => onApply({ status })}
-        onClose={() => setPicking(null)}
-      />
-      <SelectSheet
-        open={picking === 'assignee'}
-        title={`Assign ${count} card${count > 1 ? 's' : ''} to`}
-        value={null}
-        options={[
-          { value: '', label: 'Nobody', hint: 'The dispatcher will skip them silently' },
-          ...assignees.map((a) => ({ value: a, label: `@${a}` })),
-        ]}
-        /* `reclaim_first`, because a selection made off the board will sooner
-           or later include a card a worker currently holds — and without it
-           Hermes refuses that one card and reports a partial failure the
-           person cannot act on from here. */
-        onChange={(name) => onApply({ assignee: name || null, reclaim_first: true })}
-        onClose={() => setPicking(null)}
-      />
-    </>
-  );
-}
-
-/**
- * One swimlane. Scrolls on its own axis so a hundred-card Done column cannot
- * stretch the board, and keeps its heading pinned while it does.
- */
-function Lane({
-  column,
-  tasks,
-  selecting,
-  selected,
-  revealed,
-  onReveal,
-  onOpen,
-  onAdvance,
-  onDelete,
-}: {
-  column: string;
-  tasks: Task[];
-  selecting: boolean;
-  selected: ReadonlySet<string>;
-  revealed: string | null;
-  onReveal: (id: string | null) => void;
-  onOpen: (id: string) => void;
-  onAdvance: (id: string, to: Column) => void;
-  onDelete: (id: string) => void;
-}) {
-  const next = NEXT_STAGE[column as Column] ?? null;
-  const label = COLUMN_LABEL[column as Column] ?? 'Archived';
-  return (
-    <section className="lane" aria-label={label}>
-      <header className="lane__head">
-        <span className="lane__title">{label}</span>
-        <span className="lane__count">{tasks.length}</span>
-      </header>
-      <div className="lane__cards">
-        {tasks.length === 0 ? (
-          <Empty compact icon="—" title={`Nothing in ${label}`} />
-        ) : (
-          tasks.map((t) => (
-            <TaskCard
-              key={t.id}
-              task={t}
-              next={next}
-              nextLabel={next ? COLUMN_LABEL[next] : ''}
-              selecting={selecting}
-              selected={selected.has(t.id)}
-              revealed={revealed === t.id}
-              onReveal={onReveal}
-              /* Eight lanes share the height, so a card here shows two lines
-                 of summary rather than the six the single column affords. */
-              dense
-              onOpen={onOpen}
-              onAdvance={onAdvance}
-              onDelete={onDelete}
-            />
-          ))
-        )}
-      </div>
-    </section>
   );
 }
