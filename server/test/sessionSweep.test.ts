@@ -41,7 +41,7 @@
  *   make the feed a second copy of every transcript, and an approval already
  *   has a sheet mounted on every screen.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -109,6 +109,10 @@ beforeEach(async () => {
   sessions = await import('../src/push/sessions.js');
   feed = await import('../src/push/feed.js');
 });
+
+// A pass with work in flight arms a follow-up; left running it would fire
+// into the next test's mocks.
+afterEach(() => sessions?.stopSessionSweep());
 
 /** One live session as `session.active_list` reports it. */
 const row = (over: Record<string, unknown> = {}) => ({
@@ -214,7 +218,105 @@ describe('waiting on a human', () => {
     listing(row({ status: 'waiting', message_count: 6 }));
     await sessions.reconcileSessions();
 
-    expect(pushes().map((p) => p.kind)).toEqual(['session.waiting', 'session.waiting']);
+    // The first banner is taken down when the turn resumes, so the second
+    // question arrives on a lock screen that is not still showing the first.
+    expect(pushes().map((p) => p.kind)).toEqual([
+      'session.waiting',
+      'session.waiting.cleared',
+      'session.waiting',
+    ]);
+  });
+});
+
+/**
+ * A banner saying the agent is waiting, left up after it no longer is, sends a
+ * person to a conversation with nothing to answer in it.
+ */
+describe('a waiting banner that went stale', () => {
+  async function announced(): Promise<void> {
+    listing(row({ status: 'working' }));
+    await seed();
+    routes['/api/sessions/s_1'] = { id: 's_1', profile: null };
+    listing(row({ status: 'waiting' }));
+    await sessions.reconcileSessions();
+  }
+
+  it('is replaced quietly, under the same tag, once the session moves on', async () => {
+    await announced();
+    listing(row({ status: 'working' }));
+    await sessions.reconcileSessions();
+
+    expect(pushes()[1]).toMatchObject({
+      tag: 'attention:s_1',
+      kind: 'session.waiting.cleared',
+      quiet: true,
+      url: '/chat?session=s_1',
+    });
+  });
+
+  it('is replaced when the session leaves the registry altogether', async () => {
+    await announced();
+    listing();
+    await sessions.reconcileSessions();
+
+    expect(pushes().map((p) => p.kind)).toEqual(['session.waiting', 'session.waiting.cleared']);
+  });
+
+  it('is replaced once, not on every later pass', async () => {
+    await announced();
+    listing(row({ status: 'working' }));
+    await sessions.reconcileSessions();
+    await sessions.reconcileSessions();
+
+    expect(pushes()).toHaveLength(2);
+  });
+
+  /* Only a banner this module put up is taken down: one seen waiting at
+     seeding was never announced, so there is nothing on a lock screen. */
+  it('leaves alone a session it never announced', async () => {
+    listing(row({ status: 'waiting' }));
+    await seed();
+    listing(row({ status: 'working' }));
+    await sessions.reconcileSessions();
+
+    expect(sendPush).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Newer Hermes stopped signalling a session that goes to `waiting`, so while
+ * anything runs the sweep has to look on its own, and often.
+ */
+describe('pace', () => {
+  it('looks again within seconds while a turn is in flight', async () => {
+    vi.useFakeTimers();
+    try {
+      listing(row({ status: 'working' }));
+      await seed();
+      routes['/api/sessions/s_1'] = { id: 's_1', profile: null };
+      listing(row({ status: 'waiting' }));
+
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      expect(pushes().map((p) => p.kind)).toEqual(['session.waiting']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not keep looking once nothing is in flight', async () => {
+    vi.useFakeTimers();
+    try {
+      listing(row({ status: 'idle' }));
+      await seed();
+      listing(row({ status: 'waiting' }));
+
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      expect(sendPush).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

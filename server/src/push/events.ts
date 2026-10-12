@@ -267,6 +267,16 @@ function handleFrame(line: string): void {
     scheduleSessionSweep();
   }
 
+  /**
+   * Newer Hermes broadcasts this to every peer when an interrupt, a reap or a
+   * teardown withdraws pending approvals. It names the session, but the sweep
+   * already knows which banners are up and how to take one down, so this only
+   * makes it look now rather than on its next tick.
+   */
+  if (params.type === 'approval.cancelled') {
+    scheduleSessionSweep();
+  }
+
   if (!subscribed) return;
 
   const message = toMessage(params.type, payload, sessionId);

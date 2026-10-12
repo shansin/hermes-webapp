@@ -107,6 +107,18 @@ import { listSubscriptions } from './store.js';
 const SWEEP_MS = 45_000;
 
 /**
+ * How soon to look again while any turn is in flight.
+ *
+ * Newer Hermes narrowed `sessions.changed` to fire only when a session row's
+ * own columns move — and a session going to `waiting` (an approval, a
+ * question) moves none of them. So the one transition this module exists to
+ * announce stopped producing a signal, and was seen only on the 45s interval.
+ * While something is running the pass is one socket call, so it is repeated
+ * every few seconds until nothing is; an idle machine pays nothing extra.
+ */
+const ACTIVE_SWEEP_MS = 8_000;
+
+/**
  * How long to wait after a `sessions.changed` before looking.
  *
  * The gateway floors that signal at two seconds and its signature moves on
@@ -132,6 +144,14 @@ const MARK = 'session:';
 const PROFILE_CAP = 8;
 
 let sweep: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Sessions announced as waiting whose banner is still up, so that leaving
+ * `waiting` can replace it. A stale "Hem is waiting for you" on a lock screen
+ * after the question was answered elsewhere — or withdrawn by an interrupt —
+ * sends a person to a conversation with nothing to do in it.
+ */
+const announcedWaiting = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | null = null;
 let running = false;
 let dirty = false;
@@ -343,7 +363,7 @@ async function replyOf(
 }
 
 /** Ask for a pass. Cheap to call, and safe to call repeatedly. */
-export function scheduleSessionSweep(): void {
+export function scheduleSessionSweep(delayMs = SETTLE_MS): void {
   if (running) {
     dirty = true;
     return;
@@ -352,7 +372,7 @@ export function scheduleSessionSweep(): void {
   timer = setTimeout(() => {
     timer = null;
     void reconcileSessions();
-  }, SETTLE_MS);
+  }, delayMs);
   // A pending look at the session list is never a reason to keep the process up.
   timer.unref?.();
 }
@@ -377,6 +397,7 @@ export function stopSessionSweep(): void {
   sweep = null;
   if (timer) clearTimeout(timer);
   timer = null;
+  announcedWaiting.clear();
 }
 
 /** A session waiting on a human. */
@@ -391,6 +412,7 @@ async function reportWaiting(key: string, title: string | null): Promise<void> {
       '/chat';
 
   log.info(`Session waiting on an answer: ${title ?? key}`);
+  announcedWaiting.add(key);
 
   await sendPush({
     title: 'Hem is waiting for you',
@@ -409,6 +431,26 @@ async function reportWaiting(key: string, title: string | null): Promise<void> {
     tag: `attention:${key}`,
     kind: 'session.waiting',
   }).catch((err) => log.warn({ err }, 'Session waiting push failed'));
+}
+
+/**
+ * Take down a waiting banner that no longer applies.
+ *
+ * Same tag, so it replaces the banner rather than adding one, and quiet, so
+ * the correction does not buzz the phone the way the news did.
+ */
+async function retractWaiting(key: string, title: string | null): Promise<void> {
+  announcedWaiting.delete(key);
+  if (!listSubscriptions().length) return;
+  const detail = detailOf.get(key) ?? null;
+  await sendPush({
+    title: 'No longer waiting',
+    body: title ? `${title} — answered or withdrawn.` : 'The question was answered or withdrawn.',
+    url: detail ? withProfile(`/chat?session=${encodeURIComponent(key)}`, detail.profile) : '/chat',
+    tag: `attention:${key}`,
+    kind: 'session.waiting.cleared',
+    quiet: true,
+  }).catch((err) => log.warn({ err }, 'Session waiting retraction failed'));
 }
 
 /** A turn that finished while nobody was watching. */
@@ -517,6 +559,9 @@ export async function reconcileSessions(): Promise<void> {
         await reportWaiting(key, str(row.title));
         continue;
       }
+      if (previousStatus === 'waiting' && status !== 'waiting' && announcedWaiting.has(key)) {
+        await retractWaiting(key, str(row.title));
+      }
 
       /**
        * A completed turn, and only from `idle`. `working` means the count
@@ -538,6 +583,11 @@ export async function reconcileSessions(): Promise<void> {
      */
     pruneWatermarks(MARK, seen);
     inFlight = live;
+    // A session that vanished from the registry while waiting (closed, reaped)
+    // has nobody left to answer; its banner is as stale as an answered one.
+    for (const key of announcedWaiting) {
+      if (!seen.has(`${MARK}${key}`)) await retractWaiting(key, null);
+    }
 
     /* Keep the lookup cache from growing with every session the gateway has
        ever held. It is a shortcut, not state — a dropped entry costs one extra
@@ -550,6 +600,8 @@ export async function reconcileSessions(): Promise<void> {
     if (dirty) {
       dirty = false;
       scheduleSessionSweep();
+    } else if (inFlight.length) {
+      scheduleSessionSweep(ACTIVE_SWEEP_MS);
     }
   }
 }

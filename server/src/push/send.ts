@@ -26,6 +26,11 @@ export interface PushMessage {
   tag: string;
   /** Event type, so the service worker can suppress ones already on screen. */
   kind: string;
+  /**
+   * Replace whatever banner holds `tag` without sounding or vibrating again —
+   * for correcting one that has gone stale, not for news.
+   */
+  quiet?: boolean;
 }
 
 let publicKey = '';

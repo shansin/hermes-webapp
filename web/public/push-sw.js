@@ -73,7 +73,11 @@ self.addEventListener('push', (event) => {
         // `tag` collapses repeats of the same kind of event rather than
         // stacking them; the server picks it per event type.
         tag: data.tag || 'hermes',
-        renotify: true,
+        // A quiet push corrects a banner already showing — "the agent is
+        // waiting for you" after it no longer is — and must not buzz the
+        // phone a second time to say so.
+        renotify: !data.quiet,
+        silent: Boolean(data.quiet),
         icon: '/icon-192.png',
         badge: '/icon-192.png',
         data: { url },
