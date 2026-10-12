@@ -18,9 +18,8 @@
  * selecting (long-press, then tap to build a range to copy or share).
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { splitStableMarkdown } from '../../lib/streamingMarkdown';
 import { splitAttachedImages } from '../../lib/localImages';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Markdown } from './MarkdownAsync';
 import { ToolCallCard } from './ToolCallCard';
 import { LiveDelegations } from './LiveDelegations';
@@ -31,8 +30,9 @@ import { LocalImage } from './LocalImage';
 import { EditTurnSheet } from './EditTurnSheet';
 import { MessageActions } from './MessageActions';
 import { ChatSearchBar } from './ChatSearchBar';
+import { StreamingTail } from './StreamingTail';
+import { RecentSessions } from './RecentSessions';
 import {
-  IconChevron,
   IconClose,
   IconDown,
   IconRefresh,
@@ -40,14 +40,11 @@ import {
   IconStop,
   IconUp,
 } from '../shared/Icons';
-import { useSessions } from '../../api/sessions';
-import { kindOf } from '../../lib/sessionKinds';
-import { Empty, formatTokens, relTime } from '../shared/misc';
+import { Empty, formatTokens } from '../shared/misc';
 import { useSession, type ChatMessage, type MessageTime } from '../../store/session';
 import { onSpeakingChange, speak, stopSpeaking } from '../../lib/audio';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
-import { useThrottled } from '../../lib/useThrottled';
 import { useDebounced } from '../../lib/useDebounced';
 import { useLongPress } from '../../lib/useLongPress';
 import { chatToMarkdown, copyText, messageText, outcomeToast, shareText } from '../../lib/share';
@@ -71,13 +68,6 @@ export function unreadSince(messages: { id: string }[], anchorId: string | null)
   const idx = messages.findIndex((m) => m.id === anchorId);
   return idx < 0 ? 0 : messages.length - 1 - idx;
 }
-
-/**
- * How often the streaming bubble is allowed to re-render, in ms. ~10 fps: fast
- * enough to read as continuous, slow enough that markdown parsing stops
- * dominating the frame budget on a phone.
- */
-const STREAM_RENDER_MS = 100;
 
 /**
  * How long the find box must sit still before the transcript is filtered.
@@ -881,258 +871,3 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
     </>
   );
 });
-
-/**
- * The streaming reply, parsed once per block instead of once per tick.
- *
- * `Markdown` re-parses everything it is given, and the tail hands it the whole
- * accumulated message ten times a second — so the cost of watching a reply
- * arrive grows with the reply, and by the last paragraph of a long answer most
- * of the work is re-parsing text that finished minutes ago and cannot change.
- *
- * `splitStableMarkdown` finds the boundary between the finished blocks and the
- * one still being written (its own file, with the reasoning and the tests for
- * where that boundary may legally fall). The finished half is handed to a
- * separate, memoized `Markdown` whose `children` string is identical between
- * ticks, so React skips it entirely; only the open block is re-parsed. What is
- * re-parsed per tick becomes a function of the current paragraph rather than
- * of the whole message.
- *
- * The alternative was rendering the tail as plain text until `message.complete`
- * and parsing once at the end. It is cheaper still and was rejected: the reply
- * would arrive as unformatted markdown source — visible asterisks, unrendered
- * fences — and snap into shape at the end, which is worse to watch than a
- * little parsing.
- */
-function StreamingMarkdown({ text }: { text: string }) {
-  const { stable, open } = useMemo(() => splitStableMarkdown(text), [text]);
-
-  if (!stable) return <Markdown>{open}</Markdown>;
-
-  return (
-    <>
-      {/* The class restores the bottom margin `.md > *:last-child` removes —
-          the finished half is no longer the end of the message. */}
-      <div className="md-stable">
-        <Markdown>{stable}</Markdown>
-      </div>
-      <Markdown>{open}</Markdown>
-    </>
-  );
-}
-
-/**
- * The live turn — the only thing in the chat that re-renders per token.
- *
- * This is deliberately a separate component from the transcript. Both read the
- * same store, but `MessageList` subscribes only to `messages`, so a delta
- * arriving 40×/second no longer walks and re-renders every historical bubble,
- * tool card and thinking block. The per-token cost goes from O(transcript) to
- * O(1).
- *
- * The text is throttled on top of that, because rendering it means re-parsing
- * the whole partial markdown document — remark-gfm and highlight.js included —
- * from scratch each time.
- */
-const StreamingTail = memo(function StreamingTail({ onGrow }: { onGrow: () => void }) {
-  const streamingText = useSession((s) => s.streamingText);
-  const streamingReasoning = useSession((s) => s.streamingReasoning);
-  const statusLine = useSession((s) => s.statusLine);
-  const thinkingHint = useSession((s) => s.thinkingHint);
-  const running = useSession((s) => s.running);
-
-  const text = useThrottled(streamingText, STREAM_RENDER_MS);
-  const showReasoning = useUi((s) => s.showReasoning);
-  const reasoning = useThrottled(showReasoning ? streamingReasoning : '', STREAM_RENDER_MS);
-  /**
-   * Throttled like the other two, and for exactly the same reason.
-   *
-   * `thinking.delta` arrives at the same 30–60/s as the text deltas and the
-   * store writes the hint on every one of them. Read raw, it re-rendered this
-   * component at the full event rate through the entire pre-answer phase —
-   * the phase where the two values that *were* throttled are both empty, so
-   * the throttling bought nothing and this was the only thing driving the
-   * renders. Same 10fps ceiling: a decorative "pondering…" line has no claim
-   * to a higher frame rate than the answer.
-   */
-  const hint = useThrottled(thinkingHint, STREAM_RENDER_MS);
-
-  // Same frame as the new content, so the tail never visibly lags the tokens.
-  useLayoutEffect(() => {
-    onGrow();
-  }, [text, reasoning, statusLine, onGrow]);
-
-  if (!reasoning && !text && !running) return null;
-
-  return (
-    <div className="msg msg--assistant">
-      {reasoning && <ThinkingBlock text={reasoning} streaming />}
-      {text ? (
-        <div className="msg__body">
-          <StreamingMarkdown text={text} />
-        </div>
-      ) : (
-        // Shown for the whole pre-answer phase now, reasoning or not. It used
-        // to be suppressed while reasoning was streaming, because the expanded
-        // thinking block was the thing to watch — but that block is collapsed
-        // by default now, so without this the wait before the first token had
-        // nothing moving in it at all.
-        <div className="status-line">
-          {statusLine || hint || 'Working…'}
-          <span className="caret" />
-        </div>
-      )}
-      {text && statusLine && <div className="status-line">{statusLine}</div>}
-    </div>
-  );
-});
-
-/**
- * How many rows the list may ever show, and what one costs vertically.
- *
- * The cap is a judgement rather than a limit: past about eight this stops
- * being "pick up where you left off" and becomes the Sessions screen, which is
- * one tap away and does the job better. `ROW_PX` is the row's height plus its
- * gap, used only to work out how many will fit.
- */
-const MAX_RECENTS = 8;
-/**
- * How many rows to ask for so that eight *conversations* survive the filter.
- *
- * The list below shows only what a person started, and on this install the
- * automated sessions outnumber those heavily — a morning of cron runs and a
- * decomposed board can be thirty rows deep before yesterday's chat. Asking for
- * eight and filtering would routinely render one row, or none. The endpoint
- * has no `source` filter, so the pool is fetched and narrowed here; it is
- * still one request, of compact rows, and it is the only `useSessions` call in
- * the app.
- */
-const RECENTS_POOL = 60;
-const ROW_PX = 50;
-/** Never fewer than this, even on a short screen — one row reads as an error. */
-const MIN_RECENTS = 3;
-
-/**
- * The most recent conversations, offered on the empty chat.
- *
- * This is the screen the app opens on, and picking up yesterday's thread is
- * the most common thing to want next — it was previously three taps away
- * through the drawer and the session list, on a screen that was otherwise
- * two-thirds empty.
- *
- * The count is **measured, not fixed**. Three was chosen for a phone and left
- * a tablet and a desktop window mostly blank, while a fixed larger number
- * would overflow a small phone and push the list under the composer. So the
- * space actually left below the heading decides, clamped at both ends: enough
- * rows to be worth reading, never so many that this becomes a second session
- * list.
- *
- * One query either way. `useSessions` is keyed on its limit, so fetching the
- * maximum once and slicing is a single request that survives a resize, where
- * fetching the measured count would refetch every time the window changed.
- *
- * Cron runs and kanban workers are excluded. This is "pick up where you left
- * off", and neither of those is somewhere you left off — they are the agent's
- * own scheduled and dispatched work, they carry no thread of yours to resume,
- * and on a busy machine they are most of the list. `kindOf` is the Sessions
- * screen's own rule, including its one guarantee: an unrecognised source
- * counts as yours, so a surface a future Hermes adds appears here rather than
- * disappearing silently.
- */
-function RecentSessions() {
-  const navigate = useNavigate();
-  const { data } = useSessions(RECENTS_POOL);
-  const [fits, setFits] = useState(MIN_RECENTS);
-  const box = useRef<HTMLDivElement | null>(null);
-
-  const mine = useMemo(
-    () => (data?.sessions ?? []).filter((s) => kindOf(s.source) === 'mine'),
-    [data?.sessions],
-  );
-
-  /**
-   * Work out how many rows fit.
-   *
-   * **Not** from this element's distance to the bottom of the screen, which is
-   * the obvious measurement and is circular: the empty state is vertically
-   * centred, so adding a row moves the whole block *up*, which frees room
-   * below, which admits another row. Measured that way it settles wherever it
-   * started — three rows on a phone with space for eight.
-   *
-   * So the two stable quantities are used instead: the scroll viewport, whose
-   * height does not depend on its content, and the height of everything in the
-   * empty state that is *not* this list (the mark, the title, the hint). Their
-   * difference is constant however many rows are drawn, so the count converges
-   * on the first pass.
-   *
-   * A `ResizeObserver` rather than a window listener because the composer
-   * grows as you type and the keyboard takes half a phone's screen, and
-   * neither of those is a window resize.
-   */
-  useEffect(() => {
-    const el = box.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-
-    const measure = () => {
-      const viewport = el.closest('.chat__list');
-      const empty = el.closest('.empty');
-      if (!viewport || !empty) return;
-      // Everything above this list inside the empty state. Constant.
-      const chrome = (empty as HTMLElement).offsetHeight - el.offsetHeight;
-      // The real row height, so this follows the type scale rather than
-      // assuming it; the constant is only a fallback for an empty list.
-      const row = (el.querySelector('.recents__row') as HTMLElement | null)?.offsetHeight;
-      const step = (row ?? ROW_PX - 6) + 6;
-      const room = viewport.clientHeight - chrome - 32;
-      const n = Math.floor(room / step);
-      setFits(Math.max(MIN_RECENTS, Math.min(MAX_RECENTS, n)));
-    };
-
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    const viewport = el.closest('.chat__list');
-    if (viewport) observer.observe(viewport);
-    return () => observer.disconnect();
-    /* Keyed on how many sessions came back, not on how many are shown. This
-       component renders nothing until the query resolves, so on the first pass
-       the ref is null and there is nothing to measure or observe — with an
-       empty dependency list that was the only pass there ever was, and the
-       count stayed at its floor for ever. Depending on the *displayed* count
-       instead would tear the observer down and rebuild it on every adjustment
-       it made. */
-  }, [mine.length]);
-
-  const rows = mine.slice(0, fits);
-  if (rows.length === 0) return null;
-
-  return (
-    <div className="recents" ref={box}>
-      <div className="recents__label">PICK UP WHERE YOU LEFT OFF</div>
-      <div className="recents__list">
-        {rows.map((r) => (
-          <button
-            key={r.id}
-            className="card recents__row"
-            onClick={() => {
-              buzz('tap');
-              // Replace: this list is *on* /chat, so pushing another /chat
-              // entry left back landing on the same route without remounting
-              // — a press that visibly did nothing, and a second one that left
-              // the app.
-              navigate(`/chat?resume=${encodeURIComponent(r.id)}`, { replace: true });
-            }}
-          >
-            <span className="recents__text">
-              <span className="recents__title">{r.title || 'Untitled'}</span>
-              <span className="recents__meta">
-                {r.message_count} msg · {relTime(r.ended_at ?? r.started_at)}
-              </span>
-            </span>
-            <IconChevron size={15} />
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
