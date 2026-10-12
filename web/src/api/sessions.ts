@@ -535,7 +535,7 @@ export function useSessionRow(id: string | null, profile?: string | null) {
 
 /**
  * Images in a stored transcript as `[image]` rather than their data URIs —
- * see `inlineImagesAccepted` in `api/gateway.ts` for why that loses nothing
+ * see `resumeSession` in `api/gateway.ts` for why that loses nothing
  * here. Safe to send to any Hermes: an older one ignores a query parameter it
  * does not know, unlike the socket, which rejects an unknown key.
  */

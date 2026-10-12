@@ -20,7 +20,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { splitStableMarkdown } from '../../lib/streamingMarkdown';
 import { splitAttachedImages } from '../../lib/localImages';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Markdown } from './MarkdownAsync';
 import { ToolCallCard } from './ToolCallCard';
 import { LiveDelegations } from './LiveDelegations';
@@ -783,6 +783,11 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
         <div className={`notice${m.tone === 'error' ? ' notice--error' : ''}`}>
           {m.label && <div className="notice__label">{m.label}</div>}
           <pre className="notice__body">{m.text}</pre>
+          {m.action && (
+            <Link className="btn btn--sm" to={m.action.to} style={{ marginTop: 8, display: 'inline-block' }}>
+              {m.action.label}
+            </Link>
+          )}
         </div>
       );
     }

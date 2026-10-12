@@ -50,7 +50,9 @@ export function ModelsTab() {
    * default. Scoping the screen is the same pattern Sessions and Skills use,
    * and for the same reason — see `shared/ProfileSelect.tsx`.
    */
-  const [profile, setProfile] = useState<string | null>(null);
+  // Seeded from `?profile=` so a link from a conversation's "Set up a model"
+  // notice opens on that conversation's profile rather than the active one.
+  const [profile, setProfile] = useState<string | null>(() => params.get('profile'));
   // Anything unrecognised falls back to the picker rather than to a blank
   // screen — a hand-typed or stale `?tab=` must not strand anyone.
   const tab = params.get('tab') === 'usage' ? 'usage' : 'setup';

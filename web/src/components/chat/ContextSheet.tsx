@@ -18,6 +18,7 @@ import {
   setApprovalMode,
   titleSession,
   undoTurns,
+  askSideQuestion,
 } from '../../api/gateway';
 import { execCommand } from '../../api/commands';
 import { formatTokens } from '../shared/misc';
@@ -312,6 +313,7 @@ export function ContextSheet({ open, onClose }: { open: boolean; onClose: () => 
               Checkpoints
             </button>
           </div>
+          <SideQuestion sessionId={sessionId} />
           <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', margin: '10px 2px 0', lineHeight: 1.5 }}>
             Answers land in the transcript. Queue and Background take their prompt
             as the next message you send — type it after tapping, or run{' '}
@@ -320,5 +322,52 @@ export function ContextSheet({ open, onClose }: { open: boolean; onClose: () => 
         </>
       )}
     </Sheet>
+  );
+}
+
+/**
+ * A question about the conversation that does not become part of it.
+ *
+ * `prompt.btw` answers off a snapshot with a detached agent, so it works while
+ * a turn is still running — the one moment a normal message would only queue —
+ * and it leaves the history and the prompt cache exactly as they were. The
+ * answer comes back on its own as `btw.complete` and lands as a notice.
+ */
+function SideQuestion({ sessionId }: { sessionId: string | null }) {
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const addNotice = useSession((s) => s.addNotice);
+
+  const ask = async () => {
+    const q = text.trim();
+    if (!sessionId || !q || sending) return;
+    setSending(true);
+    buzz('tap');
+    try {
+      await askSideQuestion(sessionId, q);
+      setText('');
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : 'Could not ask that', 'error', 'Side question');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+      <input
+        className="field"
+        style={{ flex: 1, minWidth: 0 }}
+        placeholder="Ask on the side — not added to the chat"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void ask();
+        }}
+      />
+      <button className="btn btn--sm" disabled={!sessionId || !text.trim() || sending} onClick={() => void ask()}>
+        {sending ? 'Asking…' : 'Ask'}
+      </button>
+    </div>
   );
 }

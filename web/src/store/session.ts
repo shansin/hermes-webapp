@@ -78,7 +78,16 @@ export type ChatMessage =
       failed?: boolean;
     }
   /** Local output — slash-command results, and why one wouldn't run. */
-  | { kind: 'notice'; id: string; text: string; tone: 'info' | 'error'; label?: string; at: MessageTime }
+  | {
+      kind: 'notice';
+      id: string;
+      text: string;
+      tone: 'info' | 'error';
+      label?: string;
+      /** An in-app route that fixes what the notice reports. */
+      action?: { label: string; to: string };
+      at: MessageTime;
+    }
   | {
       kind: 'assistant';
       id: string;
@@ -1060,6 +1069,59 @@ export const useSession = create<SessionState>((set, get) => ({
         if (!p.success) return;
         vibrate('approval');
         set({ clarify: { ...normalizeClarify(p.data), id: ++clarifySeq } });
+        return;
+      }
+
+      /**
+       * A failure outside a turn: the agent could not be built, a model
+       * switch or a compression failed. These were dropped outright — the
+       * switch fell through as an unknown type — so a session whose agent
+       * never came up just sat there, and the first sign was a prompt that
+       * went nowhere. A failure *inside* a turn arrives on that turn's own
+       * terminal frame instead, so this does not touch `running`.
+       *
+       * `provider_not_configured` is the one with a fix in this app: no model
+       * provider is set up, and the Models screen is where one is chosen.
+       */
+      case 'error': {
+        const p = payload as { message?: unknown; code?: unknown } | undefined;
+        const text = typeof p?.message === 'string' && p.message ? p.message : 'Something went wrong.';
+        const action =
+          p?.code === 'provider_not_configured'
+            ? { label: 'Set up a model', to: s.profile ? `/models?profile=${encodeURIComponent(s.profile)}` : '/models' }
+            : undefined;
+        set({
+          messages: [
+            ...s.messages,
+            { kind: 'notice', id: nextId(), text, tone: 'error', label: 'Hermes', action, at: Date.now() },
+          ],
+        });
+        return;
+      }
+
+      /**
+       * The answer to a side question (`prompt.btw`). It belongs to no turn —
+       * it was answered off a snapshot — so it lands as a notice rather than
+       * a message, and leaves `running` and the stream alone.
+       */
+      case 'btw.complete': {
+        const p = payload as { question?: unknown; text?: unknown } | undefined;
+        const text = typeof p?.text === 'string' ? p.text : '';
+        const question = typeof p?.question === 'string' ? p.question : '';
+        const failed = text.startsWith('error: ');
+        set({
+          messages: [
+            ...s.messages,
+            {
+              kind: 'notice',
+              id: nextId(),
+              text: text || '(no answer)',
+              tone: failed ? 'error' : 'info',
+              label: question ? `Side question — ${question}` : 'Side question',
+              at: Date.now(),
+            },
+          ],
+        });
         return;
       }
 

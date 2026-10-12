@@ -69,3 +69,56 @@ describe('resumeSession', () => {
     expect(call).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * A create whose response is lost used to leave an empty session behind the
+ * retry. The key makes a retried create return the first one.
+ */
+describe('createSession', () => {
+  const loadCreate = async () => (await import('../src/api/gateway')).createSession;
+
+  it('sends an idempotency key', async () => {
+    call.mockResolvedValue(ok);
+    await (await loadCreate())();
+    expect(typeof paramsOf(0).idempotency_key).toBe('string');
+  });
+
+  it('reuses the key when the first attempt got no answer', async () => {
+    call.mockRejectedValueOnce(new Error('session.create timed out')).mockResolvedValue(ok);
+    const create = await loadCreate();
+    await expect(create()).rejects.toThrow('timed out');
+    await create();
+
+    expect(paramsOf(1).idempotency_key).toBe(paramsOf(0).idempotency_key);
+  });
+
+  it('mints a fresh key once a create has been answered', async () => {
+    call.mockResolvedValue(ok);
+    const create = await loadCreate();
+    await create();
+    await create();
+
+    expect(paramsOf(1).idempotency_key).not.toBe(paramsOf(0).idempotency_key);
+  });
+
+  it('mints a fresh key after the gateway refused the create', async () => {
+    call.mockRejectedValueOnce(new RpcError('agent build failed', 5000)).mockResolvedValue(ok);
+    const create = await loadCreate();
+    await expect(create()).rejects.toThrow();
+    await create();
+
+    expect(paramsOf(1).idempotency_key).not.toBe(paramsOf(0).idempotency_key);
+  });
+
+  it('drops the key on a backend that does not know it, and keeps creating', async () => {
+    call
+      .mockRejectedValueOnce(new RpcError('invalid params for session.create: idempotency_key: Extra inputs are not permitted', 4000))
+      .mockResolvedValue(ok);
+    const create = await loadCreate();
+    await create();
+    await create();
+
+    expect(paramsOf(1)).not.toHaveProperty('idempotency_key');
+    expect(paramsOf(2)).not.toHaveProperty('idempotency_key');
+  });
+});

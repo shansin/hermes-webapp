@@ -24,6 +24,59 @@ export interface CreateOptions {
   title?: string;
 }
 
+/**
+ * Call a method with parameters only newer Hermes knows, falling back without
+ * them on a backend that does not.
+ *
+ * The gateway validates params with `extra="forbid"`: an unknown key answers
+ * 4000 ("invalid params for <method>: <key>: Extra inputs are not permitted")
+ * rather than being ignored. So a parameter added for a newer backend, sent
+ * unconditionally, turns into a method that fails outright on an older one —
+ * every resume, or every new chat. A key refused once is remembered for the
+ * page's lifetime, so an old backend costs one wasted round trip, not one per
+ * call.
+ */
+const refusedParams = new Set<string>();
+
+async function callTolerant(
+  method: string,
+  params: Record<string, unknown>,
+  optional: Record<string, unknown>,
+): Promise<unknown> {
+  const extra = Object.fromEntries(
+    Object.entries(optional).filter(([key]) => !refusedParams.has(`${method}:${key}`)),
+  );
+  try {
+    return await hermes.call(method, { ...params, ...extra }, { timeoutMs: CONTROL_TIMEOUT_MS });
+  } catch (err) {
+    if (!(err instanceof RpcError) || err.code !== 4000) throw err;
+    const refused = Object.keys(extra).filter((key) => err.message.includes(`: ${key}:`));
+    if (!refused.length) throw err;
+    for (const key of refused) refusedParams.add(`${method}:${key}`);
+    return callTolerant(method, params, optional);
+  }
+}
+
+/**
+ * The idempotency key of a create that has not been confirmed yet.
+ *
+ * A create whose *response* is lost — the radio drops after the gateway built
+ * the session — used to mean a second tap made a second session, and the first
+ * sat in the list as an empty conversation. Newer Hermes takes a caller-chosen
+ * `idempotency_key` and answers a repeat with the session the first call made,
+ * so the key is kept until a create is answered either way and reused by the
+ * next attempt in the meantime. Bounded in time: a create retried minutes
+ * later is a new intent, not a retry.
+ */
+let pendingCreate: { key: string; at: number } | null = null;
+const CREATE_RETRY_WINDOW_MS = 2 * 60_000;
+
+function newKey(): string {
+  // `randomUUID` needs a secure context, and plain-HTTP LAN is a supported way in.
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return Array.from({ length: 4 }, () => Math.random().toString(16).slice(2, 10)).join('');
+}
+
 export async function createSession(opts: CreateOptions = {}): Promise<SessionCreateResult> {
   const params: Record<string, unknown> = { cols: 80, source: 'web' };
   if (opts.model) params.model = opts.model;
@@ -32,8 +85,19 @@ export async function createSession(opts: CreateOptions = {}): Promise<SessionCr
   if (opts.cwd) params.cwd = opts.cwd;
   if (opts.title) params.title = opts.title;
 
-  const raw = await hermes.call('session.create', params, { timeoutMs: CONTROL_TIMEOUT_MS });
-  return SessionCreateResultSchema.parse(raw);
+  if (!pendingCreate || Date.now() - pendingCreate.at > CREATE_RETRY_WINDOW_MS) {
+    pendingCreate = { key: newKey(), at: Date.now() };
+  }
+  try {
+    const raw = await callTolerant('session.create', params, { idempotency_key: pendingCreate.key });
+    pendingCreate = null;
+    return SessionCreateResultSchema.parse(raw);
+  } catch (err) {
+    // The gateway answered, so nothing was made under this key that a retry
+    // could find. Only a call that got no answer leaves it pending.
+    if (err instanceof RpcError) pendingCreate = null;
+    throw err;
+  }
 }
 
 /** Reopen a stored session by its persistent id. */
@@ -49,39 +113,20 @@ export async function resumeSession(
   storedId: string,
   profile?: string | null,
 ): Promise<SessionCreateResult> {
-  const base = { session_id: storedId, cols: 80, source: 'web', ...(profile ? { profile } : {}) };
-  const resume = (params: Record<string, unknown>) =>
-    hermes.call('session.resume', params, { timeoutMs: CONTROL_TIMEOUT_MS });
-
-  let raw: unknown;
-  if (inlineImagesAccepted === false) {
-    raw = await resume(base);
-  } else {
-    try {
-      raw = await resume({ ...base, inline_images: false });
-      inlineImagesAccepted = true;
-    } catch (err) {
-      if (!(err instanceof RpcError) || err.code !== 4000 || !/inline_images/.test(err.message)) throw err;
-      inlineImagesAccepted = false;
-      raw = await resume(base);
-    }
-  }
+  /**
+   * `inline_images: false` makes an image part in the history come back as
+   * `[image]` instead of its whole data URI — which this app could never draw
+   * anyway (the markdown sanitiser blanks `data:` URLs), so it was megabytes
+   * over a phone's radio to render nothing. Pictures the composer sends travel
+   * as `@image:` path refs and are untouched by it.
+   */
+  const raw = await callTolerant(
+    'session.resume',
+    { session_id: storedId, cols: 80, source: 'web', ...(profile ? { profile } : {}) },
+    { inline_images: false },
+  );
   return SessionCreateResultSchema.parse(raw);
 }
-
-/**
- * Whether this backend takes `inline_images` on `session.resume`.
- *
- * With it off, an image part in the history comes back as `[image]` instead
- * of its whole data URI — which this app could never draw anyway (the
- * markdown sanitiser blanks `data:` URLs), so it was megabytes over a phone's
- * radio to render nothing. Pictures the composer sends travel as `@image:`
- * path refs and are untouched by it. Older Hermes validates params with
- * `extra="forbid"` and rejects the unknown key with 4000, so the first
- * refusal is remembered and every later resume leaves it out — one wasted
- * round trip per page load, not one per resume.
- */
-let inlineImagesAccepted: boolean | null = null;
 
 export async function fetchHistory(sessionId: string): Promise<HistoryMessage[]> {
   const raw = await hermes.call(
@@ -233,3 +278,15 @@ export async function undoTurns(sessionId: string, turns = 1): Promise<string> {
 }
 
 export const REASONING_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/**
+ * Ask a side question about the live conversation (`prompt.btw`).
+ *
+ * Answered by a detached agent over a snapshot of the transcript, so it does
+ * not join the history, does not wait for a running turn, and does not
+ * disturb the prompt cache. The answer arrives later as `btw.complete` on
+ * this session; the call itself only says it was accepted.
+ */
+export async function askSideQuestion(sessionId: string, text: string): Promise<void> {
+  await hermes.call('prompt.btw', { session_id: sessionId, text }, { timeoutMs: CONTROL_TIMEOUT_MS });
+}
