@@ -191,8 +191,10 @@ async function replyOf(runId: string, profile: string | null): Promise<string | 
   const messages = Array.isArray(body) ? body : (body?.messages ?? []);
 
   for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i] as { role?: unknown; content?: unknown };
-    if (m?.role !== 'assistant') continue;
+    const m = messages[i] as { role?: unknown; content?: unknown; display_kind?: unknown };
+    // A compaction summary is stored as a message and served marked hidden;
+    // it is the backend's notes to itself, not the reply.
+    if (m?.role !== 'assistant' || m.display_kind === 'hidden') continue;
     const content = str(m.content);
     if (content) return fullText(content);
   }
@@ -260,7 +262,9 @@ function runsFor(
   scoped: unknown[] | null,
   cronSessions: unknown[],
 ): { run: GatewayRun; profile: string | null }[] {
-  const found = (scoped ?? []).map((raw) => ({ run: raw as GatewayRun, profile }));
+  const found = (scoped ?? [])
+    .filter((raw) => !isOutputFileRow(raw as GatewayRun))
+    .map((raw) => ({ run: raw as GatewayRun, profile }));
   const seen = new Set(found.map((f) => str(f.run.id)).filter(Boolean));
 
   for (const raw of cronSessions) {
@@ -273,6 +277,26 @@ function runsFor(
     found.push({ run, profile: null });
   }
   return found;
+}
+
+/**
+ * A run row the backend built from a file under `cron/output/<job>/`, not
+ * from a session.
+ *
+ * Newer Hermes answers the runs endpoint with these alongside the session
+ * rows, so a script job's history is no longer empty. None of them is a run
+ * this module can report: there is no conversation to quote or link to (the
+ * ids are `cron_output:<job>:…`, which `/api/sessions` 404s), the title is
+ * `COMPLETED · <preview>` — which `jobNameFromTitle` would cut down to the
+ * word "COMPLETED" — and the `exec:<index>` form is positional, so the same
+ * run changes id as newer ones arrive and would be announced again. Left in,
+ * the first pass after an upgrade would push every output file on disk as a
+ * fresh run. A failed script is still reported by `reportFailedExecution`,
+ * which reads the job record rather than this list.
+ */
+function isOutputFileRow(run: GatewayRun): boolean {
+  const id = str(run.id);
+  return (run as { source?: unknown }).source === 'cron_output' || (id?.startsWith('cron_output:') ?? false);
 }
 
 /**

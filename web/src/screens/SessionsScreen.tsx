@@ -265,10 +265,20 @@ export function SessionsScreen() {
     const { undo } = scheduleUndoable(
       {
         commit: () => {
-          void bulkDelete({ ids, profile }).catch((e: unknown) => {
-            restoreSessions(qc, snapshot);
-            toast(e instanceof Error ? e.message : 'Bulk delete failed', 'error');
-          });
+          void bulkDelete({ ids, profile })
+            .then((res) => {
+              /* Newer Hermes keeps a session a live turn holds and lists it
+                 here. The refetch brings its row back on its own; this says
+                 why, since the toast above already claimed it was deleted. */
+              const kept = (res as { skipped_active?: unknown } | undefined)?.skipped_active;
+              if (Array.isArray(kept) && kept.length) {
+                toast(`${kept.length} still running ${kept.length === 1 ? 'was' : 'were'} kept`, 'warn');
+              }
+            })
+            .catch((e: unknown) => {
+              restoreSessions(qc, snapshot);
+              toast(e instanceof Error ? e.message : 'Bulk delete failed', 'error');
+            });
         },
         revert: () => restoreSessions(qc, snapshot),
       },

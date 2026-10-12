@@ -533,13 +533,22 @@ export function useSessionRow(id: string | null, profile?: string | null) {
   });
 }
 
+/**
+ * Images in a stored transcript as `[image]` rather than their data URIs —
+ * see `inlineImagesAccepted` in `api/gateway.ts` for why that loses nothing
+ * here. Safe to send to any Hermes: an older one ignores a query parameter it
+ * does not know, unlike the socket, which rejects an unknown key.
+ */
+const NO_INLINE_IMAGES = '?inline_images=false';
+
 export function useSessionMessages(id: string | null, profile?: string | null) {
   return useQuery({
     queryKey: sessionKeys.messages(id ?? '', profile),
     queryFn: () =>
       api.get<{ messages: StoredMessage[] }>(
-        sessionUrl(`/api/sessions/${encodeURIComponent(id!)}/messages`, profile),
+        sessionUrl(`/api/sessions/${encodeURIComponent(id!)}/messages${NO_INLINE_IMAGES}`, profile),
       ),
+    select: (data) => ({ ...data, messages: visibleMessages(data?.messages) }),
     enabled: Boolean(id),
     /**
      * A stored transcript is not a live one.
@@ -662,7 +671,20 @@ export async function fetchStoredMessages(
   profile?: string | null,
 ): Promise<StoredMessage[]> {
   const res = await api.get<{ messages: StoredMessage[] }>(
-    sessionUrl(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
+    sessionUrl(`/api/sessions/${encodeURIComponent(id)}/messages${NO_INLINE_IMAGES}`, profile),
   );
-  return res.messages;
+  return visibleMessages(res.messages);
+}
+
+/**
+ * Drop the rows the backend marks `display_kind: "hidden"`.
+ *
+ * Those are compaction summaries — the agent's own condensed notes, stored as
+ * a message so the next turn can read them — and newer Hermes also returns
+ * the pre-compaction transcript around them, so they land mid-conversation as
+ * a wall of `[System: …]` text that nobody wrote. Every other `display_kind`
+ * (a failed turn, a recovered ask) is something to show.
+ */
+export function visibleMessages(messages: StoredMessage[] | undefined): StoredMessage[] {
+  return (messages ?? []).filter((m) => (m as { display_kind?: unknown }).display_kind !== 'hidden');
 }

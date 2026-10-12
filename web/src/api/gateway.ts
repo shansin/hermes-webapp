@@ -4,7 +4,7 @@
  * Kept separate from the store so screens can call the gateway without
  * pulling in streaming state, and so every method name lives in one place.
  */
-import { hermes, CONTROL_TIMEOUT_MS } from '../ws/client';
+import { hermes, CONTROL_TIMEOUT_MS, RpcError } from '../ws/client';
 import { api } from './client';
 import { dispatchCommand } from './commands';
 import {
@@ -49,13 +49,39 @@ export async function resumeSession(
   storedId: string,
   profile?: string | null,
 ): Promise<SessionCreateResult> {
-  const raw = await hermes.call(
-    'session.resume',
-    { session_id: storedId, cols: 80, source: 'web', ...(profile ? { profile } : {}) },
-    { timeoutMs: CONTROL_TIMEOUT_MS },
-  );
+  const base = { session_id: storedId, cols: 80, source: 'web', ...(profile ? { profile } : {}) };
+  const resume = (params: Record<string, unknown>) =>
+    hermes.call('session.resume', params, { timeoutMs: CONTROL_TIMEOUT_MS });
+
+  let raw: unknown;
+  if (inlineImagesAccepted === false) {
+    raw = await resume(base);
+  } else {
+    try {
+      raw = await resume({ ...base, inline_images: false });
+      inlineImagesAccepted = true;
+    } catch (err) {
+      if (!(err instanceof RpcError) || err.code !== 4000 || !/inline_images/.test(err.message)) throw err;
+      inlineImagesAccepted = false;
+      raw = await resume(base);
+    }
+  }
   return SessionCreateResultSchema.parse(raw);
 }
+
+/**
+ * Whether this backend takes `inline_images` on `session.resume`.
+ *
+ * With it off, an image part in the history comes back as `[image]` instead
+ * of its whole data URI — which this app could never draw anyway (the
+ * markdown sanitiser blanks `data:` URLs), so it was megabytes over a phone's
+ * radio to render nothing. Pictures the composer sends travel as `@image:`
+ * path refs and are untouched by it. Older Hermes validates params with
+ * `extra="forbid"` and rejects the unknown key with 4000, so the first
+ * refusal is remembered and every later resume leaves it out — one wasted
+ * round trip per page load, not one per resume.
+ */
+let inlineImagesAccepted: boolean | null = null;
 
 export async function fetchHistory(sessionId: string): Promise<HistoryMessage[]> {
   const raw = await hermes.call(

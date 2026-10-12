@@ -664,10 +664,14 @@ export function CronTab() {
         )}
         {runList.map((r, i) => {
           const row = r as Record<string, unknown>;
+          // Newer Hermes mixes in rows read from the job's output files. They
+          // carry no status field; their title is the status and a preview
+          // (`COMPLETED · Synced 3 calendars`), and is the only thing they say.
+          const fromFile = row.source === 'cron_output' && typeof row.title === 'string';
           return (
             <div key={i} style={{ padding: '9px 0', borderBottom: '1px solid var(--border-soft)' }}>
-              <div style={{ fontSize: 'var(--type-detail)' }}>
-                {String(row.status ?? row.outcome ?? 'run')}
+              <div style={{ fontSize: 'var(--type-detail)', overflowWrap: 'anywhere' }}>
+                {fromFile ? String(row.title) : String(row.status ?? row.outcome ?? 'run')}
               </div>
               <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)' }}>
                 {relTime(epochSeconds(row.started_at ?? row.created_at) ?? 0)}

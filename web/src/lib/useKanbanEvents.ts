@@ -146,11 +146,18 @@ export function useKanbanEvents(
         if (coalesce === null) coalesce = setTimeout(flush, COALESCE_MS);
       };
 
-      const down = () => {
+      const down = (event?: CloseEvent) => {
         if (ws !== socket) return;
         socket = null;
         setLive(false);
         if (closed) return;
+        /**
+         * 1008 is the plugin refusing the board itself — archived, or never
+         * created — which newer Hermes says instead of quietly creating an
+         * empty one. Asking again cannot change the answer, so this stops at
+         * once rather than spending the remaining attempts on it.
+         */
+        if (event?.code === 1008) return;
         attempts += 1;
         if (attempts >= MAX_ATTEMPTS) return;
         retry = setTimeout(open, BACKOFF_MS[Math.min(attempts - 1, BACKOFF_MS.length - 1)]);

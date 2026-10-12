@@ -222,6 +222,57 @@ describe('dedupe', () => {
   });
 });
 
+/**
+ * Newer Hermes lists rows built from files under `cron/output/<job>/` next to
+ * the session rows. None is a run this pass can report — no conversation
+ * behind it, a status word for a title, positional ids — and the first pass
+ * after the upgrade would otherwise announce every output file on disk.
+ */
+describe('output-file run rows', () => {
+  const outputRow = (over: Record<string, unknown> = {}) => ({
+    id: 'cron_output:job-1:2026-10-11_07-00-00',
+    source: 'cron_output',
+    title: 'COMPLETED · Synced 3 calendars',
+    ended_at: 1_755_000_200,
+    ...over,
+  });
+
+  it('announces none of them', async () => {
+    jobs(job());
+    runs('job-1');
+    await seed();
+
+    runs('job-1', outputRow(), outputRow({ id: 'cron_output:job-1:exec:0' }), outputRow({ id: 'cron_output:job-1:latest' }));
+    await cron.reconcile();
+
+    expect(feed.listEntries()).toEqual([]);
+    expect(sendPush).not.toHaveBeenCalled();
+  });
+
+  it('recognises one by its id even without the source field', async () => {
+    jobs(job());
+    runs('job-1');
+    await seed();
+
+    runs('job-1', outputRow({ source: undefined }));
+    await cron.reconcile();
+
+    expect(feed.listEntries()).toEqual([]);
+  });
+
+  it('still announces the session rows listed beside them', async () => {
+    jobs(job());
+    runs('job-1');
+    await seed();
+
+    runs('job-1', outputRow(), run());
+    messages('run-1', { role: 'assistant', content: 'Digest ready.' });
+    await cron.reconcile();
+
+    expect(feed.listEntries().map((e) => e.runId)).toEqual(['run-1']);
+  });
+});
+
 describe('what the entry says', () => {
   beforeEach(async () => {
     jobs(job());

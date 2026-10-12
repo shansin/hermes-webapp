@@ -333,8 +333,9 @@ async function replyOf(
 
   const messages = Array.isArray(body) ? body : (body.messages ?? []);
   for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i] as { role?: unknown; content?: unknown };
-    if (message?.role !== 'assistant') continue;
+    const message = messages[i] as { role?: unknown; content?: unknown; display_kind?: unknown };
+    // Same rule as `cron.ts`: a hidden row is a compaction summary, not a reply.
+    if (message?.role !== 'assistant' || message.display_kind === 'hidden') continue;
     const content = str(message.content);
     if (content) return { ok: true, text: content };
   }

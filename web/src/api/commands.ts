@@ -126,6 +126,18 @@ export async function execCommand(
   const full = arg ? `${command} ${arg}` : command;
   try {
     const raw = await hermes.call('slash.exec', { session_id: sessionId, command: full });
+    /**
+     * A typed result first. Newer Hermes answers a command that composes the
+     * next turn (`/prompt`, `/blueprint`) with `{type: "send", message}`, and a
+     * skill it could not refuse cleanly with the full dispatch result — both
+     * successes with no `output`. The output schema defaults `output` to ''
+     * and tolerates extra keys, so it accepted these as an empty reply and the
+     * command silently did nothing.
+     */
+    if (typeof (raw as { type?: unknown } | null)?.type === 'string') {
+      const typed = DispatchResultSchema.safeParse(raw);
+      if (typed.success) return { dispatch: typed.data };
+    }
     const parsed = SlashExecResultSchema.safeParse(raw);
     if (parsed.success) return { output: parsed.data.output, warning: parsed.data.warning };
     // Some commands are internally forwarded to command.dispatch, whose typed
