@@ -299,7 +299,7 @@ if healthy; then
   # `hermes dashboard` embeds it in its SPA HTML, which the proxy can scrape;
   # headless `hermes serve` does not, so we ask for it explicitly.
   if [ -z "${HERMES_TOKEN}" ]; then
-    if curl -fsS -m 3 "${BACKEND}/" 2>/dev/null | grep -q '__HERMES_DASHBOARD_SESSION_TOKEN__'; then
+    if curl -fsS -m 3 "${BACKEND}/" 2>/dev/null | grep -Eq '__HERMES_(DASHBOARD_)?SESSION_TOKEN__'; then
       bold "  Token will be auto-discovered from the running dashboard."
     else
       warn "  ! This backend is headless and was not started by us, so its"

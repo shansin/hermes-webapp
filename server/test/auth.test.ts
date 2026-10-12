@@ -43,6 +43,8 @@ let publicJwk: JWK;
 let strangerKey: CryptoKey;
 /** How many times the key set was fetched, to prove caching and kid-refetch. */
 let certFetches = 0;
+/** Failures to serve, one per fetch of the key set, before it answers normally. */
+let certFailures: ('timeout' | 'network' | 'status')[] = [];
 
 const KID = 'kid-1';
 
@@ -75,6 +77,7 @@ beforeEach(async () => {
   enabled = true;
   emails = new Set(['owner@example.com']);
   certFetches = 0;
+  certFailures = [];
   resetKeySet();
 
   const pair = await generateKeyPair('RS256', { extractable: true });
@@ -88,6 +91,10 @@ beforeEach(async () => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url === CERTS) {
         certFetches++;
+        const failure = certFailures.shift();
+        if (failure === 'timeout') throw new DOMException('request timed out', 'TimeoutError');
+        if (failure === 'network') throw new TypeError('fetch failed');
+        if (failure === 'status') return new Response('upstream error', { status: 502 });
         return new Response(JSON.stringify({ keys: [publicJwk] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -245,5 +252,41 @@ describe('requireAccess', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * The keys could not be fetched, so nothing is known about the token. A 401
+   * here is what the app reads as an expired login, and it put a sign-in
+   * prompt over a perfectly good session every time Cloudflare was slow.
+   */
+  describe('when the signing keys cannot be fetched', () => {
+    for (const failure of ['timeout', 'network', 'status'] as const) {
+      it(`answers 503, not 401, on a ${failure} failure`, async () => {
+        certFailures = [failure, failure];
+        const res = await send('/api/sessions', {
+          'cf-access-jwt-assertion': await mint({ email: 'owner@example.com' }),
+        });
+
+        expect(res.status).toBe(503);
+        expect(res.headers.get('retry-after')).toBe('2');
+      });
+    }
+
+    it('retries once, so one slow fetch does not refuse anything', async () => {
+      certFailures = ['timeout'];
+      const res = await send('/api/sessions', {
+        'cf-access-jwt-assertion': await mint({ email: 'owner@example.com' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(certFetches).toBe(2);
+    });
+
+    it('still 401s a bad token rather than blaming the keys', async () => {
+      const res = await send('/api/sessions', {
+        'cf-access-jwt-assertion': await mint({ email: 'owner@example.com' }, { key: strangerKey }),
+      });
+      expect(res.status).toBe(401);
+    });
   });
 });

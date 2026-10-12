@@ -80,8 +80,18 @@ interface AccessClaims extends JWTPayload {
   email?: string;
 }
 
-/** Why a request was turned away. Kept apart because they mean different things. */
-export type AccessFailure = 'missing' | 'invalid' | 'forbidden';
+/**
+ * Why a request was turned away. Kept apart because they mean different things.
+ *
+ * `unavailable` is the one that is not about the request at all: the
+ * assertion could not be checked because Cloudflare's signing keys could not
+ * be fetched. It used to be folded into `invalid`, so one slow fetch of the
+ * key set answered 401 to every request in flight — seven requests and an
+ * upgrade in the same millisecond on 2026-10-05 — and a 401 is what the app
+ * reads as "your login expired", putting a sign-in prompt over a session that
+ * was fine.
+ */
+export type AccessFailure = 'missing' | 'invalid' | 'forbidden' | 'unavailable';
 
 export type AccessResult =
   | { ok: true; email: string }
@@ -118,15 +128,28 @@ export async function verifyAccess(get: HeaderLookup): Promise<AccessResult> {
   const token = extractToken(get);
   if (!token) return { ok: false, reason: 'missing' };
 
-  let claims: AccessClaims;
-  try {
-    const { payload } = await jwtVerify<AccessClaims>(token, keySet(), {
+  const verify = () =>
+    jwtVerify<AccessClaims>(token, keySet(), {
       issuer,
       audience: config.ACCESS_AUD,
       algorithms: ['RS256'],
     });
-    claims = payload;
+
+  let claims: AccessClaims;
+  try {
+    try {
+      claims = (await verify()).payload;
+    } catch (err) {
+      // One retry when the keys could not be fetched: a timeout is usually
+      // one slow round trip, and a second attempt is cheaper than a refusal.
+      if (!isKeyFetchFailure(err)) throw err;
+      claims = (await verify()).payload;
+    }
   } catch (err) {
+    if (isKeyFetchFailure(err)) {
+      log.warn({ err: (err as Error).message }, 'access: signing keys unavailable');
+      return { ok: false, reason: 'unavailable' };
+    }
     // The message names the failed claim; the token itself never gets logged.
     log.warn({ err: (err as Error).message }, 'access: assertion rejected');
     return { ok: false, reason: 'invalid' };
@@ -139,6 +162,22 @@ export async function verifyAccess(get: HeaderLookup): Promise<AccessResult> {
   }
 
   return { ok: true, email };
+}
+
+/**
+ * Whether verification failed for want of the key set rather than because of
+ * the token. jose reports a timeout as `ERR_JWKS_TIMEOUT`, and a network
+ * failure or a non-200 from the certs endpoint as a fetch `TypeError` or a
+ * plain `JOSEError` saying so; every judgement about the token itself has a
+ * more specific code (`ERR_JWT_EXPIRED`, `ERR_JWS_SIGNATURE_VERIFICATION_FAILED`,
+ * `ERR_JWKS_NO_MATCHING_KEY`, …).
+ */
+function isKeyFetchFailure(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === 'ERR_JWKS_TIMEOUT') return true;
+  if (err instanceof TypeError) return true;
+  const message = err instanceof Error ? err.message : '';
+  return code === 'ERR_JOSE_GENERIC' && /JSON Web Key Set|fetch/i.test(message);
 }
 
 /**
@@ -171,6 +210,12 @@ export const requireAccess: MiddlewareHandler = async (c, next) => {
     log.warn({ path: c.req.path, reason: result.reason }, 'request refused');
     if (result.reason === 'forbidden') {
       return c.json({ error: 'forbidden' }, 403);
+    }
+    // Not a 401: nothing is wrong with the session, and a 401 is what the app
+    // takes as one that expired.
+    if (result.reason === 'unavailable') {
+      c.header('Retry-After', '2');
+      return c.json({ error: 'access_unavailable' }, 503);
     }
     return c.json({ error: 'unauthorized' }, 401);
   }

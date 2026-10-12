@@ -204,7 +204,12 @@ export function attachWsProxy(server: {
         // Answer before hanging up. A bare destroy() is a TCP reset, which the
         // browser reports as close code 1006 — identical to the network being
         // down, and the client would retry it forever.
-        const status = result.reason === 'forbidden' ? '403 Forbidden' : '401 Unauthorized';
+        const status =
+          result.reason === 'forbidden'
+            ? '403 Forbidden'
+            : result.reason === 'unavailable'
+              ? '503 Service Unavailable'
+              : '401 Unauthorized';
         socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
         socket.destroy();
         return;

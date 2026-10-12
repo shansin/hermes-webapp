@@ -95,7 +95,12 @@ const Schema = z.object({
    */
   VAPID_PUBLIC_KEY: z.string().default(''),
   VAPID_PRIVATE_KEY: z.string().default(''),
-  /** Contact address VAPID requires. Push services want mailto: or https:. */
+  /**
+   * Contact address VAPID requires. Push services want mailto: or https:, and
+   * Apple's goes further: it refuses a `localhost` address outright with
+   * `403 BadJwtToken`, so the default below delivers to Android and desktop
+   * and silently never to an iPhone or a Mac. Set a real one.
+   */
   VAPID_SUBJECT: z.string().default('mailto:hermes@localhost'),
   /** Set to 0 to keep the proxy from holding a socket open for push. */
   PUSH_ENABLED: z
@@ -144,7 +149,11 @@ export function getToken(): string {
  * same value as HERMES_DASHBOARD_SESSION_TOKEN so the backend adopts it.
  *
  * Otherwise scrape it out of the Hermes SPA HTML, which embeds the token as
- * `window.__HERMES_DASHBOARD_SESSION_TOKEN__="…"`. This only works against
+ * `window.__HERMES_SESSION_TOKEN__="…"`. The pattern also accepts
+ * `__HERMES_DASHBOARD_SESSION_TOKEN__`, the name this was first written
+ * against — which no Hermes this has been checked against actually emits, so
+ * for as long as that was the only spelling the scrape never matched and only
+ * an explicit `HERMES_TOKEN` worked. This only works against
  * `hermes dashboard` (which serves a UI); headless `hermes serve` has no HTML,
  * in which case the token must be supplied explicitly.
  */
@@ -163,7 +172,7 @@ export async function resolveToken(): Promise<string> {
         signal: AbortSignal.timeout(5000),
       });
       const html = await res.text();
-      const m = /__HERMES_DASHBOARD_SESSION_TOKEN__\s*=\s*"([^"]+)"/.exec(html);
+      const m = /__HERMES_(?:DASHBOARD_)?SESSION_TOKEN__\s*=\s*"([^"]+)"/.exec(html);
       if (m?.[1]) sessionToken = m[1];
     } catch {
       // Backend down or headless — callers surface this as a health warning.
