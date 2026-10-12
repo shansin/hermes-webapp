@@ -65,6 +65,12 @@ export function useProfiles() {
 export function useActiveProfile() {
   return useQuery({
     queryKey: profileKeys.active,
+    /**
+     * `active` is the sticky default (`hermes profile use`), and is the field
+     * read everywhere here. `current` is the profile the dashboard process runs
+     * as, and since Hermes 0.21.6 reads `"custom"` when it cannot name its own
+     * home — not a profile anything can be switched to, so it is not read.
+     */
     queryFn: () => api.get<{ active: string; current: string }>('/api/profiles/active'),
     staleTime: 30_000,
   });

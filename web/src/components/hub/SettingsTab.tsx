@@ -583,6 +583,12 @@ export function SettingsTab() {
           tone={health.data?.backend === 'up' ? 'ok' : 'error'}
         />
         <Row label="Upstream" value={health.data?.upstream ?? '…'} />
+        {/* `hermes update` swaps the code under a running backend, which keeps
+            serving the old commit until restarted — and newer Hermes refuses
+            some writes with "Restart required" until it is. */}
+        {health.data?.restartNeeded && (
+          <Row label="Restart needed" value="updated on disk — restart hermes-webapp" tone="warn" />
+        )}
         <Row
           label="Secure context"
           value={typeof window !== 'undefined' && window.isSecureContext ? 'yes' : 'no (HTTP)'}

@@ -52,6 +52,7 @@ import {
   type Task,
 } from '../api/kanban';
 import { useBoards, useKanbanConfig } from '../api/kanbanAdmin';
+import { ApiError } from '../api/client';
 import { useUi } from '../store/ui';
 import { buzz } from '../lib/haptics';
 import { UNDO_WINDOW_MS, scheduleUndoable } from '../lib/undo';
@@ -180,6 +181,20 @@ export function KanbanScreen() {
   // next change is worth hearing about, and the socket recovers on its own.
   const socketLive = useKanbanEvents(board, data?.latest_event_id, true);
   useEffect(() => setLive(socketLive), [socketLive]);
+
+  /**
+   * A board archived or deleted while it is on screen — from the desktop app,
+   * the CLI, or a second phone. Newer Hermes answers 404 ("board 'x' is
+   * archived") rather than quietly recreating an empty one, which left this
+   * screen polling an error for as long as it stayed open. Fall back to the
+   * server's default board and say why.
+   */
+  useEffect(() => {
+    if (board && error instanceof ApiError && error.status === 404) {
+      toast(`Board "${board}" is no longer available — showing the default board.`, 'warn');
+      setBoard(null);
+    }
+  }, [board, error, toast]);
 
   /**
    * `/kanban?task=<id>` opens that card.

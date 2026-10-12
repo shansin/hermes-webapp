@@ -40,6 +40,7 @@ import { flushFeed } from './push/feed.js';
 import { pushPublicKey } from './push/send.js';
 import { attachWsProxy } from './routers/wsProxy.js';
 import { staticRouter, hasBuiltWeb, webBuildId, initStatic } from './static.js';
+import { checkoutCommit } from './hermesCheckout.js';
 
 const app = new Hono();
 
@@ -69,11 +70,15 @@ let healthAt = 0;
  */
 const startedAt = new Date().toISOString();
 
-let healthCache: { backend: 'up' | 'down' | 'unauthorized'; version: string | null } | null = null;
-let healthInFlight: Promise<{
+interface BackendHealth {
   backend: 'up' | 'down' | 'unauthorized';
   version: string | null;
-}> | null = null;
+  /** The commit the backend booted from (Hermes 0.21.6+); null on older ones. */
+  commit: string | null;
+}
+
+let healthCache: BackendHealth | null = null;
+let healthInFlight: Promise<BackendHealth> | null = null;
 
 async function probeBackend(token: string) {
   if (healthCache && Date.now() - healthAt < HEALTH_TTL_MS) return healthCache;
@@ -82,6 +87,7 @@ async function probeBackend(token: string) {
   healthInFlight = (async () => {
     let backend: 'up' | 'down' | 'unauthorized' = 'down';
     let version: string | null = null;
+    let commit: string | null = null;
     try {
       const res = await fetch(upstreamHttp + '/api/health', {
         headers: { host: upstreamHost, authorization: `Bearer ${token}` },
@@ -91,12 +97,14 @@ async function probeBackend(token: string) {
         backend = 'unauthorized';
       } else if (res.ok) {
         backend = 'up';
-        version = ((await res.json()) as { version?: string }).version ?? null;
+        const body = (await res.json()) as { version?: string; commit?: string };
+        version = body.version ?? null;
+        commit = typeof body.commit === 'string' && body.commit ? body.commit : null;
       }
     } catch {
       backend = 'down';
     }
-    healthCache = { backend, version };
+    healthCache = { backend, version, commit };
     healthAt = Date.now();
     healthInFlight = null;
     return healthCache;
@@ -112,7 +120,8 @@ async function probeBackend(token: string) {
  */
 app.get('/healthz', async (c) => {
   const token = getToken() || (await resolveToken());
-  const { backend, version } = await probeBackend(token);
+  const { backend, version, commit } = await probeBackend(token);
+  const onDisk = checkoutCommit();
 
   return c.json({
     ok: backend === 'up',
@@ -132,6 +141,12 @@ app.get('/healthz', async (c) => {
     pushEnabled: Boolean(pushPublicKey()),
     lanUrl: lanUrl(),
     publicUrl: config.PUBLIC_URL ?? null,
+    /**
+     * Hermes was updated on disk and the backend is still running the code it
+     * booted from. Only claimed when both commits are known — a backend too
+     * old to report one, or a checkout this cannot read, says nothing.
+     */
+    restartNeeded: Boolean(commit && onDisk && commit !== onDisk),
   });
 });
 

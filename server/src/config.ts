@@ -60,6 +60,12 @@ const Schema = z.object({
   HERMES_PORT: z.coerce.number().int().positive().default(9119),
   HERMES_TOKEN: z.string().default(''),
   /**
+   * The Hermes checkout, read only to learn which commit is on disk — see
+   * `hermesCheckout.ts`. A git install puts it here; anything else can point
+   * it elsewhere or leave it, and the restart check simply says nothing.
+   */
+  HERMES_AGENT_DIR: z.string().default(''),
+  /**
    * The URL other devices should use, when it isn't derivable from this
    * machine's interfaces — a `tailscale serve` front, say, which terminates TLS
    * under a MagicDNS name and forwards here over loopback. start.sh sets it.

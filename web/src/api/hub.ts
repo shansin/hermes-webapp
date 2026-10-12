@@ -659,6 +659,8 @@ export function useHealth() {
          * the other phone an installable PWA rather than a bookmark.
          */
         publicUrl?: string | null;
+        /** Hermes updated on disk, backend still on the old code. Absent from older proxies. */
+        restartNeeded?: boolean;
       }>('/healthz'),
     refetchInterval: 30_000,
     retry: false,
