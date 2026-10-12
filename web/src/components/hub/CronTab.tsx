@@ -44,6 +44,7 @@
  * active one — offering the skills sitting in front of you would be offering
  * the wrong list.
  */
+import { runLabel, runStartedAt } from '../../lib/cronRuns';
 import { useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -664,18 +665,34 @@ export function CronTab() {
         )}
         {runList.map((r, i) => {
           const row = r as Record<string, unknown>;
-          // Newer Hermes mixes in rows read from the job's output files. They
-          // carry no status field; their title is the status and a preview
-          // (`COMPLETED · Synced 3 calendars`), and is the only thing they say.
-          const fromFile = row.source === 'cron_output' && typeof row.title === 'string';
+          // Session rows and file rows say what happened in different fields —
+          // see `lib/cronRuns.ts`, which is also where "running" stops lying
+          // about a long run that went quiet.
+          const label = runLabel(row);
+          const color =
+            label.tone === 'error' ? 'var(--error)' : label.tone === 'warn' ? 'var(--warn)' : label.tone === 'running' ? 'var(--accent)' : undefined;
           return (
             <div key={i} style={{ padding: '9px 0', borderBottom: '1px solid var(--border-soft)' }}>
-              <div style={{ fontSize: 'var(--type-detail)', overflowWrap: 'anywhere' }}>
-                {fromFile ? String(row.title) : String(row.status ?? row.outcome ?? 'run')}
-              </div>
+              <div style={{ fontSize: 'var(--type-detail)', color }}>{label.text}</div>
               <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)' }}>
-                {relTime(epochSeconds(row.started_at ?? row.created_at) ?? 0)}
+                {relTime(epochSeconds(runStartedAt(row)) ?? 0)}
               </div>
+              {label.detail && (
+                <div
+                  style={{
+                    fontSize: 'var(--type-body-sm)',
+                    color: label.tone === 'error' ? 'var(--error)' : 'var(--text-dim)',
+                    marginTop: 3,
+                    overflowWrap: 'anywhere',
+                    display: '-webkit-box',
+                    WebkitLineClamp: 3,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {label.detail}
+                </div>
+              )}
               {typeof row.error === 'string' && row.error && (
                 <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--error)', marginTop: 3 }}>{row.error}</div>
               )}

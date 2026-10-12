@@ -17,6 +17,12 @@
  * that directory through the same authenticated `/api/fs` routes the file
  * viewer uses.
  *
+ * Since Hermes 0.21.6 the runs endpoint lists those reports itself, as rows
+ * with `source: "cron_output"` carrying each run's status. Where it does, the
+ * list comes from there and says Completed or Failed on each row without
+ * opening anything; the directory read stays for older Hermes, and for the
+ * body of a run either way, since the row holds only a preview.
+ *
  * Rendered as preformatted text rather than markdown on purpose: these reports
  * are a handful of bold key-value lines, and reaching for `Markdown` here
  * would pull that chunk into the cron route's bundle to render a header.
@@ -24,7 +30,8 @@
 import { useState } from 'react';
 import { useDirectory, useFileText } from '../../api/files';
 import { SkeletonList, relTime } from '../shared/misc';
-import type { CronJob } from '../../api/hub';
+import { useCronRuns, type CronJob } from '../../api/hub';
+import { fileRunName, isFileRun, runLabel, runStartedAt } from '../../lib/cronRuns';
 
 /**
  * Where a job's output lands. `hermes_home` is stamped on every job by the
@@ -81,10 +88,55 @@ function RunBody({ path }: { path: string }) {
 
 export function ScriptRuns({ job }: { job: CronJob }) {
   const dir = outputDir(job);
-  const { data, isLoading, error } = useDirectory(dir);
+  const listed = useCronRuns(job.id ?? null, typeof job.profile === 'string' ? job.profile : null);
+  const rows = (Array.isArray(listed.data) ? listed.data : (listed.data?.runs ?? [])) as Record<string, unknown>[];
+  const fileRows = rows.filter(isFileRun);
+  const fromEndpoint = fileRows.length > 0;
+  // Only read the directory when the endpoint has nothing to say — an older
+  // Hermes, or one that answered before the first run.
+  const { data, isLoading, error } = useDirectory(fromEndpoint || listed.isLoading ? null : dir);
   const [open, setOpen] = useState<string | null>(null);
 
-  if (isLoading) return <SkeletonList n={3} h={46} />;
+  if (listed.isLoading || (!fromEndpoint && isLoading)) return <SkeletonList n={3} h={46} />;
+
+  if (fromEndpoint) {
+    return (
+      <div>
+        <div style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)', marginBottom: 8, lineHeight: 1.45 }}>
+          This job runs a script, so it has no conversation to show — these are the
+          run reports it writes to disk.
+        </div>
+        {fileRows.map((row, i) => {
+          const label = runLabel(row);
+          const name = fileRunName(row);
+          const path = name && dir ? `${dir}/${name}` : null;
+          const at = runStartedAt(row);
+          const key = typeof row.id === 'string' ? row.id : String(i);
+          return (
+            <div key={key} style={{ padding: '9px 0', borderBottom: '1px solid var(--border-soft)' }}>
+              <button
+                className="btn btn--ghost"
+                style={{ width: '100%', justifyContent: 'space-between', padding: 0 }}
+                disabled={!path}
+                onClick={() => path && setOpen(open === path ? null : path)}
+              >
+                <span style={{ fontSize: 'var(--type-detail)', color: label.tone === 'error' ? 'var(--error)' : undefined }}>
+                  {label.text}
+                  <span style={{ color: 'var(--text-faint)' }}> · {at ? relTime(at) : 'earlier'}</span>
+                </span>
+                {path && (
+                  <span style={{ fontSize: 'var(--type-label-sm)', color: 'var(--text-faint)' }}>
+                    {open === path ? 'hide' : 'view'}
+                  </span>
+                )}
+              </button>
+              {path && open === path && <RunBody path={path} />}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
   /* A directory that does not exist yet is a 404 here, and it means the job has
      genuinely not run — the scheduler creates it on the first run. Saying that
