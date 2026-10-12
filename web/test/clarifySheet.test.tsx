@@ -26,6 +26,7 @@ vi.mock('../src/ws/client', () => ({
     state: 'open',
   },
   defaultWsUrl: () => 'ws://test/api/ws',
+  CONTROL_TIMEOUT_MS: 15_000,
 }));
 vi.mock('../src/api/gateway', () => ({ undoTurns: async () => '' }));
 
@@ -50,10 +51,18 @@ const ask = (payload: Record<string, unknown>) =>
     useSession.getState().applyEvent({ type: 'clarify.request', session_id: 's1', payload });
   });
 
+/**
+ * What went to the backend, flattened. A question raised by the old event has
+ * no live server request behind it, so its answer travels as `request.answer`
+ * `{id, result}`; `result` is the response frame's body either way.
+ */
 const sent = () =>
   call.mock.calls
-    .filter(([method]) => method === 'clarify.respond')
-    .map(([, params]) => params as Record<string, unknown>);
+    .filter(([method]) => method === 'request.answer')
+    .map(([, params]) => {
+      const { id, result } = params as { id: string; result: Record<string, unknown> };
+      return { request_id: id, ...result };
+    });
 
 describe('where the sheet lives', () => {
   /**
@@ -210,15 +219,12 @@ describe('a batch of questions', () => {
     expect(screen.getByRole('button', { name: 'Send answer' })).toBeEnabled();
   });
 
-  it('sends each answer under its own question_id', async () => {
+  it('sends each answer under its own qid, in one response', async () => {
     await userEvent.click(screen.getByRole('button', { name: 'API' }));
     await userEvent.click(screen.getByRole('button', { name: 'Hourly' }));
     await userEvent.click(screen.getByRole('button', { name: 'Send answer' }));
 
-    expect(sent()).toEqual([
-      { session_id: 's1', request_id: 'r4', answer: 'API', question_id: 'q1' },
-      { session_id: 's1', request_id: 'r4', answer: 'Hourly', question_id: 'q2' },
-    ]);
+    expect(sent()).toEqual([{ request_id: 'r4', answers: { q1: 'API', q2: 'Hourly' } }]);
   });
 });
 

@@ -7,8 +7,25 @@
  *    into batches, so one WS message can carry many JSON lines)
  *  - exponential-backoff reconnect with jitter
  *  - fan-out of events to subscribers
+ *  - server→client requests: routing them to a handler and sending the
+ *    response frame back on the socket they arrived on
  *
  * Streaming state lives in the session store, not here.
+ *
+ * **Server requests are how Hermes asks a question, and a client has to opt
+ * in to receiving them.** Approvals and clarify questions are not events: the
+ * backend sends a JSON-RPC *request* (`{id: "srq-…", method: "approval",
+ * params}`) and blocks the agent until a response frame with the same id comes
+ * back. A WebSocket client that never sends `client.capabilities
+ * {server_requests: true}` is treated as a build from before that protocol, and
+ * every such request is withdrawn the moment it is raised — the agent sees
+ * "approval was withdrawn" and the phone sees nothing at all. That is what
+ * happened from the day the backend moved to it until this was added, and it
+ * looked like an agent that never asks. The opt-in is per connection, so it is
+ * re-sent on every `gateway.ready`.
+ *
+ * Anything unhandled is answered `-32601` at once, so the backend withdraws it
+ * instead of holding the agent for the request's full deadline.
  */
 import { RpcEventSchema, RpcResponseSchema, type ConnState, type RpcEvent } from './types';
 import { probeAccess, markHostReached } from '../lib/accessSession';
@@ -17,6 +34,28 @@ export type EventHandler = (event: RpcEvent['params']) => void;
 export type StateHandler = (state: ConnState) => void;
 /** Raw frames, for the hidden dev panel. */
 export type FrameHandler = (dir: 'in' | 'out', raw: string) => void;
+
+/** One server→client request, as handed to an `onRequest` handler. */
+export interface ServerRequest {
+  /** `srq-<hex>`: a string, so it never collides with our integer call ids. */
+  id: string;
+  method: string;
+  params: Record<string, unknown>;
+  /** Re-delivered from a resume's `open_requests` rather than freshly raised. */
+  replayed: boolean;
+  /**
+   * Send the response frame. False when it could not go out — the socket the
+   * request arrived on is no longer the live one — so the caller can fall back
+   * to the `request.answer` RPC on the socket that is.
+   */
+  respond: (result: Record<string, unknown>) => boolean;
+  fail: (code: number, message: string) => boolean;
+}
+/** Return false to decline, which ends in a `-32601` if nobody accepts. */
+export type RequestHandler = (req: ServerRequest) => boolean | void;
+
+/** JSON-RPC "method not found": the backend withdraws the request on it. */
+const METHOD_NOT_FOUND = -32601;
 
 interface Pending {
   resolve: (value: unknown) => void;
@@ -60,6 +99,7 @@ export class HermesClient {
   private eventHandlers = new Set<EventHandler>();
   private stateHandlers = new Set<StateHandler>();
   private frameHandlers = new Set<FrameHandler>();
+  private requestHandlers = new Set<RequestHandler>();
   private attempt = 0;
   /**
    * Consecutive failures since the last socket that actually opened.
@@ -242,6 +282,17 @@ export class HermesClient {
       return; // Not our problem; the dev panel already saw the raw text.
     }
 
+    // A server→client request carries both an `id` (a string, never one of
+    // ours) and a `method`. Checked before the response path, which would
+    // otherwise look it up as a call of ours, find nothing, and drop it.
+    const frame = parsed as { id?: unknown; method?: unknown; params?: unknown } | null;
+    if (typeof frame?.id === 'string' && typeof frame.method === 'string') {
+      const params =
+        frame.params && typeof frame.params === 'object' ? (frame.params as Record<string, unknown>) : {};
+      this.deliverRequest(frame.id, frame.method, params, false);
+      return;
+    }
+
     // Responses carry an `id`; events never do. That one check decides which
     // schema to reach for, and it matters because this is the app's hottest
     // path — token deltas arrive 30–60×/second for the length of a turn.
@@ -263,6 +314,12 @@ export class HermesClient {
           const e = asResponse.data.error;
           entry.reject(new RpcError(e.message, e.code, entry.method));
         } else {
+          // `session.resume` / `session.events.since` answer with the server
+          // requests still waiting on this session. They are not events and
+          // the replay ring cannot carry them, so they are re-delivered here —
+          // before the caller sees the result, so a resume that then adopts
+          // `pending_approval` can tell it is the same request.
+          this.deliverOpenRequests(asResponse.data.result);
           entry.resolve(asResponse.data.result);
         }
         return;
@@ -271,8 +328,74 @@ export class HermesClient {
 
     const asEvent = RpcEventSchema.safeParse(parsed);
     if (asEvent.success) {
+      if (asEvent.data.params.type === 'gateway.ready') this.advertiseCapabilities();
       for (const h of this.eventHandlers) h(asEvent.data.params);
     }
+  }
+
+  /**
+   * Opt this connection in to server→client requests. Once per connection,
+   * on `gateway.ready`; a backend that predates the method answers `-32601`,
+   * which is fine to ignore.
+   */
+  private advertiseCapabilities(): void {
+    this.call('client.capabilities', { server_requests: true }, { timeoutMs: CONTROL_TIMEOUT_MS }).catch(
+      () => undefined,
+    );
+  }
+
+  private deliverOpenRequests(result: unknown): void {
+    const open = (result as { open_requests?: unknown } | null)?.open_requests;
+    if (!Array.isArray(open)) return;
+    for (const entry of open as { id?: unknown; method?: unknown; params?: unknown }[]) {
+      if (typeof entry?.id !== 'string' || typeof entry.method !== 'string') continue;
+      const params =
+        entry.params && typeof entry.params === 'object' ? (entry.params as Record<string, unknown>) : {};
+      this.deliverRequest(entry.id, entry.method, params, true);
+    }
+  }
+
+  /**
+   * Hand a server request to the handlers.
+   *
+   * The response is bound to the socket the request arrived on: the backend
+   * correlates it per connection, and a superseded socket answering is the
+   * same ownership bug the lifecycle handlers above are guarded against.
+   */
+  private deliverRequest(id: string, method: string, params: Record<string, unknown>, replayed: boolean): void {
+    const socket = this.ws;
+    let settled = false;
+    const send = (body: Record<string, unknown>): boolean => {
+      if (settled) return true;
+      if (!socket || this.ws !== socket || socket.readyState !== WebSocket.OPEN) return false;
+      settled = true;
+      const out = JSON.stringify({ jsonrpc: '2.0', id, ...body });
+      for (const h of this.frameHandlers) h('out', out);
+      socket.send(out);
+      return true;
+    };
+    const req: ServerRequest = {
+      id,
+      method,
+      params,
+      replayed,
+      respond: (result) => send({ result }),
+      fail: (code, message) => send({ error: { code, message } }),
+    };
+
+    for (const h of this.requestHandlers) {
+      let accepted: boolean | void;
+      try {
+        accepted = h(req);
+      } catch {
+        // A handler that throws must not leave the agent waiting out the full
+        // deadline on a question nobody will ever see.
+        req.fail(-32603, `server request handler crashed: ${method}`);
+        return;
+      }
+      if (accepted !== false) return;
+    }
+    req.fail(METHOD_NOT_FOUND, `no handler for server request: ${method}`);
   }
 
   /**
@@ -324,6 +447,11 @@ export class HermesClient {
   onEvent(h: EventHandler): () => void {
     this.eventHandlers.add(h);
     return () => this.eventHandlers.delete(h);
+  }
+
+  onRequest(h: RequestHandler): () => void {
+    this.requestHandlers.add(h);
+    return () => this.requestHandlers.delete(h);
   }
 
   onState(h: StateHandler): () => void {

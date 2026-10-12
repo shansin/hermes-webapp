@@ -26,6 +26,7 @@ vi.mock('../src/ws/client', () => ({
     onState: () => () => {},
     state: 'open',
   },
+  CONTROL_TIMEOUT_MS: 15_000,
 }));
 vi.mock('../src/api/gateway', () => ({ undoTurns: async () => '' }));
 
@@ -51,7 +52,13 @@ const batch = {
   ],
 };
 
-const clarifyCalls = () => call.mock.calls.filter(([method]) => method === 'clarify.respond');
+/**
+ * A question raised by the old event has no live server request behind it,
+ * so its answer goes over `request.answer` — the RPC form of the response
+ * frame, which is what these cases exercise. The frame itself is covered under
+ * "as a server request" below.
+ */
+const clarifyCalls = () => call.mock.calls.filter(([method]) => method === 'request.answer');
 
 beforeEach(() => {
   call.mockReset();
@@ -115,38 +122,35 @@ describe('answering', () => {
     await store().respondClarify({ '': 'RSS feed' });
 
     expect(clarifyCalls()).toHaveLength(1);
-    expect(clarifyCalls()[0]![1]).toEqual({
-      session_id: 's1',
-      request_id: 'r1',
-      answer: 'RSS feed',
-    });
+    expect(clarifyCalls()[0]![1]).toEqual({ id: 'r1', result: { answer: 'RSS feed' } });
   });
 
   /**
-   * A lone question carries no `qid`, and sending one would have the gateway
-   * reject it as an unknown question in a batch that does not exist.
+   * The result shape is what tells the backend single from batch: `answer`
+   * for a lone question, `answers` keyed by qid for a batch. A response with
+   * neither is read as cancel-all.
    */
-  it('omits question_id when there is only one question', async () => {
+  it('answers a lone question with `answer`, not `answers`', async () => {
     emit('clarify.request', single);
     await store().respondClarify({ '': 'RSS feed' });
 
-    expect(clarifyCalls()[0]![1]).not.toHaveProperty('question_id');
+    expect((clarifyCalls()[0]![1] as { result: object }).result).not.toHaveProperty('answers');
   });
 
-  /**
-   * The gateway locks a batch per question and releases the agent only on the
-   * last one, so every qid has to be sent — one call each.
-   */
-  it('sends a batch one call per question, each keyed by its qid', async () => {
+  it('sends a batch as one response, every qid answered', async () => {
     emit('clarify.request', batch);
     await store().respondClarify({ q1: 'RSS', q2: 'Daily' });
 
-    expect(clarifyCalls()).toHaveLength(2);
-    expect(clarifyCalls().map(([, p]) => (p as Record<string, unknown>).question_id)).toEqual([
-      'q1',
-      'q2',
-    ]);
-    expect((clarifyCalls()[1]![1] as Record<string, unknown>).answer).toBe('Daily');
+    expect(clarifyCalls()).toHaveLength(1);
+    expect(clarifyCalls()[0]![1]).toEqual({ id: 'r2', result: { answers: { q1: 'RSS', q2: 'Daily' } } });
+  });
+
+  /** A question left blank is a skip, which the backend spells ''. */
+  it('sends a skipped batch question as an empty answer', async () => {
+    emit('clarify.request', batch);
+    await store().respondClarify({ q1: 'RSS' });
+
+    expect((clarifyCalls()[0]![1] as { result: unknown }).result).toEqual({ answers: { q1: 'RSS', q2: '' } });
   });
 
   it('clears the prompt so the reply is not covered by the question', async () => {
@@ -157,8 +161,8 @@ describe('answering', () => {
   });
 
   /**
-   * The gateway keeps accepting an answer whose wait already expired, and says
-   * so. Reporting it beats a silent no-op: the person just made a choice and
+   * The backend answers an answer whose wait already ended with `expired`.
+   * Reporting it beats a silent no-op: the person just made a choice and
    * would otherwise watch it change nothing.
    */
   it('says so when the question timed out before the answer arrived', async () => {
@@ -169,14 +173,6 @@ describe('answering', () => {
     const notice = store().messages.at(-1);
     expect(notice?.kind).toBe('notice');
     expect((notice as { text: string }).text).toContain('timed out');
-  });
-
-  it('stops after an expired answer rather than sending the rest of a batch', async () => {
-    call.mockResolvedValue({ status: 'expired' });
-    emit('clarify.request', batch);
-    await store().respondClarify({ q1: 'RSS', q2: 'Daily' });
-
-    expect(clarifyCalls()).toHaveLength(1);
   });
 
   it('surfaces a failed send instead of losing it', async () => {
@@ -214,16 +210,13 @@ describe('when the answer cannot be sent', () => {
     expect(store().error).toBe('not connected');
   });
 
-  it('puts a batch back when it fails partway through', async () => {
+  it('puts a batch back too', async () => {
     emit('clarify.request', batch);
     const raised = store().clarify;
-    call
-      .mockResolvedValueOnce({ status: 'ok' })
-      .mockRejectedValueOnce(new Error('socket closed'));
+    call.mockRejectedValueOnce(new Error('socket closed'));
 
     await store().respondClarify({ q1: 'RSS', q2: 'Daily' });
 
-    expect(clarifyCalls()).toHaveLength(2);
     expect(store().clarify).toBe(raised);
   });
 
@@ -496,5 +489,105 @@ describe('answers that survive a reconnect', () => {
     store().loadHistory(replayed);
 
     expect(resultOf()).toBeUndefined();
+  });
+});
+
+/**
+ * The way a question actually arrives now: a server request, answered with a
+ * response frame rather than an RPC. The event-shaped cases above still pass
+ * through the same sheet and the same answer path; these pin the parts only
+ * the request form has.
+ */
+describe('as a server request', () => {
+  const request = (over: Partial<{ id: string; method: string; params: Record<string, unknown>; replayed: boolean }> = {}) => {
+    const respond = vi.fn((_: Record<string, unknown>) => true);
+    return {
+      id: 'srq-1',
+      method: 'clarify',
+      params: { session_id: 's1', question: 'Which data source?', choices: ['RSS', 'API'] },
+      replayed: false,
+      respond,
+      fail: vi.fn(() => true),
+      ...over,
+    };
+  };
+
+  it('raises the sheet, keyed on the request id', () => {
+    expect(store().applyServerRequest(request())).toBe(true);
+    expect(store().clarify?.requestId).toBe('srq-1');
+  });
+
+  it('answers with the response frame, not an RPC', async () => {
+    const req = request();
+    store().applyServerRequest(req);
+    await store().respondClarify({ '': 'RSS' });
+
+    expect(req.respond).toHaveBeenCalledWith({ answer: 'RSS' });
+    expect(clarifyCalls()).toHaveLength(0);
+  });
+
+  /** The socket it came in on went away: the live one carries the answer instead. */
+  it('falls back to request.answer when the frame cannot go out', async () => {
+    const req = request();
+    req.respond.mockReturnValue(false);
+    store().applyServerRequest(req);
+    await store().respondClarify({ '': 'RSS' });
+
+    expect(clarifyCalls()[0]![1]).toEqual({ id: 'srq-1', result: { answer: 'RSS' } });
+  });
+
+  it('clears the sheet when the backend withdraws the request', () => {
+    store().applyServerRequest(request());
+    store().cancelServerRequest('srq-1');
+    expect(store().clarify).toBeNull();
+  });
+
+  it('leaves the sheet alone when a different request is withdrawn', () => {
+    store().applyServerRequest(request());
+    store().cancelServerRequest('srq-other');
+    expect(store().clarify).not.toBeNull();
+  });
+
+  /**
+   * Declining would withdraw it and fail the other conversation's tool call;
+   * holding it leaves it in that session's `open_requests` for when it is
+   * opened again.
+   */
+  it('holds a request for another conversation without showing it', () => {
+    expect(store().applyServerRequest(request({ params: { session_id: 's9', question: 'Elsewhere?' } }))).toBe(true);
+    expect(store().clarify).toBeNull();
+  });
+
+  /** No UI for these here; declining is what gets them failed fast. */
+  it('declines kinds it has no sheet for', () => {
+    expect(store().applyServerRequest(request({ method: 'sudo' }))).toBe(false);
+  });
+
+  it('shows an approval and answers it with choice and all', async () => {
+    const req = request({
+      id: 'srq-2',
+      method: 'approval',
+      params: { session_id: 's1', request_id: 'a1', command: 'rm -rf build', choices: ['once', 'deny'] },
+    });
+    store().applyServerRequest(req);
+    expect(store().approval?.srqId).toBe('srq-2');
+
+    await store().respondApproval('once');
+    expect(req.respond).toHaveBeenCalledWith({ choice: 'once', all: false });
+    expect(call.mock.calls.some(([m]) => m === 'approval.respond')).toBe(false);
+  });
+
+  /**
+   * A resume returns the same approval twice — once in `open_requests`,
+   * delivered first, and once as `pending_approval`. The second must not
+   * replace the first, which is the only copy a response frame can answer.
+   */
+  it('keeps the server-request approval over a resume\'s pending_approval', () => {
+    store().applyServerRequest(
+      request({ id: 'srq-3', method: 'approval', params: { session_id: 's1', request_id: 'a1', choices: ['once'] } }),
+    );
+    store().applyLiveState({ session_id: 's1', pending_approval: { request_id: 'a1', choices: ['once'] } });
+
+    expect(store().approval?.srqId).toBe('srq-3');
   });
 });

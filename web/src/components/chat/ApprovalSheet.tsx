@@ -55,8 +55,12 @@ export function ApprovalSheet() {
 
   if (!approval) return null;
 
-  const what = approval.command || approval.description || approval.tool || approval.name || '';
-  const title = approval.tool || approval.name || 'Approval needed';
+  // `tool_name` is the server-request spelling; `tool` / `name` the older event's.
+  const tool = approval.tool || (typeof approval.tool_name === 'string' ? approval.tool_name : '') || approval.name;
+  const what = approval.command || approval.description || tool || '';
+  const title = tool || 'Approval needed';
+  // With a command to show, the description is the backend's reason for asking.
+  const reason = approval.reason || (approval.command ? approval.description : undefined);
 
   return (
     <Sheet
@@ -70,8 +74,8 @@ export function ApprovalSheet() {
         </span>
       }
     >
-      {approval.reason && (
-        <p style={{ marginTop: 0, color: 'var(--text-dim)', fontSize: 'var(--type-body-md)' }}>{approval.reason}</p>
+      {reason && (
+        <p style={{ marginTop: 0, color: 'var(--text-dim)', fontSize: 'var(--type-body-md)' }}>{reason}</p>
       )}
 
       {what && <div className="approval__what">{what}</div>}

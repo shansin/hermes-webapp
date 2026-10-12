@@ -70,6 +70,7 @@ import { ClarifySheet } from './components/chat/ClarifySheet';
 import { SkeletonList, Toasts } from './components/shared/misc';
 import { MenuButton } from './components/shared/MenuButton';
 import { useUi } from './store/ui';
+import { useSession } from './store/session';
 import { preloadMarkdown } from './components/chat/MarkdownAsync';
 import { hermes, defaultWsUrl } from './ws/client';
 import { useCronFeedToasts, useEventToasts } from './lib/useEventToasts';
@@ -156,6 +157,28 @@ export function App() {
       off();
     };
   }, [token, setConnection]);
+
+  /**
+   * The questions the agent blocks on — approval, clarify — arrive as server
+   * requests, and are subscribed here rather than in `ChatScreen` for the
+   * reason the sheets are mounted here: one raised while you are on another
+   * screen has to reach a handler, or the client declines it and the backend
+   * fails the agent's tool call on the spot. `request.cancel` is its
+   * withdrawal, and is likewise not left to a screen that may be unmounted.
+   */
+  useEffect(() => {
+    const store = useSession.getState;
+    const offRequest = hermes.onRequest((req) => store().applyServerRequest(req));
+    const offEvent = hermes.onEvent(({ type, payload }) => {
+      if (type !== 'request.cancel') return;
+      const id = (payload as { id?: unknown } | undefined)?.id;
+      if (typeof id === 'string') store().cancelServerRequest(id);
+    });
+    return () => {
+      offRequest();
+      offEvent();
+    };
+  }, []);
 
   // A phone suspends the socket when the app is backgrounded; nudge it awake.
   // `resume` restarts the backoff — the delay computed while the app sat in a

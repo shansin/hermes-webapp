@@ -43,7 +43,7 @@ import {
   type SessionInfo,
   type Usage,
 } from '../ws/types';
-import { hermes } from '../ws/client';
+import { hermes, CONTROL_TIMEOUT_MS, type ServerRequest } from '../ws/client';
 import { undoTurns } from '../api/gateway';
 import { clarifyQuestionsOf, indexClarifyResults } from '../lib/clarifyExchange';
 import { buzz } from '../lib/haptics';
@@ -154,7 +154,12 @@ interface SessionState {
 
   usage: Usage | null;
   contextBreakdown: ContextBreakdown | null;
-  approval: (ApprovalRequest & { id: number }) | null;
+  /**
+   * `srqId` is set when the approval arrived as a server request, which is the
+   * only way a live one arrives now; absent, it came from a resume's
+   * `pending_approval` and is answered over `approval.respond`.
+   */
+  approval: (ApprovalRequest & { id: number; srqId?: string }) | null;
   /**
    * The question the agent is parked on. Keyed like `approval` so a sheet left
    * over from an earlier prompt cannot answer a newer one.
@@ -216,6 +221,17 @@ interface SessionState {
   applyLiveState: (result: SessionCreateResult) => void;
   loadHistory: (messages: HistoryMessage[], opts?: { resync?: boolean }) => void;
   applyEvent: (params: { type: string; session_id?: string; payload?: unknown }) => void;
+  /** Route a server→client request; false declines it (→ `-32601`). */
+  applyServerRequest: (req: ServerRequest) => boolean;
+  /** `request.cancel`: the backend withdrew a request (timeout, interrupt, another surface answered). */
+  cancelServerRequest: (id: string) => void;
+  /** Start noting which events arrive live, ahead of `applyReplay`. */
+  beginReplayWindow: () => void;
+  /**
+   * Fold in the running turn's events from `session.events.since`. False when
+   * the ring no longer reaches back to the turn's start.
+   */
+  applyReplay: (events: unknown[]) => boolean;
   submitPrompt: (text: string, opts?: { display?: string }) => Promise<void>;
   addNotice: (text: string, tone?: 'info' | 'error', label?: string) => void;
   clearQueued: () => void;
@@ -236,9 +252,57 @@ interface SessionState {
 let seq = 0;
 const nextId = () => `m${++seq}`;
 
+/**
+ * Haptics for events, muted while a replay folds in events that happened
+ * minutes ago — a dozen tool cards restored at once should not arrive as a
+ * dozen buzzes.
+ */
+let replayMuted = false;
+const vibrate: typeof buzz = (...args) => {
+  if (!replayMuted) buzz(...args);
+};
+
+/**
+ * The lowest `seq` applied live since the replay window opened; `null` while
+ * no window is open. See `applyReplay`.
+ */
+let replayFloor: number | null = null;
+
+/** Events a replay must not fold in again — see `applyReplay`. */
+const NOT_REPLAYED = new Set(['message.start', 'message.delta', 'reasoning.delta', 'thinking.delta']);
+
 /** Approval sheets are keyed so a stale sheet can't answer a newer request. */
 let approvalSeq = 0;
 let clarifySeq = 0;
+
+/**
+ * Server requests this client has accepted and not yet answered, by `srq-` id.
+ *
+ * Held outside the store because what is held is a capability — the
+ * `respond` bound to the socket the request arrived on — not something to
+ * render. A request for a conversation other than the one on screen is held
+ * here unanswered rather than declined: declining withdraws it and fails the
+ * agent's tool call, while holding it leaves it in the session's
+ * `open_requests` for the resume that opens that conversation again.
+ */
+const liveRequests = new Map<string, ServerRequest>();
+
+/**
+ * Answer a server request: the response frame if its socket is still live,
+ * otherwise `request.answer` over the one that is. Resolves to false when the
+ * backend says the request already ended.
+ */
+async function answerServerRequest(id: string, result: Record<string, unknown>): Promise<boolean> {
+  const req = liveRequests.get(id);
+  liveRequests.delete(id);
+  if (req?.respond(result)) return true;
+  const res = await hermes.call<{ status?: string }>(
+    'request.answer',
+    { id, result },
+    { timeoutMs: CONTROL_TIMEOUT_MS },
+  );
+  return res?.status !== 'expired';
+}
 
 /**
  * Fill in clarify results from the remembered answers.
@@ -476,7 +540,11 @@ export const useSession = create<SessionState>((set, get) => ({
      */
     if (result.pending_approval) {
       const p = ApprovalRequestSchema.safeParse(result.pending_approval);
-      if (p.success) next.approval = { ...p.data, id: ++approvalSeq };
+      // The same approval also comes back in `open_requests`, delivered just
+      // before this as a server request. That copy can be answered with a
+      // response frame and withdrawn by `request.cancel`; this one cannot, so
+      // it only stands in when no server request is on screen.
+      if (p.success && !get().approval?.srqId) next.approval = { ...p.data, id: ++approvalSeq };
     }
     if (result.pending_clarify) {
       const p = ClarifyRequestSchema.safeParse(result.pending_clarify);
@@ -580,7 +648,111 @@ export const useSession = create<SessionState>((set, get) => ({
     });
   },
 
-  applyEvent: ({ type, session_id, payload }) => {
+  /**
+   * Approval and clarify, as the backend now raises them.
+   *
+   * Only those two are accepted; `sudo`, `secret` and the rest have no UI
+   * here, and declining them is what makes the backend fail them at once
+   * rather than hold the agent for minutes. A request for a conversation that
+   * is not on screen is accepted and held, not shown — see `liveRequests`.
+   */
+  applyServerRequest: (req) => {
+    if (req.method !== 'approval' && req.method !== 'clarify') return false;
+    liveRequests.set(req.id, req);
+
+    const s = get();
+    const sid = typeof req.params.session_id === 'string' ? req.params.session_id : undefined;
+    if (!s.sessionId || (sid && sid !== s.sessionId)) return true;
+
+    if (req.method === 'approval') {
+      const p = ApprovalRequestSchema.safeParse(req.params);
+      if (!p.success) return true;
+      // A replay of the request already on screen keeps its sheet (and its
+      // armed "always" button) rather than flashing a new one.
+      if (s.approval?.srqId === req.id) return true;
+      if (!req.replayed) vibrate('approval');
+      set({ approval: { ...p.data, id: ++approvalSeq, srqId: req.id } });
+      return true;
+    }
+
+    // The request id stands in for clarify's own: it is what the answer is
+    // correlated on, and the params no longer carry a `request_id`.
+    const p = ClarifyRequestSchema.safeParse({ ...req.params, request_id: req.id });
+    if (!p.success) return true;
+    if (s.clarify?.requestId === req.id) return true;
+    if (!req.replayed) vibrate('approval');
+    set({ clarify: { ...normalizeClarify(p.data), id: ++clarifySeq } });
+    return true;
+  },
+
+  cancelServerRequest: (id) => {
+    liveRequests.delete(id);
+    const s = get();
+    if (s.approval?.srqId === id) set({ approval: null });
+    if (s.clarify?.requestId === id) set({ clarify: null });
+  },
+
+  beginReplayWindow: () => {
+    replayFloor = Number.POSITIVE_INFINITY;
+  },
+
+  /**
+   * Restore what a running turn did while the socket was down.
+   *
+   * A reconnect mid-turn rebuilds the transcript from history, and history
+   * ends at the turn *before*: the agent writes a turn when it finishes. So
+   * every tool card of the turn still running — including the ones that were
+   * on screen before the drop — vanished on reconnect, and stayed gone until
+   * the turn ended. Hermes keeps each session's recent event frames in a ring
+   * (`session.events.since`); this replays the current turn from it.
+   *
+   * Three choices make that safe to apply on top of a live socket:
+   *
+   *  - **From the turn's own `message.start`**, found in the ring rather than
+   *    remembered. A client that never saw it (opened mid-turn, page reloaded)
+   *    replays correctly too, and a ring that has evicted it — a long turn,
+   *    hundreds of deltas — returns false and changes nothing, which is the
+   *    behaviour before this existed.
+   *  - **Not the deltas.** `session.resume`'s `inflight` already restored the
+   *    reply so far, and appending the same tokens again would print it twice.
+   *    Reasoning is skipped for the same reason; what was on screen stays.
+   *  - **Not what already arrived live.** Events keep flowing while the
+   *    `events.since` round trip is out, and they are in the ring too.
+   *    `beginReplayWindow` starts noting the lowest `seq` applied live, and
+   *    anything at or above it is left out here.
+   */
+  applyReplay: (events) => {
+    const floor = replayFloor ?? Number.POSITIVE_INFINITY;
+    replayFloor = null;
+
+    const frames = events.filter(
+      (e): e is { type: string; session_id?: string; payload?: unknown; seq?: unknown } =>
+        Boolean(e) && typeof (e as { type?: unknown }).type === 'string',
+    );
+    let start = -1;
+    for (let i = frames.length - 1; i >= 0; i--) {
+      if (frames[i]!.type === 'message.start') {
+        start = i;
+        break;
+      }
+    }
+    if (start < 0) return false;
+
+    replayMuted = true;
+    try {
+      for (const frame of frames.slice(start + 1)) {
+        if (NOT_REPLAYED.has(frame.type)) continue;
+        if (typeof frame.seq === 'number' && frame.seq >= floor) continue;
+        get().applyEvent(frame);
+      }
+    } finally {
+      replayMuted = false;
+    }
+    return true;
+  },
+
+  applyEvent: (params) => {
+    const { type, session_id, payload } = params;
     const s = get();
 
     /**
@@ -607,6 +779,11 @@ export const useSession = create<SessionState>((set, get) => ({
      * restored explicitly on resume.
      */
     if (session_id && session_id !== s.sessionId) return;
+
+    const seqNo = (params as { seq?: unknown }).seq;
+    if (replayFloor !== null && !replayMuted && typeof seqNo === 'number') {
+      replayFloor = Math.min(replayFloor, seqNo);
+    }
 
     /**
      * Anything arriving from a turn means a turn is running.
@@ -668,7 +845,7 @@ export const useSession = create<SessionState>((set, get) => ({
       case 'tool.start': {
         const p = ToolStartSchema.safeParse(payload);
         if (!p.success) return;
-        buzz('tool');
+        vibrate('tool');
         set({
           statusLine: '',
           messages: [
@@ -725,7 +902,7 @@ export const useSession = create<SessionState>((set, get) => ({
         const usage = p.success ? p.data.usage : undefined;
         const interrupted = p.success && p.data.status === 'interrupted';
 
-        buzz('done');
+        vibrate('done');
         set({
           running: false,
           /**
@@ -811,7 +988,7 @@ export const useSession = create<SessionState>((set, get) => ({
 
         if (!existing) {
           // A `tool`/`complete` with no preceding `start` still deserves a card.
-          buzz('tool');
+          vibrate('tool');
           set({
             messages: [
               ...s.messages,
@@ -873,7 +1050,7 @@ export const useSession = create<SessionState>((set, get) => ({
       case 'approval.request': {
         const p = ApprovalRequestSchema.safeParse(payload);
         if (!p.success) return;
-        buzz('approval');
+        vibrate('approval');
         set({ approval: { ...p.data, id: ++approvalSeq } });
         return;
       }
@@ -881,7 +1058,7 @@ export const useSession = create<SessionState>((set, get) => ({
       case 'clarify.request': {
         const p = ClarifyRequestSchema.safeParse(payload);
         if (!p.success) return;
-        buzz('approval');
+        vibrate('approval');
         set({ clarify: { ...normalizeClarify(p.data), id: ++clarifySeq } });
         return;
       }
@@ -933,7 +1110,7 @@ export const useSession = create<SessionState>((set, get) => ({
     // The gateway runs one turn per session, so a message sent mid-turn would
     // be rejected. Hold it instead and send it when the turn completes.
     if (running) {
-      buzz('tap');
+      vibrate('tap');
       set({ queued: { text, display: opts?.display } });
       return;
     }
@@ -1075,7 +1252,7 @@ export const useSession = create<SessionState>((set, get) => ({
     if (!sessionId) return;
     try {
       await hermes.call('session.interrupt', { session_id: sessionId });
-      buzz('warn');
+      vibrate('warn');
     } catch {
       // A turn that already finished rejects here; nothing to surface.
     }
@@ -1102,7 +1279,18 @@ export const useSession = create<SessionState>((set, get) => ({
     if (!sessionId || !approval) return;
     set({ approval: null });
     try {
-      await hermes.call('approval.respond', { session_id: sessionId, choice, all });
+      if (approval.srqId) {
+        const live = await answerServerRequest(approval.srqId, { choice, all });
+        if (!live) get().addNotice('That approval had already ended — the agent moved on without it.', 'info');
+        return;
+      }
+      const requestId = (approval as { request_id?: unknown }).request_id;
+      await hermes.call('approval.respond', {
+        session_id: sessionId,
+        choice,
+        all,
+        ...(typeof requestId === 'string' ? { request_id: requestId } : {}),
+      });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'approval failed',
@@ -1115,53 +1303,46 @@ export const useSession = create<SessionState>((set, get) => ({
   /**
    * Answer the pending clarify and let the parked turn continue.
    *
-   * A batch is sent one call per question because that is how the gateway
-   * locks them: it completes the request only once every `qid` has an answer,
-   * and a call without a `question_id` would resolve the whole batch with a
-   * single value. Sequential rather than parallel — the calls mutate one
-   * server-side entry under a lock, and the last one is what releases the
-   * agent thread.
+   * One response for the whole request: `{answer}` for a single question,
+   * `{answers}` keyed by `qid` for a batch. An empty string is "skip". This
+   * replaced one `clarify.respond` call per question, a method the backend no
+   * longer has — per-question locking still exists (`clarify.lock`), but it is
+   * for keeping early answers across a timeout, which a sheet answered in one
+   * go has no use for.
    *
-   * The sheet is cleared first. The turn resumes the moment the final call
-   * lands, so holding a modal over the reply while awaiting the round trip
-   * would cover the thing the person just asked for.
+   * The sheet is cleared first. The turn resumes the moment the answer lands,
+   * so holding a modal over the reply while awaiting the round trip would
+   * cover the thing the person just asked for.
    */
   respondClarify: async (answers) => {
     const { sessionId, clarify } = get();
     if (!sessionId || !clarify) return;
     set({ clarify: null });
 
-    try {
-      for (const question of clarify.questions) {
-        const answer = answers[question.qid ?? ''] ?? '';
-        const params: Record<string, unknown> = {
-          session_id: sessionId,
-          request_id: clarify.requestId,
-          answer,
-        };
-        if (question.qid) params.question_id = question.qid;
-
-        const res = await hermes.call<{ status?: string }>('clarify.respond', params);
-        /**
-         * `expired` rather than an error: the gateway keeps answering a
-         * request whose wait already timed out, so the agent moved on without
-         * this. Saying so beats a silent no-op, since the person just made a
-         * choice and would otherwise watch it change nothing.
-         */
-        if (res?.status === 'expired') {
-          get().addNotice('That question timed out — the agent moved on without an answer.', 'info');
-          return;
+    const batch = clarify.questions.some((q) => q.qid);
+    const result = batch
+      ? {
+          answers: Object.fromEntries(
+            clarify.questions.map((q) => [q.qid ?? '', answers[q.qid ?? ''] ?? '']),
+          ),
         }
-      }
+      : { answer: answers[''] ?? '' };
+
+    try {
+      const live = await answerServerRequest(clarify.requestId, result);
+      /**
+       * `expired` rather than an error: the question's wait already ended, so
+       * the agent moved on without this. Saying so beats a silent no-op, since
+       * the person just made a choice and would otherwise watch it change
+       * nothing.
+       */
+      if (!live) get().addNotice('That question timed out — the agent moved on without an answer.', 'info');
     } catch (err) {
       /**
-       * Put the question back. Same reasoning as `respondApproval`, with one
-       * extra edge: a batch is sent one call per `qid` and the gateway
-       * releases the turn only once every one of them has landed, so a failure
-       * partway through leaves the agent parked on the questions that did not
-       * send. Clearing the sheet and leaving it cleared meant no way to finish
-       * answering and no way to see that anything had gone wrong beyond a
-       * banner.
+       * Put the question back. Same reasoning as `respondApproval`: the agent
+       * is parked on it, and a cleared sheet after a failed send leaves no way
+       * to finish answering and nothing on screen saying anything went wrong
+       * beyond a banner.
        */
       set({
         error: err instanceof Error ? err.message : 'Could not send that answer',

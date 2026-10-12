@@ -24,7 +24,7 @@ import { Empty, Loader } from '../components/shared/misc';
 import { useSession } from '../store/session';
 import { MenuButton } from '../components/shared/MenuButton';
 import { useUi } from '../store/ui';
-import { hermes } from '../ws/client';
+import { hermes, CONTROL_TIMEOUT_MS } from '../ws/client';
 import { createSession, fetchHistory, resumeSession } from '../api/gateway';
 import { fetchSessionTitle, fetchStoredMessages, useSessionRow } from '../api/sessions';
 import { useSlashRunner } from '../lib/useSlashRunner';
@@ -455,6 +455,30 @@ export function ChatScreen() {
         // The gateway just said whether a turn is in flight; that beats
         // guessing it from how much the transcript grew.
         else applyResync(history, { running: res.running });
+
+        /**
+         * History stops at the turn before a running one, so the resync just
+         * took that turn's tool cards off the screen. Put them back from the
+         * gateway's event ring — see `applyReplay`. Not on a rebuilt session:
+         * a new runtime has a new ring, and nothing in it is this turn's.
+         */
+        if (!rebuilt && res.running) {
+          const store = useSession.getState();
+          store.beginReplayWindow();
+          try {
+            const replay = await hermes.call<{ events?: unknown[] }>(
+              'session.events.since',
+              { session_id: res.session_id, last_seen: 0 },
+              { timeoutMs: CONTROL_TIMEOUT_MS },
+            );
+            if (alive) store.applyReplay(replay?.events ?? []);
+            else store.applyReplay([]);
+          } catch {
+            // A backend without the ring, or a socket that dropped again:
+            // the turn's cards come back when it completes, as they always did.
+            store.applyReplay([]);
+          }
+        }
         void refreshUsage();
       } catch {
         // The resume itself failed — a gateway that is up but refusing (a
