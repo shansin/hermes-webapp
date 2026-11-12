@@ -14,9 +14,11 @@
  *    so "what changed" comes from `rollback.diff`, which compares the
  *    checkpoint with the working tree *now* (i.e. what a restore would undo)
  *    and truncates the patch to 4000 characters.
- *  - **A whole restore also rewinds the conversation**: on success the
- *    handler drops the latest user turn from the session's history
- *    (`history_removed`), and it is refused mid-turn (4009). A single-file
+ *  - **A whole restore may also rewind the conversation**: from Hermes 0.23
+ *    the handler drops the latest user turn (`history_removed`) only when
+ *    the checkpoint belongs to that turn, and it keeps files the user edited
+ *    by hand (`skipped_user_edits`) unless `all: true` is sent, which this
+ *    app does not. It is refused mid-turn (4009). A single-file
  *    restore (`file_path`, relative to the cwd) touches disk only and is
  *    allowed while a turn runs.
  *  - Failure is mostly *in* the result (`success: false` + `error`/`reason`),

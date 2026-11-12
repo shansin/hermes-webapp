@@ -31,7 +31,11 @@ vi.mock('../src/ws/client', () => ({
 }));
 
 const undoTurns = vi.fn(async () => '');
-vi.mock('../src/api/gateway', () => ({ undoTurns: (...a: unknown[]) => undoTurns(...(a as [])) }));
+const fetchHistory = vi.fn(async () => [] as unknown[]);
+vi.mock('../src/api/gateway', () => ({
+  undoTurns: (...a: unknown[]) => undoTurns(...(a as [])),
+  fetchHistory: (...a: unknown[]) => fetchHistory(...(a as [])),
+}));
 
 const { useSession } = await import('../src/store/session');
 
@@ -946,5 +950,46 @@ describe('open requests carried by a resume', () => {
     store().applyLiveState({ session_id: 's7', open_requests: [{ id: 'srq-9' }] } as never);
 
     expect(store().approval).toBeNull();
+  });
+});
+
+describe('sessions the messaging gateway owns (Hermes ≥ 0.23)', () => {
+  const refusal = (reason: string, message: string) =>
+    Object.assign(new Error(message), { name: 'RpcError', code: 4090, method: 'prompt.submit', data: { reason } });
+
+  it('does not offer Retry when the owner could not confirm the message', async () => {
+    call.mockRejectedValueOnce(refusal('SESSION_OWNER_UNCONFIRMED', 'check the chat before sending it again'));
+    await store().submitPrompt('hello');
+    const bubble = store().messages.find((m) => m.kind === 'user');
+    expect(bubble).toBeDefined();
+    expect((bubble as { failed?: boolean }).failed).toBeFalsy();
+    expect(store().running).toBe(false);
+    expect(store().error).toContain('check the chat');
+  });
+
+  it('marks a busy-owner refusal failed, so it can be sent again', async () => {
+    call.mockRejectedValueOnce(refusal('SESSION_OWNER_BUSY', 'Send it again when the current turn ends.'));
+    await store().submitPrompt('hello');
+    const bubble = store().messages.find((m) => m.kind === 'user');
+    expect((bubble as { failed?: boolean }).failed).toBe(true);
+  });
+
+  it('reads the reply from history when a forwarded turn completes empty', async () => {
+    call.mockResolvedValueOnce({ status: 'queued', forwarded: true });
+    fetchHistory.mockResolvedValueOnce([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'Answered on Discord.' },
+    ]);
+    await store().submitPrompt('hello');
+    emit('message.start');
+    emit('message.complete', {});
+    await vi.waitFor(() => expect(fetchHistory).toHaveBeenCalledWith('s1'));
+  });
+
+  it('does not reload after an ordinary turn', async () => {
+    fetchHistory.mockClear();
+    await store().submitPrompt('hello');
+    turn('Hi there.');
+    expect(fetchHistory).not.toHaveBeenCalled();
   });
 });

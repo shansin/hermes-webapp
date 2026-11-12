@@ -270,9 +270,18 @@ export function SessionsScreen() {
               /* Newer Hermes keeps a session a live turn holds and lists it
                  here. The refetch brings its row back on its own; this says
                  why, since the toast above already claimed it was deleted. */
-              const kept = (res as { skipped_active?: unknown } | undefined)?.skipped_active;
+              const kept = res?.skipped_active;
               if (Array.isArray(kept) && kept.length) {
                 toast(`${kept.length} still running ${kept.length === 1 ? 'was' : 'were'} kept`, 'warn');
+              }
+              /* The per-id fallback (Hermes ≥ 0.23 with the gateway up) reports
+                 the ones it could not delete instead of failing them all. */
+              const failed = res?.failed ?? [];
+              if (failed[0]) {
+                toast(
+                  `${failed.length} could not be deleted: ${failed[0].reason}`,
+                  'warn',
+                );
               }
             })
             .catch((e: unknown) => {

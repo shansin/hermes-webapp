@@ -270,7 +270,10 @@ function runsFor(
   for (const raw of cronSessions) {
     const run = raw as GatewayRun;
     const id = str(run.id);
-    if (!id || seen.has(id) || !id.startsWith(`cron_${jobId}_`)) continue;
+    // `cron_<job>_<ts>` is the legacy id. Hermes ≥ 0.23 names agent runs
+    // `local-<hash>` and stamps the job on the row instead.
+    const owner = str((run as { cron_job_id?: unknown }).cron_job_id);
+    if (!id || seen.has(id) || !(owner === jobId || id.startsWith(`cron_${jobId}_`))) continue;
     seen.add(id);
     // Found in the active store, so that is what addresses it — the job's own
     // profile 404s for a session it does not hold.
@@ -342,7 +345,17 @@ async function reportFailedExecution(
   };
 
   const status = str(execution.status) ?? str(job.last_status);
-  if (!status || !looksFailed(status)) return;
+  /**
+   * Hermes ≥ 0.23 books two more outcomes. `cancelled` is someone stopping the
+   * run on purpose — `hermes cron cancel`, or deleting the job mid-run — which
+   * is not news to the person who did it, even though "cancel" reads as a
+   * failure marker below. `missed` is an occurrence the scheduler skipped past
+   * without starting (the machine was asleep, say): the job did not run, which
+   * is exactly what this pass exists to say.
+   */
+  if (!status || status === 'cancelled') return;
+  const missed = status === 'missed';
+  if (!missed && !looksFailed(status)) return;
 
   const error = str(execution.error) ?? str(job.last_error);
 
@@ -377,7 +390,7 @@ async function reportFailedExecution(
   const entry = appendEntry({
     kind: 'cron.failed',
     title: jobName,
-    body: detail ?? `${jobName} did not run`,
+    body: detail ?? (missed ? `${jobName} was missed — it never started` : `${jobName} did not run`),
     // No session exists, so this is where the run history and the job's own
     // controls are — the deep link `CronTab` opens the sheet from.
     url: `/cron?job=${encodeURIComponent(jobId)}`,
@@ -394,7 +407,7 @@ async function reportFailedExecution(
 
   if (listSubscriptions().length) {
     void sendPush({
-      title: `${jobName} failed`,
+      title: missed ? `${jobName} missed` : `${jobName} failed`,
       // The row keeps the whole reply; a banner gets one line of it.
       body: flatten(entry.body) ?? entry.body,
       url: '/notifications',
@@ -505,6 +518,14 @@ export async function reconcile(): Promise<void> {
         if (hasRun(runId)) continue;
 
         if (seeding) {
+          markRunSeen(runId);
+          continue;
+        }
+
+        /* Hermes ≥ 0.23 retitles an agent run someone stopped on purpose
+           `CANCELLED · <reason>`. Not news to whoever stopped it, and the
+           title would otherwise become the job name "CANCELLED". */
+        if (str(run.title)?.startsWith('CANCELLED · ')) {
           markRunSeen(runId);
           continue;
         }

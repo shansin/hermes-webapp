@@ -22,8 +22,15 @@ import {
 
 const apiDel = vi.fn(async () => ({}));
 const apiPost = vi.fn(async () => ({ ok: true }));
+// Hermes ≥ 0.23: a delete reads the session's revision first.
+const apiGet = vi.fn(async () => ({ exists: true, runtime_revision: 0, runtime_generation: 0 }));
 vi.mock('../src/api/client', () => ({
-  api: { del: (...a: unknown[]) => apiDel(...(a as [])), post: (...a: unknown[]) => apiPost(...(a as [])) },
+  api: {
+    get: (...a: unknown[]) => apiGet(...(a as [])),
+    del: (...a: unknown[]) => apiDel(...(a as [])),
+    post: (...a: unknown[]) => apiPost(...(a as [])),
+  },
+  ApiError: class ApiError extends Error {},
 }));
 
 const { useDeleteSession, useBulkDeleteSessions } = await import('../src/api/sessions');

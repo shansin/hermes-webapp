@@ -9,9 +9,9 @@
  * Restoring is armed with a second tap rather than a dialog — one more sheet
  * stacked on this one is the hand-off case `useHistoryDismiss` exists for, and
  * a second tap on the same spot is as deliberate on a phone. The whole-tree
- * restore says what else it does, because the backend does it unasked: it
- * also drops the conversation's latest turn (`history_removed`), so the
- * transcript is reloaded afterwards. It is refused mid-turn; a single file
+ * restore says what else it does, because the backend does it unasked: when
+ * the checkpoint is from the latest turn it also drops that turn
+ * (`history_removed`), so the transcript is reloaded afterwards. It is refused mid-turn; a single file
  * is not. See `api/checkpoints.ts` for the wire facts.
  *
  * Lazy (`ChatScreen` mounts it only while open) and opened through
@@ -307,7 +307,7 @@ function CheckpointRow({ checkpoint: c, sessionId, highlighted, expanded, onTogg
           <p style={{ ...faint, margin: '6px 2px 0', lineHeight: 1.45 }}>
             {running
               ? 'Whole restores wait for the current turn to finish. Single files can be restored now.'
-              : 'Restoring everything also removes the latest turn from this conversation.'}
+              : 'Files you have edited yourself since are kept. A checkpoint from the latest turn also removes that turn from the conversation.'}
           </p>
         </div>
       )}

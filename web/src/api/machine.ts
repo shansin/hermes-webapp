@@ -24,8 +24,9 @@
  */
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { api } from './client';
+import { api, ApiError } from './client';
 import { withProfile } from './hub';
+import { deleteSessionsEach } from './sessions';
 import { pairingFrom, type ActionStatus, type PairedUser, type PairingRequest } from '../lib/machine';
 
 export const machineKeys = {
@@ -175,17 +176,64 @@ export function useEmptySessionCount(profile: string | null) {
   });
 }
 
+/** One page of the plain session list, as far as finding empty ones needs. */
+interface ListedSession {
+  id: string;
+  message_count?: number | null;
+  ended_at?: number | null;
+}
+
+const LIST_PAGE = 100;
+/** A ceiling, not an expectation: non-archived sessions number in the dozens. */
+const LIST_PAGES = 20;
+
+/**
+ * The empty sessions, found by reading the list rather than by the sweep.
+ *
+ * The same rule the backend's sweep applies — no messages, ended, not
+ * archived — minus its last check that no inactive message rows remain, which
+ * the list does not expose. Archived rows are excluded by the query itself.
+ */
+async function listEmptySessions(profile: string | null): Promise<string[]> {
+  const ids: string[] = [];
+  for (let page = 0; page < LIST_PAGES; page++) {
+    const body = await api.get<{ sessions?: ListedSession[] } | ListedSession[]>(
+      withProfile(`/api/sessions?archived=exclude&limit=${LIST_PAGE}&offset=${page * LIST_PAGE}`, profile),
+    );
+    const rows = Array.isArray(body) ? body : (body.sessions ?? []);
+    for (const r of rows) {
+      if ((r.message_count ?? 0) === 0 && r.ended_at != null) ids.push(r.id);
+    }
+    if (rows.length < LIST_PAGE) break;
+  }
+  return ids;
+}
+
 /**
  * Delete every empty, ended, non-archived session — `DELETE
  * /api/sessions/empty` (`hermes_cli/web_routers/sessions.py`). Active and
  * archived sessions are skipped server-side. Invalidates the session lists too,
  * since rows just left them.
+ *
+ * From Hermes 0.23 that sweep reserves the profile's store exclusively, and a
+ * running messaging gateway always holds it, so it answers 409 whenever the
+ * gateway is up. Then the empties are found from the list and deleted one
+ * fenced write at a time, which the gateway does accept.
  */
 export function useDeleteEmptySessions() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (profile: string | null) =>
-      api.del<{ ok: boolean; deleted?: number }>(withProfile('/api/sessions/empty', profile)),
+    mutationFn: async (profile: string | null): Promise<{ ok: boolean; deleted?: number }> => {
+      try {
+        return await api.del<{ ok: boolean; deleted?: number }>(withProfile('/api/sessions/empty', profile));
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 409)) throw e;
+        const ids = await listEmptySessions(profile);
+        const { deleted, failed } = await deleteSessionsEach(ids, profile);
+        if (deleted.length === 0 && failed[0]) throw new Error(failed[0].reason);
+        return { ok: true, deleted: deleted.length };
+      }
+    },
     onSettled: (_d, _e, profile) => {
       void qc.invalidateQueries({ queryKey: machineKeys.emptySessions(profile) });
       void qc.invalidateQueries({ queryKey: ['sessions'] });

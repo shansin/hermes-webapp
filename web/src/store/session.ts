@@ -40,7 +40,7 @@ import {
   type Usage,
 } from '../ws/types';
 import { hermes, ConnectionLost, type ServerRequest } from '../ws/client';
-import { undoTurns } from '../api/gateway';
+import { undoTurns, fetchHistory } from '../api/gateway';
 import { indexClarifyResults } from '../lib/clarifyExchange';
 import { buzz } from '../lib/haptics';
 import {
@@ -269,6 +269,26 @@ let replayWindowSeq = 0;
  * stopped when the interrupt's own completion was lost with the socket.
  */
 let stopRequested = false;
+
+/**
+ * The turn under way was forwarded to the gateway that owns this session.
+ *
+ * Hermes ≥ 0.23 hands a prompt for a session the messaging gateway owns (a
+ * Discord chat, a cron run, a kanban worker's) to that gateway's own queue,
+ * answering `{status: "queued", forwarded: true}`. Only `message.start` and
+ * `message.complete` are relayed back, not the deltas, and the complete can
+ * arrive with no text — so the reply has to be read from history instead.
+ */
+let forwardedTurn = false;
+
+/** `prompt.submit` refusals that name why, from `tui_gateway/methods_prompt.py`. */
+function ownershipRefusal(err: unknown): string | null {
+  // Duck-typed on the `RpcError` fields rather than `instanceof`.
+  const e = err as { code?: unknown; data?: unknown } | null;
+  if (!e || e.code !== 4090) return null;
+  const reason = (e.data as { reason?: unknown } | undefined)?.reason;
+  return typeof reason === 'string' ? reason : 'SESSION_NOT_OWNED';
+}
 
 /** Approval sheets are keyed so a stale sheet can't answer a newer request. */
 let approvalSeq = 0;
@@ -900,10 +920,27 @@ export const useSession = create<SessionState>((set, get) => ({
       }
 
       case 'message.complete': {
+        const forwarded = forwardedTurn;
+        forwardedTurn = false;
         const { patch, interrupted } = foldMessageComplete(s, payload, nextId);
         vibrate('done');
         set(patch);
         noteActivity(get);
+
+        /* A forwarded turn streamed nothing here, and its complete may carry
+           no text either: the reply is in the transcript, so read it. */
+        const last = patch.messages?.[patch.messages.length - 1];
+        if (forwarded && last?.kind === 'assistant' && !last.text) {
+          const sid = get().sessionId;
+          const token = sessionEpoch();
+          if (sid) {
+            void fetchHistory(sid)
+              .then((history) => {
+                if (stillOn(token)) get().applyResync(history, { running: false });
+              })
+              .catch(() => {});
+          }
+        }
 
         // Release a message typed during the turn. An interrupted turn is the
         // one case we hold it back: the user stopped the agent, so firing the
@@ -1036,8 +1073,10 @@ export const useSession = create<SessionState>((set, get) => ({
       inflightPrompt: null,
     }));
 
+    forwardedTurn = false;
     try {
-      await hermes.call('prompt.submit', { session_id: sessionId, text });
+      const res = await hermes.call('prompt.submit', { session_id: sessionId, text });
+      if ((res as { forwarded?: unknown } | null)?.forwarded === true) forwardedTurn = true;
       if (stillOn(token)) noteActivity(get);
     } catch (err) {
       // Another conversation by now; this bubble is not on screen to mark.
@@ -1046,6 +1085,13 @@ export const useSession = create<SessionState>((set, get) => ({
       // say whether the turn is running before calling the send a failure.
       if (err instanceof ConnectionLost) {
         set({ lostSubmit: { id, text, display: opts?.display, at, ...mark } });
+        return;
+      }
+      /* The gateway owns this chat and could not confirm whether it queued
+         the message. It may run, so no Retry: a second copy would run too.
+         The message says to check the chat first. */
+      if (ownershipRefusal(err) === 'SESSION_OWNER_UNCONFIRMED') {
+        set({ running: false, error: err instanceof Error ? err.message : 'not confirmed' });
         return;
       }
       set((st) => ({

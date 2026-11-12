@@ -873,3 +873,50 @@ describe('the sweep', () => {
     expect(feed.listEntries()).toEqual([]);
   });
 });
+
+describe('Hermes 0.23 runs and outcomes', () => {
+  it('finds a unified-runtime run by its stamped job, not its id', async () => {
+    const sessions = '/api/sessions?source=cron&limit=100';
+    jobs(job({ id: 'job-2', name: 'Suggested training today', profile: 'fitness' }));
+    routesUrl['/api/cron/jobs/job-2/runs?profile=fitness'] = { runs: [] };
+    routesUrl[sessions] = { sessions: [] };
+    await seed();
+
+    routesUrl[sessions] = {
+      sessions: [run({ id: 'local-abc123', cron_job_id: 'job-2' }), run({ id: 'local-other', cron_job_id: 'job-9' })],
+    };
+    messages('local-abc123', { role: 'assistant', content: 'Tempo run.' });
+    await cron.reconcile();
+
+    const entries = feed.listEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.body).toBe('Tempo run.');
+  });
+
+  it('says nothing about a run someone cancelled on purpose', async () => {
+    jobs(job());
+    runs('job-1');
+    await seed();
+
+    runs('job-1', run({ title: 'CANCELLED · job removed while running', end_reason: 'cancelled' }));
+    jobs(job({ latest_execution: { id: 'exec-c', status: 'cancelled', error: 'job removed while running' } }));
+    await cron.reconcile();
+
+    expect(feed.listEntries()).toHaveLength(0);
+    expect(sendPush).not.toHaveBeenCalled();
+  });
+
+  it('reports a missed occurrence as missed, not failed', async () => {
+    jobs(job());
+    runs('job-1');
+    await seed();
+
+    jobs(job({ latest_execution: { id: 'exec-m', status: 'missed', error: '' } }));
+    await cron.reconcile();
+
+    const row = feed.listEntries()[0]!;
+    expect(row.kind).toBe('cron.failed');
+    expect(row.body).toBe('Nightly digest was missed — it never started');
+    expect(sendPush).toHaveBeenCalledWith(expect.objectContaining({ title: 'Nightly digest missed' }));
+  });
+});

@@ -9,7 +9,7 @@ import {
   type QueryKey,
 } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { api } from './client';
+import { api, ApiError } from './client';
 import { forgetLastSession } from '../lib/lastSession';
 
 export interface SessionRow {
@@ -593,12 +593,144 @@ export function useSessionStats() {
   });
 }
 
+// --- fenced session writes ---------------------------------------------------
+
+/** `GET /api/sessions/{id}/mutation-snapshot` (Hermes ≥ 0.23). */
+interface MutationSnapshot {
+  exists: boolean;
+  runtime_revision: number;
+  runtime_generation: number | null;
+}
+
+/** What a fenced write carries: a fresh id, and the revision it was decided against. */
+export type MutationIdentity = {
+  request_id: string;
+  expected_revision: number;
+  expected_generation?: number;
+};
+
+function newRequestId(): string {
+  // `randomUUID` needs a secure context, and plain-HTTP LAN is a supported way in.
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === 'function') c.getRandomValues(bytes);
+  else for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const h = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+/**
+ * The identity for one write to a session, or `{}` on a Hermes that predates it.
+ *
+ * From 0.23 every `PATCH`/`DELETE /api/sessions/{id}` must name a `request_id`
+ * and the `expected_revision` it was decided against, or it is refused with
+ * 409 `client_upgrade_required` — which is how rename, pin, archive and delete
+ * all broke on that upgrade. The revision comes from the snapshot route, read
+ * just before the write; a 404 *from that route* means an older backend that
+ * neither has it nor wants the fields, the desktop app's own fallback.
+ *
+ * Returns `null` when the session is already gone.
+ */
+export async function sessionWriteIdentity(
+  id: string,
+  profile?: string | null,
+): Promise<MutationIdentity | Record<string, never> | null> {
+  let snap: MutationSnapshot;
+  try {
+    snap = await api.get<MutationSnapshot>(
+      sessionUrl(`/api/sessions/${encodeURIComponent(id)}/mutation-snapshot`, profile),
+    );
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return {};
+    throw e;
+  }
+  if (!snap.exists) return null;
+  return {
+    request_id: newRequestId(),
+    expected_revision: snap.runtime_revision,
+    ...(Number.isSafeInteger(snap.runtime_generation)
+      ? { expected_generation: snap.runtime_generation as number }
+      : {}),
+  };
+}
+
+/** A write the session no longer exists to receive. */
+export class SessionGoneError extends Error {
+  constructor() {
+    super('That session no longer exists');
+    this.name = 'SessionGoneError';
+  }
+}
+
+/** One fenced `PATCH` of a session's title / flags. */
+export async function patchSession(
+  id: string,
+  fields: { title?: string; pinned?: boolean; archived?: boolean },
+  profile?: string | null,
+): Promise<unknown> {
+  const identity = await sessionWriteIdentity(id, profile);
+  if (identity === null) throw new SessionGoneError();
+  return api.patch(`/api/sessions/${encodeURIComponent(id)}`, {
+    ...fields,
+    ...identity,
+    // In the body for PATCH, unlike DELETE where it is a query parameter.
+    ...(profile ? { profile } : {}),
+  });
+}
+
+/** One fenced delete. Already-gone is success: that is what a delete wants. */
+export async function deleteSessionFenced(id: string, profile?: string | null): Promise<unknown> {
+  const identity = await sessionWriteIdentity(id, profile);
+  if (identity === null) return { ok: true, already_absent: true };
+  const q = new URLSearchParams();
+  if (profile) q.set('profile', profile);
+  for (const [k, v] of Object.entries(identity)) q.set(k, String(v));
+  const qs = q.toString();
+  return api.del(`/api/sessions/${encodeURIComponent(id)}${qs ? `?${qs}` : ''}`);
+}
+
+/** At most this many deletes in flight when a bulk delete fans out per id. */
+const FANOUT = 4;
+
+/**
+ * Delete each id with its own fenced write; the per-id fallback for a bulk delete.
+ *
+ * From 0.23 `POST /api/sessions/bulk-delete` reserves the profile's store
+ * exclusively, which a running messaging gateway always holds — so on a machine
+ * with the gateway up it answers 409 every time. The desktop app fans out per
+ * id for the same reason (its kanban board says so). Ids that fail are
+ * returned, not thrown, so one stuck session does not undo the rest.
+ */
+export async function deleteSessionsEach(
+  ids: string[],
+  profile?: string | null,
+): Promise<{ deleted: string[]; failed: { id: string; reason: string }[] }> {
+  const deleted: string[] = [];
+  const failed: { id: string; reason: string }[] = [];
+  const queue = [...ids];
+  const worker = async () => {
+    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+      try {
+        await deleteSessionFenced(id, profile);
+        deleted.push(id);
+      } catch (e) {
+        failed.push({ id, reason: e instanceof Error ? e.message : String(e) });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(FANOUT, ids.length) }, worker));
+  return { deleted, failed };
+}
+
 /** `profile` deletes out of another profile's `state.db`; omit for the active one. */
 export function useDeleteSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, profile }: { id: string; profile?: string | null }) =>
-      api.del(sessionUrl(`/api/sessions/${encodeURIComponent(id)}`, profile)),
+      deleteSessionFenced(id, profile),
     onSuccess: (_res, { id }) => {
       // Otherwise the next cold start resumes it, fails, and toasts an error.
       forgetLastSession(id);
@@ -614,13 +746,31 @@ export function useDeleteSession() {
  * with a 422 — so selecting several sessions and deleting them has never
  * worked, and reported itself as a generic failure rather than as a
  * malformed request. `profile` rides in the body for this one, not the query.
+ *
+ * A 409 from it is the 0.23 store reservation a running gateway holds (see
+ * `deleteSessionsEach`), and the ids go one by one instead. Its result carries
+ * `failed` for any id that could not be deleted that way.
  */
 export function useBulkDeleteSessions() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ ids, profile }: { ids: string[]; profile?: string | null }) =>
-      api.post('/api/sessions/bulk-delete', { ids, ...(profile ? { profile } : {}) }),
-    onSuccess: (_res, { ids }) => {
+    mutationFn: async ({
+      ids,
+      profile,
+    }: {
+      ids: string[];
+      profile?: string | null;
+    }): Promise<{ skipped_active?: unknown; failed?: { id: string; reason: string }[] }> => {
+      try {
+        return await api.post('/api/sessions/bulk-delete', { ids, ...(profile ? { profile } : {}) });
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 409)) throw e;
+        const { deleted, failed } = await deleteSessionsEach(ids, profile);
+        if (deleted.length === 0 && failed[0]) throw new Error(failed[0].reason);
+        return { failed };
+      }
+    },
+    onSettled: (_res, _err, { ids }) => {
       ids.forEach((id) => forgetLastSession(id));
       return qc.invalidateQueries({ queryKey: sessionKeys.all });
     },
@@ -631,10 +781,7 @@ export function useRenameSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, title, profile }: { id: string; title: string; profile?: string | null }) =>
-      api.patch(`/api/sessions/${encodeURIComponent(id)}`, {
-        title,
-        ...(profile ? { profile } : {}),
-      }),
+      patchSession(id, { title }, profile),
     onSuccess: () => qc.invalidateQueries({ queryKey: sessionKeys.all }),
   });
 }
@@ -658,12 +805,7 @@ export function useSetSessionFlags() {
       pinned?: boolean;
       archived?: boolean;
       profile?: string | null;
-    }) =>
-      api.patch(`/api/sessions/${encodeURIComponent(id)}`, {
-        ...flags,
-        // In the body for PATCH, unlike DELETE where it is a query parameter.
-        ...(profile ? { profile } : {}),
-      }),
+    }) => patchSession(id, flags, profile),
     onSuccess: () => qc.invalidateQueries({ queryKey: sessionKeys.all }),
   });
 }

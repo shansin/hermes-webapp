@@ -312,7 +312,7 @@ export class HermesClient {
         clearTimeout(entry.timer);
         if (asResponse.data.error) {
           const e = asResponse.data.error;
-          entry.reject(new RpcError(e.message, e.code, entry.method));
+          entry.reject(new RpcError(e.message, e.code, entry.method, e.data));
         } else {
           // `session.resume` / `session.events.since` answer with the server
           // requests still waiting on this session. They are not events and
@@ -537,6 +537,8 @@ export class RpcError extends Error {
     message: string,
     public code: number,
     public method: string,
+    /** The error's `data`, e.g. `{reason}` on a 4090 ownership refusal. */
+    public data?: unknown,
   ) {
     super(message);
     this.name = 'RpcError';
