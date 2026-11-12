@@ -451,20 +451,39 @@ UNIT
 
 # Hem's two units come from deploy/, copied rather than generated here, so the
 # repo is the single source of truth for them. Two units, not one: the Hermes
-# backend (hermes-backend.service) must not live in the proxy's cgroup, or every
+# backend (hermes-serve.service) must not live in the proxy's cgroup, or every
 # proxy restart kills the agent mid-turn. deploy/install.sh writes this
 # machine's PATH and repo directory into <unit>.d/override.conf only when that
 # file does not exist yet, so re-running this script never drops a hand edit
 # made there; it backs up any unit copy it replaces. It also makes sure .env
 # carries a HERMES_TOKEN, which both units read. See deploy/README.md.
-bash "${REPO_DIR}/deploy/install.sh" || die "Installing the Hem units failed."
+HERMES_PORT="${HERMES_PORT}" bash "${REPO_DIR}/deploy/install.sh" || die "Installing the Hem units failed."
 
-systemctl --user daemon-reload
-systemctl --user enable --now cloudflared >/dev/null 2>&1
-# --now starts what is stopped and leaves running units alone; install.sh has
-# said so above if hermes-webapp needs a restart to pick up a changed unit.
-systemctl --user enable --now hermes-backend hermes-webapp >/dev/null 2>&1
-bold "  ✓ cloudflared + hermes-backend + hermes-webapp enabled and started"
+# The pre-split layout — Hermes still inside hermes-webapp's cgroup, as start.sh
+# used to launch it — is the one case install.sh leaves un-reloaded: a reload
+# would put the agent under the proxy's memory caps mid-turn. The same test it
+# makes (the backend port's listener, then the unit in its cgroup); a reload
+# here, or an `enable` without --no-reload, would undo that.
+PRE_SPLIT=0
+hermes_pid="$(ss -tlnpH "sport = :${HERMES_PORT}" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -n 1 | cut -d= -f2 || true)"
+if [ -n "${hermes_pid}" ] &&
+   [ "$(grep -oE '[^/]+\.service' "/proc/${hermes_pid}/cgroup" 2>/dev/null | tail -n 1)" = hermes-webapp.service ]; then
+  PRE_SPLIT=1
+fi
+
+if [ "${PRE_SPLIT}" = "1" ]; then
+  systemctl --user enable --no-reload --now cloudflared >/dev/null 2>&1
+  bold "  ✓ cloudflared enabled and started"
+  warn "  ! hermes-serve + hermes-webapp left as they are: run the commands install.sh"
+  warn "    printed above when no turn is running (deploy/README.md, migration)."
+else
+  systemctl --user daemon-reload
+  systemctl --user enable --now cloudflared >/dev/null 2>&1
+  # --now starts what is stopped and leaves running units alone; install.sh has
+  # said so above if hermes-webapp needs a restart to pick up a changed unit.
+  systemctl --user enable --now hermes-serve hermes-webapp >/dev/null 2>&1
+  bold "  ✓ cloudflared + hermes-serve + hermes-webapp enabled and started"
+fi
 
 # --- 10. verification --------------------------------------------------------
 
@@ -493,7 +512,11 @@ ss -ltn 2>/dev/null | grep -q "127.0.0.1:${PROXY_PORT}" \
   || bad "proxy is not bound to loopback — the LAN port is open"
 
 systemctl --user is-active --quiet cloudflared && ok "cloudflared running" || bad "cloudflared not running"
-systemctl --user is-active --quiet hermes-backend && ok "hermes-backend running" || bad "hermes-backend not running"
+if [ "${PRE_SPLIT}" = "1" ]; then
+  warn "  ! hermes-serve not started yet — the migration above is still to run"
+else
+  systemctl --user is-active --quiet hermes-serve && ok "hermes-serve running" || bad "hermes-serve not running"
+fi
 systemctl --user is-active --quiet hermes-webapp && ok "hermes-webapp running" || bad "hermes-webapp not running"
 
 ip=$(dig +short "${FQDN}" @1.1.1.1 2>/dev/null | head -1)
@@ -512,7 +535,7 @@ echo
 if [ "$fail" -gt 0 ]; then
   warn "${fail} check(s) failed — see above."
   warn "Logs:  journalctl --user -u hermes-webapp -n 50"
-  warn "       journalctl --user -u hermes-backend -n 50   (and .logs/hermes-serve.log)"
+  warn "       journalctl --user -u hermes-serve -n 50     (and .logs/hermes-serve.log)"
   exit 1
 fi
 
@@ -530,9 +553,11 @@ cat <<EOF
   Logs:     journalctl --user -u hermes-webapp -f        (proxy)
             tail -f ${REPO_DIR}/.logs/hermes-serve.log   (Hermes backend)
   Restart:  systemctl --user restart hermes-webapp       (proxy only — running turns survive)
-            systemctl --user restart hermes-backend      (the agent — ends running turns)
+            systemctl --user restart hermes-serve        (the agent — ends running turns;
+                                                          \`hermes update\` does this itself)
 
-  After changing code:  pnpm build && systemctl --user restart hermes-webapp
+  After changing code:  pnpm install --frozen-lockfile && pnpm build \\
+                          && systemctl --user restart hermes-webapp
   (the service runs with SKIP_BUILD=1, so it will not rebuild for you)
 
 EOF

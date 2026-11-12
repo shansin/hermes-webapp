@@ -348,6 +348,26 @@ describe('submitting', () => {
   });
 });
 
+/**
+ * `pristine` files a new chat's draft under the shared new-chat key. Only
+ * `submitPrompt` cleared it, so a chat whose first turn was started some
+ * other way — a slash command run on the backend — kept filing its draft
+ * where no reopening of that conversation would find it.
+ */
+describe('a new chat that has sent something', () => {
+  it('is no longer pristine once a turn starts, however it was sent', () => {
+    store().adoptSession({ sessionId: 's1', storedSessionId: 'stored-1', pristine: true });
+    emit('message.start');
+    expect(store().pristine).toBe(false);
+  });
+
+  it("stays pristine through another conversation's turn", () => {
+    store().adoptSession({ sessionId: 's1', storedSessionId: 'stored-1', pristine: true });
+    emit('message.start', undefined, 's2');
+    expect(store().pristine).toBe(true);
+  });
+});
+
 describe('queueing during a turn', () => {
   it('holds a message typed mid-turn instead of losing it', async () => {
     emit('message.start');

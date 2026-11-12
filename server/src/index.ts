@@ -167,10 +167,11 @@ app.get('/healthz', async (c) => {
  * every minute — and it compresses ~10×. Not `/api/*`: those bodies are
  * streamed through from Hermes (SSE, file downloads), and buffering them into
  * a compressor would hold back every event until a block filled. Not the
- * static router either, which precompresses (and brotli) on its own.
+ * static router either, which precompresses (and brotli) on its own. Not
+ * `/healthz`: a few hundred bytes, under `compress()`'s 1 KB threshold, and
+ * registered above, where a `use` placed here would never run for it anyway.
  */
 app.use('/push/*', compress());
-app.use('/healthz', compress());
 
 app.route('/', shareRouter);
 app.route('/', pushRouter);
@@ -305,6 +306,14 @@ process.on('unhandledRejection', (reason) => {
 });
 process.on('uncaughtException', (err) => {
   log.fatal({ err }, 'Uncaught exception — exiting');
+  // The feed's writes are debounced; the last one (a cron result, a read
+  // watermark) would otherwise die with us. Synchronous, so it lands before
+  // the exit — and guarded, since state past an uncaught throw is suspect.
+  try {
+    flushFeed();
+  } catch (flushErr) {
+    log.error({ err: flushErr }, 'Could not flush the updates feed on the way out');
+  }
   process.exit(1);
 });
 

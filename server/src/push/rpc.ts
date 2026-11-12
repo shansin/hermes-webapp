@@ -19,7 +19,8 @@
  * it matters more here than it reads: the caller is a sweep whose whole job is
  * to keep working through a backend that comes and goes, and an exception
  * escaping into a `setInterval` callback is an unhandled rejection in a
- * process nobody is watching.
+ * process nobody is watching. `callGatewayOutcome` is the one exception, for a
+ * caller that has to tell "the gateway said no" from "nobody answered".
  */
 import { log } from '../log.js';
 
@@ -36,8 +37,16 @@ type Sender = (frame: string) => void;
  */
 const CALL_TIMEOUT_MS = 8000;
 
+/**
+ * What came back from one call: a result, the gateway's error frame, or — as
+ * `null` — no answer at all (no socket, a timeout, a send that threw).
+ */
+export type GatewayOutcome<T> =
+  | { result: T | null }
+  | { error: { code: number | null; message: string | null } };
+
 interface Pending {
-  resolve: (value: unknown) => void;
+  resolve: (value: GatewayOutcome<unknown> | null) => void;
   timer: ReturnType<typeof setTimeout>;
   method: string;
 }
@@ -108,11 +117,17 @@ export function resolveRpcFrame(frame: unknown): boolean {
     // Not a warning: an older Hermes answering "method not found" is an
     // ordinary state for this proxy, and the caller renders it as "no data".
     log.debug(`Gateway RPC ${call.method} returned an error frame.`);
-    call.resolve(null);
+    const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+    call.resolve({
+      error: {
+        code: typeof code === 'number' ? code : null,
+        message: typeof message === 'string' ? message : null,
+      },
+    });
     return true;
   }
 
-  call.resolve(result ?? null);
+  call.resolve({ result: (result ?? null) as unknown });
   return true;
 }
 
@@ -124,15 +139,32 @@ export function resolveRpcFrame(frame: unknown): boolean {
  * there" — the distinction is what stops a sweep pruning its own watermarks
  * against a socket that was simply down.
  */
-export function callGateway<T>(
+export async function callGateway<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs = CALL_TIMEOUT_MS,
 ): Promise<T | null> {
+  const outcome = await callGatewayOutcome<T>(method, params, timeoutMs);
+  return outcome && 'result' in outcome ? outcome.result : null;
+}
+
+/**
+ * `callGateway`, keeping the gateway's error frame apart from no answer.
+ *
+ * For a caller whose answer depends on which one it was: `approval.respond`
+ * on a session that has ended is a 4001 "session not found" — the approval
+ * expired with it — and reporting that as "backend unreachable" sends the
+ * user off to debug a connection that is fine. Still never throws.
+ */
+export function callGatewayOutcome<T>(
+  method: string,
+  params: Record<string, unknown> = {},
+  timeoutMs = CALL_TIMEOUT_MS,
+): Promise<GatewayOutcome<T> | null> {
   const sender = send;
   if (!sender) return Promise.resolve(null);
 
-  return new Promise<T | null>((resolve) => {
+  return new Promise<GatewayOutcome<T> | null>((resolve) => {
     const id = nextId++;
     const timer = setTimeout(() => {
       pending.delete(id);
@@ -142,7 +174,7 @@ export function callGateway<T>(
     // A call in flight is never a reason to keep the process alive.
     timer.unref?.();
 
-    pending.set(id, { resolve: resolve as (value: unknown) => void, timer, method });
+    pending.set(id, { resolve: resolve as Pending['resolve'], timer, method });
 
     try {
       sender(JSON.stringify({ jsonrpc: '2.0', id, method, params }));

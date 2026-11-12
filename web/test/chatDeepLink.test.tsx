@@ -25,8 +25,22 @@ vi.mock('../src/components/shared/MenuButton', () => ({ MenuButton: () => <butto
 vi.mock('../src/lib/useSlashRunner', () => ({
   useSlashRunner: () => ({ run: vi.fn(), busy: false }),
 }));
+const { ConnectionLost, RpcError } = vi.hoisted(() => ({
+  ConnectionLost: class ConnectionLost extends Error {},
+  RpcError: class RpcError extends Error {
+    constructor(
+      message: string,
+      public code = 4004,
+    ) {
+      super(message);
+    }
+  },
+}));
 vi.mock('../src/ws/client', () => ({
   hermes: { connect: vi.fn(), onEvent: () => () => {}, onState: () => () => {}, state: 'open' },
+  CONTROL_TIMEOUT_MS: 15_000,
+  ConnectionLost,
+  RpcError,
 }));
 
 const createSession = vi.fn();
@@ -326,6 +340,46 @@ describe('a cold start after recent activity', () => {
     openAt('/chat?new=1');
     await waitFor(() => expect(createSession).toHaveBeenCalled());
     expect(resumeSession).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The screen read `connection` from the render that started the resume —
+   * always 'open' — so a socket that died mid-resume read as a refusal: an
+   * error toast, a new chat, and the conversation forgotten for good.
+   */
+  it('keeps the conversation, and retries it, when the socket drops mid-resume', async () => {
+    recent();
+    resumeSession.mockImplementationOnce(async () => {
+      useUi.setState({ connection: 'reconnecting' });
+      throw new ConnectionLost('connection closed');
+    });
+    openAt('/chat');
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(createSession).not.toHaveBeenCalled();
+    expect(localStorage.getItem('hermes.lastSession')).toContain('stored-last');
+
+    act(() => useUi.setState({ connection: 'open' }));
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(useSession.getState().sessionId).toBe('e185fca3'));
+  });
+
+  it('forgets the conversation only when Hermes refuses it', async () => {
+    recent();
+    resumeSession.mockRejectedValueOnce(new RpcError('session not found'));
+    openAt('/chat');
+    await waitFor(() => expect(createSession).toHaveBeenCalled());
+    await waitFor(() => expect(localStorage.getItem('hermes.lastSession')).toBeNull());
+  });
+
+  /** A timeout on a live socket is no answer: a new chat stands in, the record stays. */
+  it('keeps the record when the resume fails without a refusal', async () => {
+    recent();
+    resumeSession.mockRejectedValueOnce(new Error('session.resume timed out'));
+    openAt('/chat');
+    await waitFor(() => expect(createSession).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(localStorage.getItem('hermes.lastSession')).toContain('stored-last');
   });
 
   it('starts fresh once the conversation has gone quiet', async () => {

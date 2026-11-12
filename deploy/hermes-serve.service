@@ -3,10 +3,18 @@
 # Installed by deploy/install.sh (which setup_hermes_shsin_blog.sh calls); see
 # deploy/README.md. Per-machine values (PATH, the repo directory, anything below
 # that differs on your box) belong in
-#   ~/.config/systemd/user/hermes-backend.service.d/override.conf
+#   ~/.config/systemd/user/hermes-serve.service.d/override.conf
 # which the installer writes once and never overwrites, so re-running it keeps
-# hand edits. Edit that file (`systemctl --user edit hermes-backend`), not this
+# hand edits. Edit that file (`systemctl --user edit hermes-serve`), not this
 # copy.
+#
+# Why this name: `hermes update` restarts the user units named `hermes-serve*`
+# once the new code is on disk (`systemctl --user reset-failed` + `restart`,
+# hermes_cli/update_cmd_fleet.py), and its abort recovery relaunches the same
+# family. It reads this file but never rewrites a user unit — it only checks
+# for RestartPreventExitStatus=78 below and prints a repair hint without it.
+# Under any other name the update's stale-backend sweep kills this Hermes by PID
+# and restarts the unit its cgroup names, outside the fleet pass and its report.
 #
 # Why a unit of its own: it used to be launched by start.sh with `nohup … &`
 # from inside hermes-webapp.service, which put it in the proxy's cgroup. Every
@@ -79,14 +87,18 @@ Environment=XDG_CURRENT_DESKTOP=ubuntu:GNOME
 # The wrapper loads .env (+ ENV_FILE), exports HERMES_TOKEN as
 # HERMES_DASHBOARD_SESSION_TOKEN — an EnvironmentFile= cannot say A=$B — rotates
 # .logs/hermes-serve.log, and execs `hermes serve`, so the main PID is Hermes.
-ExecStart=/bin/bash deploy/hermes-backend.sh
+ExecStart=/bin/bash deploy/hermes-serve.sh
 
 # Restart however it ended, not only on a non-zero exit: a SIGTERM or a clean
 # exit 0 from something other than `systemctl stop` (an update, say) is still a
 # dead backend. 78 (EX_CONFIG) is the wrapper's "HERMES_TOKEN missing" — retrying
-# that every few seconds would only fill the journal.
+# that every few seconds would only fill the journal (start.sh honours it too,
+# rather than starting the failed unit again). 30s rather than 5: the common
+# non-crash exit is the wrapper giving up after two minutes on a port someone
+# else holds, and that should be quiet. `hermes update` restarts outright
+# (reset-failed + restart); start.sh's `start` waits the 30s out inside its 90s.
 Restart=always
-RestartSec=5
+RestartSec=30
 RestartPreventExitStatus=78
 
 # SIGTERM to Hermes alone, then SIGKILL to whatever it left behind (cua-driver,

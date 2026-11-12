@@ -44,13 +44,32 @@ export async function reconnectSession(target: ReconnectTarget, deps: ReconnectD
   let token = sessionEpoch();
   const current = () => deps.isCurrent() && sessionEpoch() === token;
 
+  /**
+   * Whether a turn was running here before the reconnect. A message queued
+   * behind it waits for a `message.complete` that a dropped socket lost, so a
+   * gateway that now says idle is the turn's end, and the queue goes out —
+   * after the transcript is reconciled, not before: released earlier, the
+   * resync that follows would tear down the turn it had just started.
+   */
+  const wasRunning = store().running;
+
   try {
     // No stored id — a session.create that has not answered yet, or one
     // Hermes never persisted. Nothing to resume against; reconcile alone.
     if (!storedSessionId) {
       const history = await deps.fetchHistory(sessionId);
       if (!current()) return;
-      store().applyResync(history);
+      /**
+       * No resume, so no `running` from the gateway, and the length guess
+       * cannot end a turn whose history came back *shorter* — which a lost
+       * submit's always does, so the stop button stayed lit for ever. A lost
+       * submit is the one turn this client started; history settles it either
+       * way (delivered → recorded → finished, or never arrived), so the session
+       * is taken as idle. Nothing else can be running in a conversation with
+       * no stored row: no other surface can reach it.
+       */
+      store().applyResync(history, store().lostSubmit ? { running: false } : undefined);
+      if (wasRunning && !store().running) store().releaseQueued();
       void store().refreshUsage();
       return;
     }
@@ -73,21 +92,24 @@ export async function reconnectSession(target: ReconnectTarget, deps: ReconnectD
 
     const history = await deps.fetchHistory(res.session_id);
     if (!current()) return;
-    if (rebuilt) store().loadHistory(history);
+    // A rebuilt runtime is still this conversation, so it reloads as a resync
+    // too: a message held for the end of the turn survives the reload.
+    if (rebuilt) store().loadHistory(history, { resync: true });
     else store().applyResync(history, { running: res.running });
+    if (wasRunning && !store().running) store().releaseQueued();
 
     // Not on a rebuilt session: a new runtime has a new ring. And not once the
     // turn has ended while the history was out — see `applyReplay`.
     if (!rebuilt && res.running && store().running) {
-      store().beginReplayWindow();
+      const replayWindow = store().beginReplayWindow();
       try {
         const replay = await deps.eventsSince(res.session_id);
         // Always called, current or not: it is also what closes the window.
-        store().applyReplay(current() ? (replay?.events ?? []) : []);
+        store().applyReplay(current() ? (replay?.events ?? []) : [], replayWindow);
       } catch {
         // A backend without the ring, or a socket that dropped again: the
         // turn's cards come back when it completes, as they always did.
-        store().applyReplay([]);
+        store().applyReplay([], replayWindow);
       }
     }
     if (current()) void store().refreshUsage();

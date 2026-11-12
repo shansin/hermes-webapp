@@ -25,13 +25,16 @@
  * its queue path), so a send carrying a picture always takes the local queue.
  * Anything not accepted falls back to that queue too, and says so in a toast:
  * the message is never dropped, and the person learns it did not land the way
- * they chose. Mirrors `handleBusyInput` in Hermes' own TUI.
+ * they chose. Mirrors `handleBusyInput` in Hermes' own TUI. The exception is a
+ * call whose outcome is unknown — the socket went or the answer never came —
+ * where the agent may already have the text: that goes back into the composer
+ * instead of being queued, so it is not sent twice behind the person's back.
  *
  * The mode is a per-device preference, hydrated synchronously like
  * `store/ui.ts` so the switch never paints the wrong choice for a frame.
  */
 import { create } from 'zustand';
-import { hermes, CONTROL_TIMEOUT_MS } from '../ws/client';
+import { hermes, CallTimeout, CONTROL_TIMEOUT_MS, ConnectionLost } from '../ws/client';
 import { sessionEpoch, useSession } from './session';
 import { useUi } from './ui';
 import { buzz } from '../lib/haptics';
@@ -75,7 +78,7 @@ export const useSendMode = create<SendModeState>((set) => ({
 }));
 
 /** What became of a mid-turn send — returned for tests, the UI reads the store. */
-export type SendOutcome = 'queued' | 'steered' | 'redirected' | 'queued-next-turn' | 'fell-back';
+export type SendOutcome = 'queued' | 'steered' | 'redirected' | 'queued-next-turn' | 'fell-back' | 'unconfirmed';
 
 const VERB: Record<Exclude<SendMode, 'queue'>, string> = { steer: 'Steer', redirect: 'Redirect' };
 
@@ -127,6 +130,19 @@ export async function sendWhileRunning(
     );
     status = res?.status;
   } catch (err) {
+    /**
+     * Unknown, not failed: the frame may have reached Hermes and the agent may
+     * already be acting on it. Queueing it as well sent the same guidance a
+     * second time once the turn ended, so it goes back to the composer and the
+     * person decides, with the transcript in front of them.
+     */
+    if (err instanceof ConnectionLost || err instanceof CallTimeout) {
+      if (sessionEpoch() !== token) return 'unconfirmed';
+      useSession.setState({ returnedText: { text } });
+      toast(`Couldn't confirm the ${verb.toLowerCase()} was delivered — check the transcript before resending`, 'warn');
+      buzz('warn');
+      return 'unconfirmed';
+    }
     const reason = err instanceof Error && err.message ? err.message : 'failed';
     return fallBack(`${verb} failed (${reason})`);
   }

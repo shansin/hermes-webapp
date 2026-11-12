@@ -421,7 +421,7 @@ export class HermesClient {
 
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`${method} timed out`));
+        reject(new CallTimeout(method));
       }, timeoutMs);
 
       this.pending.set(id, {
@@ -556,6 +556,18 @@ export class ConnectionLost extends Error {
   constructor(public method: string) {
     super('connection closed');
     this.name = 'ConnectionLost';
+  }
+}
+
+/**
+ * A call that got no answer in time. Like `ConnectionLost`, the outcome is
+ * unknown rather than failed — the frame went out, and Hermes may have acted
+ * on it — so a caller that would retry on failure must not treat it as one.
+ */
+export class CallTimeout extends Error {
+  constructor(public method: string) {
+    super(`${method} timed out`);
+    this.name = 'CallTimeout';
   }
 }
 

@@ -211,6 +211,15 @@ export function Composer({
     onSeedConsumed?.();
   }, [seedText, onSeedConsumed]);
 
+  // Text the store handed back (a steer it could not confirm), likewise
+  // appended: the box may hold something typed since.
+  const returned = useSession((s) => s.returnedText);
+  useEffect(() => {
+    if (!returned) return;
+    setText((t) => (t.trim() ? `${t}\n${returned.text}` : returned.text));
+    useSession.setState({ returnedText: null });
+  }, [returned]);
+
   // A palette pick lands here: replace the draft with `/cmd ` ready for its
   // argument, and don't immediately re-open the completion list over it.
   useEffect(() => {

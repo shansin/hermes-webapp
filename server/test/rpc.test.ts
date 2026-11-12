@@ -107,6 +107,22 @@ describe('correlation', () => {
 
     expect(await call).toBeNull();
   });
+
+  /* The same frame, for the one caller that has to tell "the gateway said
+     no" from "nobody answered" — an expired approval from a dead link. */
+  it('keeps the error frame apart from no answer when asked to', async () => {
+    bind();
+    const refused = rpc.callGatewayOutcome('approval.respond');
+    rpc.resolveRpcFrame({ id: idOf(), error: { code: 4001, message: 'session not found' } });
+    expect(await refused).toEqual({ error: { code: 4001, message: 'session not found' } });
+
+    const answered = rpc.callGatewayOutcome('approval.respond');
+    rpc.resolveRpcFrame({ id: idOf(1), result: { resolved: 1 } });
+    expect(await answered).toEqual({ result: { resolved: 1 } });
+
+    rpc.unbindRpcSocket();
+    expect(await rpc.callGatewayOutcome('approval.respond')).toBeNull();
+  });
 });
 
 describe('a socket that goes away', () => {

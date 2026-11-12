@@ -40,14 +40,22 @@ vi.mock('../src/push/store.js', () => ({
   saveSubscription: vi.fn(),
 }));
 
-/** The gateway socket, answered per method. */
+/** The gateway socket, answered per method — with a result, or an error frame. */
 let rpc: Record<string, unknown>;
+let rpcErrors: Record<string, { code: number; message: string }>;
 const calls: { method: string; params: Record<string, unknown> }[] = [];
+const answer = (method: string, params: Record<string, unknown>) => {
+  calls.push({ method, params });
+  if (method in rpcErrors) return { error: rpcErrors[method] };
+  return method in rpc ? { result: rpc[method] } : null;
+};
 vi.mock('../src/push/rpc.js', () => ({
   callGateway: async (method: string, params: Record<string, unknown>) => {
-    calls.push({ method, params });
-    return method in rpc ? rpc[method] : null;
+    const outcome = answer(method, params);
+    return outcome && 'result' in outcome ? outcome.result : null;
   },
+  callGatewayOutcome: async (method: string, params: Record<string, unknown>) =>
+    answer(method, params),
 }));
 
 type Sessions = typeof import('../src/push/sessions.js');
@@ -57,6 +65,7 @@ let pushRouter: typeof import('../src/routers/push.js')['pushRouter'];
 beforeEach(async () => {
   rmSync(join(dir, '.hermes-cron-feed.json'), { force: true });
   rpc = {};
+  rpcErrors = {};
   calls.length = 0;
   sendPush.mockClear();
   vi.resetModules();
@@ -184,6 +193,24 @@ describe('POST /push/approval/:sessionId', () => {
     expect(res.status).toBe(503);
   });
 
+  /* A banner answered after its session ended. Hermes says "session not
+     found" once its own fallbacks fail too; the approval went with the
+     session, and calling that "unreachable" points at a link that is fine. */
+  it('answers 409, not 503, when the session is no longer live', async () => {
+    rpc['session.active_list'] = { sessions: [] };
+    rpcErrors['approval.respond'] = { code: 4001, message: 'session not found' };
+
+    const res = await post('/push/approval/s_1', { choice: 'once', requestId: 'r1' });
+
+    expect(res.status).toBe(409);
+  });
+
+  it('still answers 503 for any other error frame', async () => {
+    rpcErrors['approval.respond'] = { code: -32601, message: 'method not found' };
+    const res = await post('/push/approval/s_1', { choice: 'once' });
+    expect(res.status).toBe(503);
+  });
+
   /* The worker already closed the banner the press came from; a "No longer
      waiting" one replacing it would report the user's own decision back. */
   it('does not send a retraction for a wait answered from the banner', async () => {
@@ -195,6 +222,44 @@ describe('POST /push/approval/:sessionId', () => {
     await post('/push/approval/s_1', { choice: 'once', requestId: 'r1' });
 
     rpc['session.active_list'] = { sessions: [row('working')] };
+    await sessions.reconcileSessions();
+
+    expect(sendPush).not.toHaveBeenCalled();
+  });
+
+  /* The agent goes straight on to a second approval, and the sweep never sees
+     the turn running in between: `waiting` before, `waiting` after. Only the
+     request id says it is a new question — without it in the watermark the
+     turn would sit on one nobody was told about. */
+  it('announces a second approval that follows one answered from the banner', async () => {
+    rpc['approval.pending'] = { approvals: [{ request_id: 'r1', description: 'first' }] };
+    await goWaiting();
+    sendPush.mockClear();
+
+    rpc['approval.respond'] = { resolved: 1 };
+    await post('/push/approval/s_1', { choice: 'once', requestId: 'r1' });
+
+    rpc['approval.pending'] = { approvals: [{ request_id: 'r2', description: 'second' }] };
+    await sessions.reconcileSessions();
+
+    expect(sendPush).toHaveBeenCalledTimes(1);
+    expect(sendPush.mock.calls[0][0]).toMatchObject({
+      kind: 'session.waiting',
+      approval: { sessionId: 's_1', requestId: 'r2' },
+    });
+  });
+
+  it('does not repeat an approval that is still the one waiting', async () => {
+    rpc['approval.pending'] = { approvals: [{ request_id: 'r1' }] };
+    await goWaiting();
+    sendPush.mockClear();
+
+    await sessions.reconcileSessions();
+    // A pass that cannot ask keeps the request it knew, rather than reading
+    // the next successful answer as a new question.
+    delete rpc['approval.pending'];
+    await sessions.reconcileSessions();
+    rpc['approval.pending'] = { approvals: [{ request_id: 'r1' }] };
     await sessions.reconcileSessions();
 
     expect(sendPush).not.toHaveBeenCalled();

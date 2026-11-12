@@ -3,7 +3,7 @@
 # Start Hem.
 #
 #   1. make sure the Hermes backend is up on loopback (start it if not —
-#      via hermes-backend.service when that unit is installed)
+#      via hermes-serve.service when that unit is installed)
 #   2. make sure the web app is built
 #   3. optionally publish it over Tailscale (TAILSCALE=1)
 #   4. run the LAN-facing proxy, replacing one already on the port
@@ -18,7 +18,7 @@
 #   ENV_FILE=.env.public bash start.sh   # the Cloudflare Tunnel + Access deployment
 #
 # Everything is configurable through .env — see .env.example. The systemd
-# deployment (hermes-backend + hermes-webapp units) is in deploy/README.md.
+# deployment (hermes-serve + hermes-webapp units) is in deploy/README.md.
 
 set -euo pipefail
 
@@ -146,14 +146,15 @@ access_configured() {
 
 # --- the backend's own unit ----------------------------------------------------
 #
-# Where hermes-backend.service is installed (deploy/README.md), systemd owns the
+# Where hermes-serve.service is installed (deploy/README.md), systemd owns the
 # backend and this script never spawns one: it asks systemd to start the unit
 # and waits. Spawning it here put Hermes inside whatever launched start.sh — in
 # the hermes-webapp unit that was the proxy's cgroup, so every proxy restart,
 # deploy or crash SIGTERMed the agent mid-turn, and a backend that died on its
 # own was restarted by nothing. The nohup path below stays for machines without
-# the unit (a laptop, a dev box).
-BACKEND_UNIT=hermes-backend.service
+# the unit (a laptop, a dev box). Named for Hermes' own convention:
+# `hermes update` restarts `hermes-serve*` units itself.
+BACKEND_UNIT=hermes-serve.service
 
 backend_unit_installed() {
   command -v systemctl >/dev/null 2>&1 &&
@@ -162,6 +163,30 @@ backend_unit_installed() {
 
 backend_unit_state() {
   systemctl --user is-active "${BACKEND_UNIT}" 2>/dev/null || true
+}
+
+# Parked: the unit's last run exited 78 (EX_CONFIG — no HERMES_TOKEN, a missing
+# ENV_FILE, no hermes on PATH) and RestartPreventExitStatus=78 left it `failed`
+# on purpose. Starting it again only repeats the same complaint, and this script
+# runs every RestartSec=10 under hermes-webapp — it used to undo that setting
+# by starting the unit on every pass.
+backend_parked() {
+  [ "$(backend_unit_state)" = failed ] &&
+    [ "$(systemctl --user show "${BACKEND_UNIT}" -p ExecMainStatus --value 2>/dev/null)" = 78 ]
+}
+
+# The wrapper's last few lines (it logs nothing else to the journal), indented.
+backend_last_words() {
+  journalctl --user -u "${BACKEND_UNIT}" -n 50 -o cat --no-pager 2>/dev/null |
+    grep "^${BACKEND_UNIT%.service}: " | tail -n 3 | sed 's/^/    /' || true
+}
+
+die_if_backend_parked() {
+  backend_parked || return 0
+  die "${BACKEND_UNIT} stopped on a configuration error (exit 78) and is left down on purpose:
+$(backend_last_words)
+  Fix that, then: systemctl --user restart ${BACKEND_UNIT%.service}
+  (this proxy unit retries on its own and follows once the backend is up)"
 }
 
 # The systemd unit a PID belongs to, from its cgroup path ("" off Linux or when
@@ -303,6 +328,8 @@ if [ "${STATUS_ONLY}" = "1" ]; then
       bold "* ${BACKEND_UNIT}: ${_state} (${_enabled:-unknown})"
     else
       warn "x ${BACKEND_UNIT}: ${_state:-unknown} (${_enabled:-unknown}) — journalctl --user -u ${BACKEND_UNIT%.service}"
+      backend_parked && warn "  Stopped on a configuration error (exit 78), not retried:
+$(backend_last_words)"
     fi
     # The pre-split layout, or a hand-started backend: it will die with whatever
     # cgroup it is in, and the unit cannot start while it holds the port.
@@ -354,11 +381,11 @@ stop_backend() {
   sleep 1
 }
 
-# The backend is hermes-backend.service's: ask systemd for it, never spawn it.
+# The backend is hermes-serve.service's: ask systemd for it, never spawn it.
 #
 # The token has to be written down for this to work. The unit and the proxy are
 # started independently, so a token minted here per run (the fallback path
-# below) would reach only the proxy; deploy/hermes-backend.sh reads HERMES_TOKEN
+# below) would reach only the proxy; deploy/hermes-serve.sh reads HERMES_TOKEN
 # from the same .env (+ ENV_FILE) and exports it as
 # HERMES_DASHBOARD_SESSION_TOKEN.
 start_backend_unit() {
@@ -393,6 +420,7 @@ start_backend_unit() {
       warn "    Restart ${owner%.service} once when no turn is running to hand it over (deploy/README.md)."
     fi
   else
+    die_if_backend_parked
     bold "→ Starting ${BACKEND_UNIT}…"
     # --no-block: the unit may be sitting out RestartSec, or queued behind its
     # own After= ordering at boot; health is the thing worth waiting on.
@@ -404,6 +432,7 @@ start_backend_unit() {
       [ "${i}" -gt 3 ] && [ "$(backend_unit_state)" = "failed" ] && break
       sleep 1
     done
+    healthy || die_if_backend_parked
     healthy || die "Hermes did not become healthy under ${BACKEND_UNIT} (state: $(backend_unit_state)). See:
     journalctl --user -u ${BACKEND_UNIT%.service} -n 50
     ${LOG_DIR}/hermes-serve.log"
@@ -418,7 +447,7 @@ start_backend_unit() {
 if backend_unit_installed; then
   start_backend_unit
 else
-# --- fallback: no hermes-backend.service (a laptop, a dev box) -----------------
+# --- fallback: no hermes-serve.service (a laptop, a dev box) -------------------
 # Spawn Hermes ourselves. It lives and dies with whatever launched this script.
 
 if healthy && ! authed && [ -n "${HERMES_TOKEN}" ]; then
@@ -488,7 +517,24 @@ export HERMES_TOKEN
 
 command -v pnpm >/dev/null || die "pnpm not found. Install it: corepack enable pnpm"
 
-[ -d node_modules ] || { bold "→ Installing dependencies…"; pnpm install; }
+# Dependencies, whenever the lockfile is newer than the last install — not
+# only when node_modules is missing. The proxy runs from source, so
+# node_modules IS its runtime: a `git pull` that moved a dependency's major
+# (hono's node server, zod) and a restart without `pnpm install` boots the new
+# code against the old packages. Even under SKIP_BUILD=1, which only means "do
+# not rebuild web/dist". One stat when nothing changed; the touch keeps it that
+# way after an install pnpm itself found nothing to do for.
+if [ ! -f node_modules/.modules.yaml ] || [ pnpm-lock.yaml -nt node_modules/.modules.yaml ]; then
+  bold "→ Installing dependencies (pnpm-lock.yaml is newer than node_modules)…"
+  if pnpm install --frozen-lockfile < /dev/null; then
+    touch node_modules/.modules.yaml
+  else
+    # Not fatal: a failed install usually leaves the previous tree in place, and
+    # a proxy on it beats no proxy. Untouched, so the next start tries again.
+    warn "  ! pnpm install --frozen-lockfile failed — running on the packages already installed."
+    warn "    Run it by hand to see why."
+  fi
+fi
 
 # Always rebuild: the proxy serves the prebuilt bundle, so reusing a stale
 # `web/dist` silently ships yesterday's app to a phone that has no way to tell.

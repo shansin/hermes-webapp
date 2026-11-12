@@ -1,5 +1,5 @@
 # Hem's proxy (+ the Cloudflare Access gate). The Hermes backend is NOT in this
-# unit any more — it is hermes-backend.service, pulled in by Wants= below.
+# unit any more — it is hermes-serve.service, pulled in by Wants= below.
 #
 # Installed by deploy/install.sh (which setup_hermes_shsin_blog.sh calls); see
 # deploy/README.md. Per-machine values (PATH to node, the repo directory) go in
@@ -15,8 +15,8 @@ After=cloudflared.service
 # (not Requires=/BindsTo=) means restarting or stopping this unit leaves the
 # backend — and every turn it is running — alone. start.sh still waits for the
 # backend's health before it binds the proxy.
-Wants=hermes-backend.service
-After=hermes-backend.service
+Wants=hermes-serve.service
+After=hermes-serve.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -32,7 +32,7 @@ Environment=ENV_FILE=.env.public
 # Boot stays fast; 'pnpm build' is a deliberate step after changing code.
 Environment=SKIP_BUILD=1
 # Foreground: start.sh checks the backend (asking systemd to start
-# hermes-backend.service if it is down — it never spawns Hermes itself while
+# hermes-serve.service if it is down — it never spawns Hermes itself while
 # that unit is installed), then execs node on the proxy directly, so the main
 # PID is the proxy and nothing else lives in this cgroup.
 ExecStart=/bin/bash start.sh
@@ -43,11 +43,19 @@ RestartSec=10
 TimeoutStopSec=15
 KillMode=control-group
 # The proxy alone is ~180 MB RSS after days up (node + tsx's loader + an esbuild
-# service at ~15 MB), versus ~375 MB when pnpm and the tsx CLI sat above it. Caps keep a leak from taking the box (and the
-# agent) down with it. If web/dist is missing, start.sh builds it in this unit
-# despite SKIP_BUILD=1, and a Vite build can exceed these — build by hand first.
+# service at ~15 MB), versus ~375 MB when pnpm and the tsx CLI sat above it.
+# Caps keep a leak from taking the box (and the agent) down with it. Max has
+# headroom over High for the two heavier things start.sh may do in this unit: a
+# `pnpm install` when the lockfile moved, and a Vite build when web/dist is
+# missing despite SKIP_BUILD=1 — the build is throttled above 512M but not
+# killed. Build by hand first anyway; it is faster outside the cap.
+#
+# These caps only fit the split layout. Applied to a cgroup that still holds
+# `hermes serve` (the pre-split layout: ~900 MB of agent, MCP servers and tools
+# on top of the proxy), they throttle and OOM-kill the agent mid-turn — which
+# is why deploy/install.sh does not daemon-reload in that layout.
 MemoryHigh=512M
-MemoryMax=1G
+MemoryMax=1536M
 StandardOutput=journal
 StandardError=journal
 

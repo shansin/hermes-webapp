@@ -56,6 +56,7 @@ import {
   lastIndexOf,
   replaceLast,
   settleLostSubmit,
+  submitMark,
   withClarifyAnswers,
   type ChatMessage,
   type LostSubmit,
@@ -132,8 +133,18 @@ interface SessionState {
    * A message typed while a turn was still running, held until it finishes.
    * Only one is kept: a second send replaces it, which matches what the box
    * shows and avoids silently building a queue nobody can see or edit.
+   *
+   * `fromGateway` marks the copy a resume reported as queued on Hermes' side.
+   * Hermes runs that one itself when the turn ends, so it is shown and never
+   * sent from here — sending it too would run it twice.
    */
-  queued: { text: string; display?: string } | null;
+  queued: { text: string; display?: string; fromGateway?: true } | null;
+  /**
+   * Text handed back to the composer, for it to put in the box and clear.
+   * A steer or redirect whose delivery cannot be confirmed lands here rather
+   * than in the queue — see `sendWhileRunning`.
+   */
+  returnedText: { text: string } | null;
   /** True while a rewind (retry / edit) is in flight. */
   rewinding: boolean;
   /** True while a fork (`lib/forkFlow.ts`) is being made. */
@@ -196,13 +207,21 @@ interface SessionState {
   applyServerRequest: (req: ServerRequest) => boolean;
   /** `request.cancel`: the backend withdrew a request (timeout, interrupt, another surface answered). */
   cancelServerRequest: (id: string) => void;
-  /** Start noting which events arrive live, ahead of `applyReplay`. */
-  beginReplayWindow: () => void;
+  /**
+   * Start noting which events arrive live, ahead of `applyReplay`. Returns
+   * the window, which that call closes.
+   */
+  beginReplayWindow: () => number;
   /**
    * Fold in the running turn's events from `session.events.since`. False when
    * the ring no longer reaches back to the turn's start.
    */
-  applyReplay: (events: unknown[]) => boolean;
+  applyReplay: (events: unknown[], window?: number) => boolean;
+  /**
+   * Send the message held behind a turn the gateway says is over — see
+   * `releaseQueued`. A no-op while a turn runs or nothing is held.
+   */
+  releaseQueued: () => void;
   submitPrompt: (text: string, opts?: { display?: string }) => Promise<void>;
   addNotice: (text: string, tone?: 'info' | 'error', label?: string) => void;
   clearQueued: () => void;
@@ -234,10 +253,22 @@ const vibrate: typeof buzz = (...args) => {
 };
 
 /**
- * The lowest `seq` applied live since the replay window opened; `null` while
- * no window is open. See `applyReplay`.
+ * Open replay windows, each with the lowest `seq` applied live since it
+ * opened. Per window rather than one module-wide floor: two reconnect flows
+ * can overlap (a second drop while the first is still out), and the first to
+ * finish closed the window under the other, which then replayed events that
+ * had already arrived live. See `applyReplay`.
  */
-let replayFloor: number | null = null;
+const replayWindows = new Map<number, number>();
+let replayWindowSeq = 0;
+
+/**
+ * Stop was pressed during the turn now running. A `message.complete` says
+ * `interrupted` itself; a turn reported idle by a resume does not, so this is
+ * what keeps a queued message from being fired at an agent the user just
+ * stopped when the interrupt's own completion was lost with the socket.
+ */
+let stopRequested = false;
 
 /** Approval sheets are keyed so a stale sheet can't answer a newer request. */
 let approvalSeq = 0;
@@ -310,6 +341,33 @@ function noteActivity(get: Get): void {
 }
 
 /**
+ * Send the message held behind a turn that has ended.
+ *
+ * One path for every way a turn's end is learned — its `message.complete`, or
+ * a resume reporting the session idle after that event was lost with the
+ * socket — so a release is decided in one place. The hold is cleared before
+ * the send, which is what keeps a second report of the same end from sending
+ * it twice: the next caller finds nothing held. The gateway's own copy is
+ * cleared, not sent; Hermes starts that one itself.
+ */
+function releaseQueued(get: Get, set: Set): void {
+  const { queued, running } = get();
+  if (!queued || running) return;
+  set({ queued: null });
+  if (!queued.fromGateway) void get().submitPrompt(queued.text, { display: queued.display });
+}
+
+/** The live half of a turn, cleared once the gateway says the turn is over. */
+const TURN_OVER = {
+  running: false,
+  streamingText: '',
+  streamingReasoning: '',
+  thinkingHint: '',
+  statusLine: '',
+  inflightPrompt: null,
+} as const;
+
+/**
  * Rewind the conversation to the user message at `idx` and run it again.
  *
  * Retry and edit-and-regenerate are the same operation: both drop everything
@@ -374,9 +432,11 @@ export const useSession = create<SessionState>((set, get) => ({
   forkedFrom: null,
   inflightPrompt: null,
   lostSubmit: null,
+  returnedText: null,
 
   reset: () => {
     epoch++;
+    stopRequested = false;
     set({
       sessionId: null,
       storedSessionId: null,
@@ -402,11 +462,15 @@ export const useSession = create<SessionState>((set, get) => ({
       forkedFrom: null,
       inflightPrompt: null,
       lostSubmit: null,
+      returnedText: null,
     });
   },
 
   adoptSession: ({ sessionId, storedSessionId, profile, info, pendingClarify, pristine }) => {
-    if (sessionId !== get().sessionId) epoch++;
+    if (sessionId !== get().sessionId) {
+      epoch++;
+      stopRequested = false;
+    }
     set({
       sessionId,
       storedSessionId: storedSessionId ?? null,
@@ -522,7 +586,7 @@ export const useSession = create<SessionState>((set, get) => ({
     // as one held here, since from the composer they are the same wait — but
     // never over one held here: that one has not been sent anywhere yet, and
     // it may carry a `display` the server's copy cannot know about.
-    if (result.queued?.user && !s.queued) next.queued = { text: result.queued.user };
+    if (result.queued?.user && !s.queued) next.queued = { text: result.queued.user, fromGateway: true };
 
     set(next);
   },
@@ -648,7 +712,9 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   beginReplayWindow: () => {
-    replayFloor = Number.POSITIVE_INFINITY;
+    const id = ++replayWindowSeq;
+    replayWindows.set(id, Number.POSITIVE_INFINITY);
+    return id;
   },
 
   /**
@@ -674,7 +740,8 @@ export const useSession = create<SessionState>((set, get) => ({
    *  - **Not what already arrived live.** Events keep flowing while the
    *    `events.since` round trip is out, and they are in the ring too.
    *    `beginReplayWindow` starts noting the lowest `seq` applied live, and
-   *    anything at or above it is left out here.
+   *    anything at or above it is left out here. Each flow passes its own
+   *    window, and this closes it.
    *  - **Not a turn that is over.** The window opens only after the history
    *    fetch, so a `message.complete` that arrived live before it is below
    *    the floor; replaying from the start then printed the turn's cards and
@@ -683,9 +750,9 @@ export const useSession = create<SessionState>((set, get) => ({
    *    nothing left to restore. A card already on screen is likewise not
    *    started again — a resync that kept the local transcript keeps them.
    */
-  applyReplay: (events) => {
-    const floor = replayFloor ?? Number.POSITIVE_INFINITY;
-    replayFloor = null;
+  applyReplay: (events, window) => {
+    const floor = (window != null ? replayWindows.get(window) : undefined) ?? Number.POSITIVE_INFINITY;
+    if (window != null) replayWindows.delete(window);
 
     const frames = events.filter(
       (e): e is { type: string; session_id?: string; payload?: unknown; seq?: unknown } =>
@@ -752,8 +819,8 @@ export const useSession = create<SessionState>((set, get) => ({
     if (session_id && session_id !== s.sessionId) return;
 
     const seqNo = (params as { seq?: unknown }).seq;
-    if (replayFloor !== null && !replayMuted && typeof seqNo === 'number') {
-      replayFloor = Math.min(replayFloor, seqNo);
+    if (replayWindows.size && !replayMuted && typeof seqNo === 'number') {
+      for (const [id, floor] of replayWindows) if (seqNo < floor) replayWindows.set(id, seqNo);
     }
 
     /**
@@ -772,8 +839,12 @@ export const useSession = create<SessionState>((set, get) => ({
 
     switch (type) {
       case 'message.start':
+        stopRequested = false;
         set({
           running: true,
+          // Something was sent here, by whatever path — a slash command run
+          // on the backend, a queue Hermes released — so the chat has a row.
+          pristine: false,
           lostSubmit: null,
           streamingText: '',
           streamingReasoning: '',
@@ -838,11 +909,7 @@ export const useSession = create<SessionState>((set, get) => ({
         // one case we hold it back: the user stopped the agent, so firing the
         // next prompt at them immediately is the opposite of what they asked
         // for — it stays in the composer for them to send or discard.
-        const { queued } = get();
-        if (queued && !interrupted) {
-          set({ queued: null });
-          void get().submitPrompt(queued.text, { display: queued.display });
-        }
+        if (!interrupted) releaseQueued(get, set);
         return;
       }
 
@@ -952,6 +1019,9 @@ export const useSession = create<SessionState>((set, get) => ({
     const id = nextId();
     const at = Date.now();
     const token = sessionEpoch();
+    // Taken before the bubble joins: a lost submit is settled against it.
+    const mark = submitMark(get().messages);
+    stopRequested = false;
     set((st) => ({
       messages: [
         ...st.messages,
@@ -975,7 +1045,7 @@ export const useSession = create<SessionState>((set, get) => ({
       // The socket went with the frame possibly delivered: let the reconnect
       // say whether the turn is running before calling the send a failure.
       if (err instanceof ConnectionLost) {
-        set({ lostSubmit: { id, text, display: opts?.display, at } });
+        set({ lostSubmit: { id, text, display: opts?.display, at, ...mark } });
         return;
       }
       set((st) => ({
@@ -996,6 +1066,10 @@ export const useSession = create<SessionState>((set, get) => ({
     })),
 
   clearQueued: () => set({ queued: null }),
+
+  releaseQueued: () => {
+    if (!stopRequested) releaseQueued(get, set);
+  },
 
   retryLast: async () => {
     const { messages } = get();
@@ -1051,18 +1125,23 @@ export const useSession = create<SessionState>((set, get) => ({
    */
   applyResync: (messages, opts) => {
     const current = get().messages;
+    const idle = opts?.running === false;
 
     // The server's copy can legitimately be *behind* ours. A prompt submitted
     // just as the socket dropped exists as a bubble here but was never
     // recorded there, and adopting a shorter history would wipe it off the
-    // screen — losing what someone typed to fix a display glitch.
+    // screen — losing what someone typed to fix a display glitch. The
+    // gateway's word on whether a turn runs still applies, though: ignoring it
+    // here is what left the stop button lit for ever after a lost submit.
     if (messages.length < current.length) {
       const { lostSubmit, running } = get();
-      set(
-        lostSubmit && !running
-          ? { error: null, lostSubmit: null, messages: settleLostSubmit(current, messages, lostSubmit) }
-          : { error: null },
-      );
+      set({
+        error: null,
+        ...(idle ? TURN_OVER : {}),
+        ...(lostSubmit && (idle || !running)
+          ? { lostSubmit: null, messages: settleLostSubmit(current, messages, lostSubmit) }
+          : {}),
+      });
       return;
     }
 
@@ -1075,29 +1154,19 @@ export const useSession = create<SessionState>((set, get) => ({
     const ended =
       typeof opts?.running === 'boolean' ? !opts.running : messages.length > current.length;
 
-    get().loadHistory(messages, { resync: true });
-
     // Only tear down the live turn once the server shows it ended. Clearing
     // unconditionally would blank a reply that is still streaming and merely
-    // hasn't been recorded yet.
-    set(
-      ended
-        ? {
-            running: false,
-            streamingText: '',
-            streamingReasoning: '',
-            thinkingHint: '',
-            statusLine: '',
-            inflightPrompt: null,
-            error: null,
-          }
-        : { error: null },
-    );
+    // hasn't been recorded yet. Before the reload rather than after, so the
+    // reload settles a lost submit against an idle session.
+    if (ended) set(TURN_OVER);
+    get().loadHistory(messages, { resync: true });
+    set({ error: null });
   },
 
   interrupt: async () => {
     const { sessionId } = get();
     if (!sessionId) return;
+    stopRequested = true;
     try {
       await hermes.call('session.interrupt', { session_id: sessionId });
       vibrate('warn');

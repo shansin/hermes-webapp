@@ -43,7 +43,8 @@ import { rememberSession } from './lastSession';
 
 export interface ForkDeps {
   branch: (sessionId: string, count: number, key: string) => Promise<BranchResult>;
-  transcript: (storedId: string, profile: string | null) => Promise<{ messages: StoredMessage[] }>;
+  /** `complete: false` when paging stopped short of the end (see `fetchWholeTranscript`). */
+  transcript: (storedId: string, profile: string | null) => Promise<{ messages: StoredMessage[]; complete?: boolean }>;
   history: (sessionId: string) => Promise<HistoryMessage[]>;
   newKey: () => string;
 }
@@ -89,17 +90,24 @@ export async function forkAt(
 
   try {
     let count: number | null = null;
+    /** A count off a stored copy that stopped short — the last resort only. */
+    let partial: number | null = null;
     const where = forkTarget(messages, messageId);
     if (storedSessionId && where) {
       try {
         const stored = await deps.transcript(storedSessionId, profile);
-        count = forkCountFromStored(stored.messages, where, mode);
+        const fromStored = forkCountFromStored(stored.messages, where, mode);
+        // A transcript cut off by the page ceiling misses the newest rows, and
+        // a text match counts from its end — so the screen's own count is the
+        // better guess there.
+        if (stored.complete === false) partial = fromStored;
+        else count = fromStored;
       } catch {
         // Unreadable stored copy: the screen's own count is right unless the
         // session was compacted, and `landed` below reports when it was not.
       }
     }
-    count ??= forkCountFromLocal(messages, messageId, mode);
+    count ??= forkCountFromLocal(messages, messageId, mode) ?? partial;
     if (sessionEpoch() !== token) return { ok: false, reason: 'moved' };
     if (count == null) {
       useSession.setState({ error: 'Could not find that message in the saved conversation.' });

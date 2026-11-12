@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# ExecStart of hermes-backend.service: run `hermes serve` for Hem's proxy.
+# ExecStart of hermes-serve.service: run `hermes serve` for Hem's proxy.
 #
 # A wrapper rather than an EnvironmentFile= because the backend must adopt the
 # token the proxy holds — HERMES_DASHBOARD_SESSION_TOKEN=$HERMES_TOKEN — and an
@@ -16,7 +16,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-say() { printf 'hermes-backend: %s\n' "$*" >&2; }
+say() { printf 'hermes-serve: %s\n' "$*" >&2; }
 
 # --- config: .env, then ENV_FILE on top (later wins) — exactly as start.sh ----
 # Exported (set -a) as before, when start.sh launched Hermes from its own
@@ -49,12 +49,34 @@ command -v hermes >/dev/null 2>&1 || { say "hermes not found on PATH (${PATH})";
 
 # Somebody else already on the port — the pre-migration backend still inside
 # hermes-webapp's cgroup, or a hand-started `hermes serve`. Starting a second
-# one only produces a bind error buried in the log; say it plainly here and let
-# Restart= try again until the port is free. start.sh reclaims a foreign
+# one only produces a bind error buried in the log. Wait here instead: the
+# usual holder is the old backend on its way out (the migration's restart of
+# hermes-webapp), gone within its stop timeout. One line for the whole wait —
+# exiting at once had Restart= relaunch this every 5s, a journal line each
+# time, for as long as a hand-started backend lived. After two minutes, exit 1
+# and let RestartSec (30s) pace the next look. start.sh reclaims a foreign
 # backend that rejects our token.
-if curl -fsS -m 3 "http://${HERMES_HOST}:${HERMES_PORT}/api/health" >/dev/null 2>&1; then
-  say "port ${HERMES_PORT} is already served by another process; retrying shortly."
-  exit 1
+port_held() {
+  if command -v ss >/dev/null 2>&1; then
+    [ -n "$(ss -tlnH "sport = :${HERMES_PORT}" 2>/dev/null)" ]
+  else
+    curl -fsS -m 3 "http://${HERMES_HOST}:${HERMES_PORT}/api/health" >/dev/null 2>&1
+  fi
+}
+
+if port_held; then
+  pid="$(ss -tlnpH "sport = :${HERMES_PORT}" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -n 1 | cut -d= -f2 || true)"
+  # Its unit, from the cgroup — the same reading as start.sh's pid_unit.
+  unit="$([ -n "${pid}" ] && grep -oE '[^/]+\.service' "/proc/${pid}/cgroup" 2>/dev/null | tail -n 1 || true)"
+  say "port ${HERMES_PORT} is held by another process${pid:+ (pid ${pid}${unit:+, ${unit}})}; waiting up to 2 minutes for it to free."
+  for _ in $(seq 1 24); do
+    sleep 5
+    port_held || break
+  done
+  if port_held; then
+    say "port ${HERMES_PORT} is still held; giving up for now (systemd retries in 30s)."
+    exit 1
+  fi
 fi
 
 # --- log ----------------------------------------------------------------------
@@ -66,7 +88,7 @@ SERVE_LOG="${LOG_DIR}/hermes-serve.log"
 if [ -f "${SERVE_LOG}" ] && [ "$(wc -c < "${SERVE_LOG}")" -gt $((5 * 1024 * 1024)) ]; then
   mv -f "${SERVE_LOG}" "${SERVE_LOG}.1"
 fi
-printf '\n=== hermes-backend.service: hermes serve starting %s ===\n' \
+printf '\n=== hermes-serve.service: hermes serve starting %s ===\n' \
   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "${SERVE_LOG}"
 say "starting hermes serve on ${HERMES_HOST}:${HERMES_PORT}; output in $(pwd)/${SERVE_LOG#./}"
 

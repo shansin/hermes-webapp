@@ -5,25 +5,27 @@
 #   bash deploy/install.sh
 #
 # What it does, every time (safe to re-run):
-#   - copies deploy/hermes-backend.service and deploy/hermes-webapp.service into
+#   - copies deploy/hermes-serve.service and deploy/hermes-webapp.service into
 #     ~/.config/systemd/user/, keeping a .bak.<timestamp> of any copy that
 #     differs (a hand-edited unit is never lost silently)
 #   - writes <unit>.d/override.conf with this machine's PATH and repo directory
 #     ONLY IF that file does not exist yet, so hand edits there survive re-runs
 #   - makes sure .env has a HERMES_TOKEN (both units read it; see
-#     deploy/hermes-backend.sh)
-#   - daemon-reload, and `enable` both units (start at boot)
+#     deploy/hermes-serve.sh)
+#   - daemon-reload, and `enable` both units (start at boot) — EXCEPT while the
+#     pre-split layout is running (Hermes inside hermes-webapp's cgroup): then
+#     it enables without reloading and prints the commands to run when idle
 #
 # What it does NOT do: start, stop or restart anything. Applying the change is a
-# separate, deliberate `systemctl --user restart hermes-webapp` — see
-# deploy/README.md for why the first one matters.
+# separate, deliberate step — see deploy/README.md for why the first one
+# matters.
 
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 REPO_DIR="$(pwd -P)"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-UNITS=(hermes-backend.service hermes-webapp.service)
+UNITS=(hermes-serve.service hermes-webapp.service)
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
@@ -84,7 +86,7 @@ for u in "${UNITS[@]}"; do
 WorkingDirectory=${REPO_DIR}
 Environment=PATH=${unit_path}
 EOF
-    if [ "${u}" = hermes-backend.service ]; then
+    if [ "${u}" = hermes-serve.service ]; then
       cat <<'EOF'
 
 # The unit ships GNOME/Wayland defaults for computer use (DISPLAY, XAUTHORITY,
@@ -124,15 +126,54 @@ else
   bold "  ✓ HERMES_TOKEN already set in .env"
 fi
 
+# --- the layout running now ---------------------------------------------------
+# Pre-split: the Hermes on the backend port lives in hermes-webapp.service's
+# cgroup, because start.sh used to nohup it from there. A daemon-reload applies
+# the new hermes-webapp definition to the RUNNING cgroup at once — MemoryHigh/
+# MemoryMax sized for a proxy, a 15s stop timeout — and that cgroup still holds
+# `hermes serve`, its MCP servers and its tools (~900 MB on the live box): the
+# agent gets throttled and OOM-killed mid-turn. So in that layout nothing here
+# reloads, and `enable` gets --no-reload, since it reloads implicitly too.
+#
+# Found the way start.sh --status finds it: the listener's PID, then the unit
+# named in its cgroup. The port is the last HERMES_PORT= in .env, then
+# .env.public (start.sh's order), unquoted.
+env_port() {
+  { sed -n 's/^HERMES_PORT=//p' .env .env.public 2>/dev/null || true; } | tr -d "\"'" | tail -n 1
+}
+HERMES_PORT="${HERMES_PORT:-$(env_port)}"
+HERMES_PORT="${HERMES_PORT:-9119}"
+backend_listener_unit() {
+  local pid
+  pid="$(ss -tlnpH "sport = :${HERMES_PORT}" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -n 1 | cut -d= -f2 || true)"
+  [ -n "${pid}" ] && grep -oE '[^/]+\.service' "/proc/${pid}/cgroup" 2>/dev/null | tail -n 1
+  return 0
+}
+
+if [ "$(backend_listener_unit)" = hermes-webapp.service ]; then
+  systemctl --user enable --no-reload "${UNITS[@]}" >/dev/null 2>&1 || die "systemctl --user enable failed."
+  bold "  ✓ hermes-serve + hermes-webapp enabled — NOT reloaded, nothing restarted"
+  echo
+  warn "  The Hermes on :${HERMES_PORT} still runs inside hermes-webapp.service (the pre-split"
+  warn "  layout). Reloading would put it under the proxy's memory caps mid-turn, so that"
+  warn "  is left to you. After 'pnpm install --frozen-lockfile && pnpm build', when NO turn"
+  warn "  is running, run together:"
+  warn ""
+  warn "    systemctl --user daemon-reload && systemctl --user restart hermes-webapp"
+  warn "    systemctl --user enable --now hermes-serve"
+  warn ""
+  warn "  The restart stops the old cgroup (ending the old hermes serve, once), then starts"
+  warn "  the proxy, which pulls hermes-serve in on the freed port. See deploy/README.md."
+  exit 0
+fi
+
 # --- activate the definitions (not the services) ------------------------------
 systemctl --user daemon-reload
 systemctl --user enable "${UNITS[@]}" >/dev/null 2>&1 || die "systemctl --user enable failed."
-bold "  ✓ daemon-reload; hermes-backend + hermes-webapp enabled (nothing restarted)"
+bold "  ✓ daemon-reload; hermes-serve + hermes-webapp enabled (nothing restarted)"
 
 if systemctl --user is-active --quiet hermes-webapp; then
   echo
   warn "  hermes-webapp is running with the definition it started with. To apply:"
-  warn "    systemctl --user restart hermes-webapp"
-  warn "  If its cgroup still holds a 'hermes serve' (the pre-split layout), that"
-  warn "  restart kills it once — do it when no turn is running. See deploy/README.md."
+  warn "    systemctl --user restart hermes-webapp     # the proxy only — turns survive"
 fi

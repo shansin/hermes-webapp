@@ -38,7 +38,7 @@
  * `approval.pending` returns it unredacted) is not.
  */
 import { log } from '../log.js';
-import { callGateway } from './rpc.js';
+import { callGateway, callGatewayOutcome } from './rpc.js';
 
 export type ApprovalChoice = 'once' | 'deny';
 
@@ -49,6 +49,15 @@ export type ApprovalAnswer =
   | { status: 'expired' }
   /** The listener's socket is down or the backend did not answer. */
   | { status: 'unreachable' };
+
+/**
+ * The gateway's "session not found" (`_sess` in `tui_gateway/server.py`).
+ *
+ * `approval.respond` returns it only after its own fallbacks — the request id
+ * against every live session, then the stored id — have also failed, so it
+ * means the session is not live any more. Its approval went with it.
+ */
+const SESSION_NOT_FOUND = 4001;
 
 interface LiveRow {
   id?: unknown;
@@ -89,17 +98,28 @@ export async function answerApproval(
   requestId: string | null,
 ): Promise<ApprovalAnswer> {
   const handle = await liveHandle(sessionKey);
-  const result = await callGateway<{ resolved?: unknown }>('approval.respond', {
+  const outcome = await callGatewayOutcome<{ resolved?: unknown }>('approval.respond', {
     session_id: handle ?? sessionKey,
     choice,
     all: false,
     ...(requestId ? { request_id: requestId } : {}),
   });
+  if (outcome && 'error' in outcome) {
+    if (outcome.error.code !== SESSION_NOT_FOUND) return { status: 'unreachable' };
+    log.info(`Approval ${choice} from a notification: ${sessionKey} has ended — nothing to answer.`);
+    return { status: 'expired' };
+  }
+  const result = outcome?.result;
   if (!result) return { status: 'unreachable' };
 
   const resolved = typeof result.resolved === 'number' ? result.resolved : 0;
   log.info(`Approval ${choice} from a notification: ${sessionKey} (${resolved} resolved).`);
   return resolved > 0 ? { status: 'resolved', resolved } : { status: 'expired' };
+}
+
+export interface PendingApproval {
+  requestId: string | null;
+  description: string | null;
 }
 
 /**
@@ -110,9 +130,7 @@ export async function answerApproval(
  * the call that tells an approval apart. Addressed by the live handle, which
  * the caller has from the same listing.
  */
-export async function pendingApproval(
-  liveId: string,
-): Promise<{ requestId: string | null; description: string | null } | null> {
+export async function pendingApproval(liveId: string): Promise<PendingApproval | null> {
   const body = await callGateway<{ approvals?: unknown[] }>('approval.pending', { session_id: liveId });
   const first = (Array.isArray(body?.approvals) ? body.approvals[0] : null) as
     | { request_id?: unknown; description?: unknown; tool_name?: unknown }

@@ -97,7 +97,7 @@ import { clearToken, getToken, resolveToken, upstreamHttp, upstreamHost } from '
 import { log } from '../log.js';
 import { getWatermark, pruneWatermarks, setWatermark } from './feed.js';
 import { flatten } from './preview.js';
-import { pendingApproval } from './approval.js';
+import { pendingApproval, type PendingApproval } from './approval.js';
 import { callGateway } from './rpc.js';
 import { sendPush } from './send.js';
 import { listSubscriptions } from './store.js';
@@ -420,16 +420,15 @@ export function forgetWaiting(key: string): void {
 /**
  * A session waiting on a human.
  *
- * `liveId` is the gateway handle off the same listing row; it is what
- * `approval.pending` is addressed by, and that call is what tells an approval
- * apart from a clarify — `waiting` covers both. An approval's banner carries
+ * `approval` is what `approval.pending` said the pass that saw this wait —
+ * that call is what tells an approval apart from a clarify, since `waiting`
+ * covers both — or null for any other wait. An approval's banner carries
  * Approve once / Deny buttons the worker answers itself (`push/approval.ts`);
  * anything else keeps the plain banner, because a question needs the app.
  */
-async function reportWaiting(key: string, title: string | null, liveId: string | null): Promise<void> {
+async function reportWaiting(key: string, title: string | null, approval: PendingApproval | null): Promise<void> {
   if (!listSubscriptions().length) return;
 
-  const approval = liveId ? await pendingApproval(liveId) : null;
   const detail = await resolveDetail(key);
   const url = detail
     ? withProfile(`/chat?session=${encodeURIComponent(key)}`, detail.profile)
@@ -580,8 +579,33 @@ export async function reconcileSessions(): Promise<void> {
        */
       if (IN_FLIGHT.has(status)) live.push({ key, title: str(row.title) });
 
-      const value = `${status}:${count}`;
       const previous = getWatermark(mark);
+      const [previousStatus = 'idle', previousCountRaw = '0', ...previousRest] = previous?.split(':') ?? [];
+      const previousCount = Number(previousCountRaw) || 0;
+      const previousRequest = previousRest.join(':') || null;
+
+      /**
+       * A wait is also *which* request it is waiting on. Answering from the
+       * banner clears it (`forgetWaiting`), and an agent that goes straight on
+       * to a second approval can be `waiting` again by the next pass with no
+       * other status seen in between — on status alone that second question
+       * would never be announced, and the turn would sit on it unnoticed. The
+       * request id goes last in the watermark so the split above still reads
+       * the first two fields of either shape.
+       *
+       * Asked on every pass that sees a wait, not only on the transition into
+       * one — one call per waiting session, a read of the approval tool's
+       * in-memory queue that binds nothing. A failed ask keeps the request it
+       * last knew rather than reading as a new one.
+       */
+      const liveId = str(row.id);
+      const approval = status === 'waiting' && liveId ? await pendingApproval(liveId) : null;
+      const request =
+        status === 'waiting'
+          ? (approval?.requestId ?? (previousStatus === 'waiting' ? previousRequest : null))
+          : null;
+
+      const value = request ? `${status}:${count}:${request}` : `${status}:${count}`;
       if (previous === value) continue;
 
       setWatermark(mark, value);
@@ -591,11 +615,8 @@ export async function reconcileSessions(): Promise<void> {
          and every proxy restart silent too. */
       if (previous === null) continue;
 
-      const [previousStatus = 'idle', previousCountRaw = '0'] = previous.split(':');
-      const previousCount = Number(previousCountRaw) || 0;
-
-      if (status === 'waiting' && previousStatus !== 'waiting') {
-        await reportWaiting(key, str(row.title), str(row.id));
+      if (status === 'waiting' && (previousStatus !== 'waiting' || request !== previousRequest)) {
+        await reportWaiting(key, str(row.title), approval);
         continue;
       }
       if (previousStatus === 'waiting' && status !== 'waiting' && announcedWaiting.has(key)) {

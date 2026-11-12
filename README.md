@@ -87,7 +87,7 @@ Hermes protects its API with a per-process session token. There are two paths:
 
 - **We start Hermes** (the usual case): `start.sh` generates a token, exports it
   as `HERMES_DASHBOARD_SESSION_TOKEN`, and the backend adopts it. Under systemd
-  (`hermes-backend.service`, see [Surviving a reboot](#surviving-a-reboot)) the
+  (`hermes-serve.service`, see [Surviving a reboot](#surviving-a-reboot)) the
   backend is started independently of the proxy, so nothing can hand a minted
   token from one to the other: `HERMES_TOKEN` must be set in `.env`, which both
   units read (`deploy/install.sh` generates one if it is missing).
@@ -115,10 +115,11 @@ surface that *does* need the token.
 `start.sh` handles this: it probes an authenticated endpoint as well as the
 health one, and a backend that is up but refuses our token gets stopped and
 restarted with the token exported, since that is the only way the two can agree
-again. With `hermes-backend.service` installed, a foreign listener is stopped and
+again. With `hermes-serve.service` installed, a foreign listener is stopped and
 the unit started in its place, and the unit's own Hermes is restarted through
 systemd (it re-reads `.env`) — and only on an outright 401/403, never on a slow
-answer. So the fix is to re-run it:
+answer. (Under that unit the update itself restarts it through systemd, so the
+token survives and this does not arise.) Otherwise the fix is to re-run it:
 
 ```bash
 bash start.sh --bg       # reclaims the backend and reports what it did
@@ -488,26 +489,35 @@ that looks like Cloudflare's fault when nothing is listening. Three systemd
 makes user services start at boot without logging in):
 
 ```bash
+pnpm install --frozen-lockfile && pnpm build   # the units run what is on disk
 bash deploy/install.sh                          # copy Hem's two units from deploy/
 systemctl --user enable --now cloudflared       # the tunnel
-systemctl --user enable --now hermes-backend    # `hermes serve`, on its own
+systemctl --user enable --now hermes-serve      # `hermes serve`, on its own
 systemctl --user enable --now hermes-webapp     # start.sh -> the proxy
 ```
 
-The backend and the proxy are **separate units on purpose**. `hermes-backend`
-runs `hermes serve` through `deploy/hermes-backend.sh` (which loads `.env`,
+On a box where Hermes still runs inside `hermes-webapp` (the old single-unit
+layout), `install.sh` deliberately skips its `daemon-reload` and prints a
+one-time migration instead — follow `deploy/README.md`, not the lines above.
+
+The backend and the proxy are **separate units on purpose**. `hermes-serve`
+runs `hermes serve` through `deploy/hermes-serve.sh` (which loads `.env`,
 hands `HERMES_TOKEN` over as the session token, and appends to
 `.logs/hermes-serve.log`) and is restarted by systemd if it dies.
 `hermes-webapp` runs `start.sh` in the foreground with `ENV_FILE=.env.public`
 and `SKIP_BUILD=1`; with the backend unit installed, `start.sh` never spawns
-Hermes itself — it asks systemd to start `hermes-backend` if it is down, waits
+Hermes itself — it asks systemd to start `hermes-serve` if it is down, waits
 for health, then execs `node` on the proxy. Restarting the proxy (a deploy, a
 crash) therefore leaves the agent and its running turns alone; when Hermes was
 launched from inside the proxy's unit, every proxy restart killed it. Skipping
-the build keeps boot fast — run `pnpm build` yourself after changing code.
+the build keeps boot fast, so a deploy is
+`pnpm install --frozen-lockfile && pnpm build && systemctl --user restart hermes-webapp`
+(`start.sh` installs on its own if the lockfile is newer than `node_modules`,
+but never rebuilds). `hermes update` restarts `hermes-serve` itself — Hermes
+restarts the units named `hermes-serve*`, which is why it has that name.
 
 ```bash
-systemctl --user status hermes-backend hermes-webapp
+systemctl --user status hermes-serve hermes-webapp
 journalctl --user -u hermes-webapp -f      # the proxy
 tail -f .logs/hermes-serve.log             # the backend
 ```
@@ -517,7 +527,7 @@ variables) live in `~/.config/systemd/user/<unit>.d/override.conf`, which the
 installer writes once and never overwrites. `deploy/README.md` has the details,
 the one-time migration from the old single-unit layout, and how to roll back.
 
-To take it down: `systemctl --user disable --now hermes-webapp hermes-backend`,
+To take it down: `systemctl --user disable --now hermes-webapp hermes-serve`,
 then drop `ENV_FILE` and run `bash start.sh` — with no backend unit running it
 starts Hermes itself, as on any machine without the units. Nothing about the
 LAN setup was changed.

@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { api } from './client';
+import { forgetLastSession } from '../lib/lastSession';
 
 export interface SessionRow {
   id: string;
@@ -598,7 +599,11 @@ export function useDeleteSession() {
   return useMutation({
     mutationFn: ({ id, profile }: { id: string; profile?: string | null }) =>
       api.del(sessionUrl(`/api/sessions/${encodeURIComponent(id)}`, profile)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sessionKeys.all }),
+    onSuccess: (_res, { id }) => {
+      // Otherwise the next cold start resumes it, fails, and toasts an error.
+      forgetLastSession(id);
+      return qc.invalidateQueries({ queryKey: sessionKeys.all });
+    },
   });
 }
 
@@ -615,7 +620,10 @@ export function useBulkDeleteSessions() {
   return useMutation({
     mutationFn: ({ ids, profile }: { ids: string[]; profile?: string | null }) =>
       api.post('/api/sessions/bulk-delete', { ids, ...(profile ? { profile } : {}) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sessionKeys.all }),
+    onSuccess: (_res, { ids }) => {
+      ids.forEach((id) => forgetLastSession(id));
+      return qc.invalidateQueries({ queryKey: sessionKeys.all });
+    },
   });
 }
 

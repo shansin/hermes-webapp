@@ -8,7 +8,10 @@
  * because sending a shared photo into whatever was open last is the failure
  * that matters most.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderHook } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createElement, type ReactNode } from 'react';
 import {
   RESUME_WINDOW_MS,
   coldStartResume,
@@ -16,6 +19,14 @@ import {
   readLastSession,
   rememberSession,
 } from '../src/lib/lastSession';
+
+const apiDel = vi.fn(async () => ({}));
+const apiPost = vi.fn(async () => ({ ok: true }));
+vi.mock('../src/api/client', () => ({
+  api: { del: (...a: unknown[]) => apiDel(...(a as [])), post: (...a: unknown[]) => apiPost(...(a as [])) },
+}));
+
+const { useDeleteSession, useBulkDeleteSessions } = await import('../src/api/sessions');
 
 const NOW = 1_800_000_000_000;
 const none = { resumeId: null, wantNew: false, sharing: false };
@@ -64,5 +75,38 @@ describe('the stored record', () => {
     rememberSession('stored-1', null, NOW);
     forgetLastSession();
     expect(readLastSession()).toBeNull();
+  });
+});
+
+/**
+ * A deleted conversation left its record behind, so the next cold start
+ * resumed a session that no longer existed — a refusal, an error toast and a
+ * new chat, in place of simply opening a new chat.
+ */
+describe('deleting the remembered conversation', () => {
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client: new QueryClient() }, children);
+
+  beforeEach(() => {
+    localStorage.clear();
+    rememberSession('stored-1', 'research', NOW);
+  });
+
+  it('forgets it', async () => {
+    const { result } = renderHook(() => useDeleteSession(), { wrapper });
+    await result.current.mutateAsync({ id: 'stored-1', profile: 'research' });
+    expect(readLastSession()).toBeNull();
+  });
+
+  it('forgets it when it is one of a bulk delete', async () => {
+    const { result } = renderHook(() => useBulkDeleteSessions(), { wrapper });
+    await result.current.mutateAsync({ ids: ['other', 'stored-1'], profile: 'research' });
+    expect(readLastSession()).toBeNull();
+  });
+
+  it('keeps it when another conversation is deleted', async () => {
+    const { result } = renderHook(() => useDeleteSession(), { wrapper });
+    await result.current.mutateAsync({ id: 'other' });
+    expect(readLastSession()).toMatchObject({ id: 'stored-1' });
   });
 });

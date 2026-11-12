@@ -185,6 +185,24 @@ describe('forkAt', () => {
     expect(d.branch).toHaveBeenCalledWith('s1', 4, 'key-1');
   });
 
+  /**
+   * Paging stopped at its ceiling, so the copy lacks the newest rows. Matched
+   * by text from its end, "two" landed on an older repeat of it in the
+   * truncated copy — a fork cut at the wrong turn.
+   */
+  it('prefers the on-screen count when the stored transcript stopped short', async () => {
+    const m = loadFour();
+    const a2 = m.find((x) => x.kind === 'assistant' && x.text === 'two')!;
+    const d = deps({
+      transcript: vi.fn(async () => ({
+        messages: [row(1, 'user', 'zero'), row(2, 'assistant', 'two')],
+        complete: false,
+      })),
+    });
+    await forkAt(a2.id, {}, d);
+    expect(d.branch).toHaveBeenCalledWith('s1', 4, 'key-1');
+  });
+
   it('refuses mid-turn, since the stored copy lags a running turn', async () => {
     const m = loadFour();
     useSession.setState({ running: true });

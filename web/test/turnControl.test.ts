@@ -12,6 +12,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/lib/haptics', () => ({ buzz: vi.fn(), setHapticsEnabled: vi.fn() }));
 
+const { ConnectionLost, CallTimeout } = vi.hoisted(() => ({
+  ConnectionLost: class ConnectionLost extends Error {},
+  CallTimeout: class CallTimeout extends Error {},
+}));
+
 type Handler = (e: { type: string; session_id?: string; payload?: unknown }) => void;
 const handlers = new Set<Handler>();
 const call = vi.fn(async (..._args: unknown[]) => ({}) as unknown);
@@ -26,7 +31,8 @@ vi.mock('../src/ws/client', () => ({
     state: 'open',
   },
   CONTROL_TIMEOUT_MS: 15_000,
-  ConnectionLost: class extends Error {},
+  ConnectionLost,
+  CallTimeout,
 }));
 
 const { useSession } = await import('../src/store/session');
@@ -92,6 +98,24 @@ describe('steer', () => {
     expect(toasts()[0]).toContain('agent does not support steer');
   });
 
+  /**
+   * The socket went, or no answer came, with the steer possibly delivered:
+   * queueing it as well sent the same guidance twice once the turn ended.
+   */
+  it.each([
+    ['the socket went', () => new ConnectionLost()],
+    ['the call timed out', () => new CallTimeout()],
+  ])('hands the text back to the composer, unqueued, when %s', async (_why, error) => {
+    call.mockRejectedValue(error());
+    expect(await sendWhileRunning('steer', 'use the staging db')).toBe('unconfirmed');
+    expect(store().queued).toBeNull();
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(store().returnedText).toEqual({ text: 'use the staging db' });
+    expect(toasts()[0]).toBe(
+      "Couldn't confirm the steer was delivered — check the transcript before resending",
+    );
+  });
+
   it('sends as a new message when the turn ended while the call was out', async () => {
     call.mockImplementation(async (method: unknown) => {
       if (method === 'session.steer') {
@@ -131,6 +155,14 @@ describe('redirect', () => {
     call.mockResolvedValue({ status: 'queued', text: 'x' });
     expect(await sendWhileRunning('redirect', 'x')).toBe('queued-next-turn');
     expect(store().queued).toBeNull();
+  });
+
+  it('hands an unconfirmed redirect back rather than queueing it', async () => {
+    call.mockRejectedValue(new ConnectionLost());
+    expect(await sendWhileRunning('redirect', 'x')).toBe('unconfirmed');
+    expect(store().queued).toBeNull();
+    expect(store().returnedText).toEqual({ text: 'x' });
+    expect(toasts()[0]).toMatch(/^Couldn't confirm the redirect was delivered/);
   });
 
   it('falls back to the local queue on "rejected"', async () => {

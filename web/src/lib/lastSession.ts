@@ -53,8 +53,13 @@ export function readLastSession(): LastSession | null {
   }
 }
 
-/** Forget it, e.g. after it failed to resume — so the next cold start does not retry a dead id. */
-export function forgetLastSession(): void {
+/**
+ * Forget it, e.g. after it failed to resume — so the next cold start does not
+ * retry a dead id. With `id`, only when that is the session remembered: a
+ * deleted conversation must not be what the next cold start tries to reopen.
+ */
+export function forgetLastSession(id?: string): void {
+  if (id !== undefined && readLastSession()?.id !== id) return;
   try {
     localStorage.removeItem(KEY);
   } catch {

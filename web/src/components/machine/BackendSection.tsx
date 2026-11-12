@@ -40,7 +40,7 @@ export function BackendSection() {
         )}
         {h?.restartNeeded && (
           <Hint tone="warn">
-            Hermes was updated on disk and is still serving the old code. Restart hermes-backend on
+            Hermes was updated on disk and is still serving the old code. Restart hermes-serve on
             the machine to pick it up — this app cannot restart the process it is talking through.
           </Hint>
         )}

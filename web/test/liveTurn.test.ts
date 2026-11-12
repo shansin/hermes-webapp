@@ -111,7 +111,8 @@ describe('adopting the gateway’s live-turn state', () => {
   it('shows a prompt the gateway is holding for the next turn', () => {
     store().applyLiveState(resumed({ queued: { user: 'and then deploy it' } }));
 
-    expect(store().queued).toEqual({ text: 'and then deploy it' });
+    // Marked as Hermes' own, which it runs itself: never sent from here.
+    expect(store().queued).toEqual({ text: 'and then deploy it', fromGateway: true });
   });
 
   /** The local one has not been sent anywhere, and may carry a `display`. */

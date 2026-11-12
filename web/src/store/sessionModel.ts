@@ -122,24 +122,69 @@ export interface LostSubmit {
   text: string;
   display?: string;
   at: MessageTime;
+  /**
+   * Where the conversation stood when it was sent: the user rows on screen
+   * before this one (failed bubbles aside — the gateway never saw those), and
+   * the newest stored row id among them when history carried ids. Only a row
+   * *past* that point can be this prompt; see `lostSubmitDelivered`.
+   */
+  userRows: number;
+  lastRowId?: number;
+}
+
+/** What `LostSubmit` records about the transcript a prompt was sent from. */
+export function submitMark(messages: ChatMessage[]): Pick<LostSubmit, 'userRows' | 'lastRowId'> {
+  let userRows = 0;
+  let lastRowId: number | undefined;
+  for (const m of messages) {
+    if (m.kind === 'user' && !m.failed) userRows++;
+    if ((m.kind === 'user' || m.kind === 'assistant') && m.rowId != null) {
+      lastRowId = Math.max(lastRowId ?? m.rowId, m.rowId);
+    }
+  }
+  return { userRows, ...(lastRowId != null ? { lastRowId } : {}) };
+}
+
+type HistoryRow = { role: string; text?: string | null };
+
+const rowIdOf = (m: HistoryRow): number | undefined => {
+  const id = (m as { row_id?: unknown }).row_id;
+  return typeof id === 'number' ? id : undefined;
+};
+
+/**
+ * Whether history holds a lost submit, i.e. it went through and finished.
+ *
+ * Only a row newer than the transcript it was sent from counts, and it must
+ * carry the same text. Matching the text alone read "yes" sent twice as
+ * delivered off the *previous* "yes" — so a prompt that never arrived was
+ * neither marked failed nor kept, and vanished under the reloaded transcript.
+ * Newer is by stored row id where both sides have one, and otherwise by
+ * position among the user rows.
+ */
+export function lostSubmitDelivered(history: HistoryRow[], lost: LostSubmit): boolean {
+  const users = history.filter((m) => m.role === 'user');
+  const { lastRowId } = lost;
+  if (lastRowId != null && users.some((m) => rowIdOf(m) != null)) {
+    return users.some((m) => (rowIdOf(m) ?? -1) > lastRowId && m.text === lost.text);
+  }
+  return users.slice(lost.userRows).some((m) => m.text === lost.text);
 }
 
 /**
  * Settle a lost submit once the gateway says the session is idle.
  *
- * History decides: a last user turn with this text means it went through
- * and has since finished, so `messages` stands. Otherwise it never arrived,
- * and its bubble is marked failed — or put back, marked, when the transcript
- * being installed no longer has it, because what someone typed must survive
- * a dropped connection.
+ * History decides (`lostSubmitDelivered`): delivered, and `messages` stands.
+ * Otherwise it never arrived, and its bubble is marked failed — or put back,
+ * marked, when the transcript being installed no longer has it, because what
+ * someone typed must survive a dropped connection.
  */
 export function settleLostSubmit(
   messages: ChatMessage[],
-  history: { role: string; text?: string | null }[],
+  history: HistoryRow[],
   lost: LostSubmit,
 ): ChatMessage[] {
-  const lastUser = lastIndexOf(history, (m) => m.role === 'user');
-  if (lastUser >= 0 && history[lastUser]!.text === lost.text) return messages;
+  if (lostSubmitDelivered(history, lost)) return messages;
   if (messages.some((m) => m.id === lost.id)) {
     return replaceLast(
       messages,

@@ -234,3 +234,156 @@ describe('a prompt lost with the old socket', () => {
     expect(store().messages.at(-1)).toMatchObject({ kind: 'user', text: 'hello', failed: true });
   });
 });
+
+/**
+ * The same text sent again. History was searched for a last user row with
+ * the lost prompt's text, so the *previous* "yes" read as this one delivered:
+ * the bubble was never marked failed, or vanished under the reloaded
+ * transcript. A row only counts when it is newer than the screen it was sent
+ * from.
+ */
+describe('a lost prompt repeating the one before it', () => {
+  const earlier = () => history(['user', 'yes'], ['assistant', 'Done.']);
+
+  async function loseRepeat() {
+    store().loadHistory(earlier());
+    call.mockRejectedValueOnce(new ConnectionLost());
+    await store().submitPrompt('yes');
+    return store().messages.at(-1)!;
+  }
+
+  it('is marked failed when history holds only the earlier copy', async () => {
+    const bubble = await loseRepeat();
+    await reconnectSession(target, deps({ fetchHistory: vi.fn(async () => earlier()) }));
+    expect(store().messages.find((m) => m.id === bubble.id)).toMatchObject({ text: 'yes', failed: true });
+    expect(store().running).toBe(false);
+  });
+
+  it('survives a rebuilt runtime, marked, rather than vanishing under the earlier copy', async () => {
+    await loseRepeat();
+    await reconnectSession(
+      target,
+      deps({ resume: vi.fn(async () => ({ session_id: 's2', running: false })), fetchHistory: vi.fn(async () => earlier()) }),
+    );
+    expect(store().messages.filter((m) => m.kind === 'user')).toEqual([
+      expect.objectContaining({ text: 'yes' }),
+      expect.objectContaining({ text: 'yes', failed: true }),
+    ]);
+  });
+
+  it('stands when history holds a second copy after the first', async () => {
+    await loseRepeat();
+    await reconnectSession(
+      target,
+      deps({ fetchHistory: vi.fn(async () => [...earlier(), ...history(['user', 'yes'], ['assistant', 'Again.'])]) }),
+    );
+    expect(store().messages.some((m) => m.kind === 'user' && m.failed)).toBe(false);
+  });
+
+  /** With row ids, newer is by id — a rewritten front of the transcript cannot shift it. */
+  it('is judged by stored row id when history carries them', async () => {
+    const rows = (...r: [string, string, number][]) =>
+      r.map(([role, text, row_id]) => ({ role, text, row_id })) as HistoryMessage[];
+    store().loadHistory(rows(['user', 'yes', 10], ['assistant', 'Done.', 11]));
+    call.mockRejectedValueOnce(new ConnectionLost());
+    await store().submitPrompt('yes');
+    const bubble = store().messages.at(-1)!;
+
+    // A compression dropped a row from the front: fewer user rows than the
+    // screen had, but the newer id is this prompt.
+    await reconnectSession(
+      target,
+      deps({ fetchHistory: vi.fn(async () => rows(['user', 'yes', 12], ['assistant', 'Again.', 13])) }),
+    );
+    expect(store().messages.find((m) => m.id === bubble.id)).not.toHaveProperty('failed', true);
+  });
+});
+
+/**
+ * Something typed after the socket went is queued — `running` stays true on
+ * purpose while a lost submit is unsettled — and only a `message.complete`
+ * released the queue. A resume reporting idle is that turn's end too.
+ */
+describe('a message queued behind a turn that ended unseen', () => {
+  const submits = (text: string) =>
+    call.mock.calls.filter(([m, p]) => m === 'prompt.submit' && (p as { text?: string }).text === text);
+
+  async function queueBehindLost() {
+    call.mockRejectedValueOnce(new ConnectionLost());
+    await store().submitPrompt('first');
+    await store().submitPrompt('second');
+    expect(store().queued).toMatchObject({ text: 'second' });
+  }
+
+  it('goes out once the gateway says the session is idle', async () => {
+    await queueBehindLost();
+    await reconnectSession(target, deps());
+    expect(store().queued).toBeNull();
+    expect(submits('second')).toHaveLength(1);
+  });
+
+  it('goes out exactly once, whatever else then reports the end', async () => {
+    await queueBehindLost();
+    await reconnectSession(target, deps());
+    // The released prompt's own turn ends, and a second reconnect reports idle.
+    store().applyEvent({ type: 'message.complete', session_id: 's1', payload: { text: 'ok' } });
+    await reconnectSession(target, deps());
+    expect(submits('second')).toHaveLength(1);
+  });
+
+  it('goes out after a rebuilt runtime too', async () => {
+    await queueBehindLost();
+    await reconnectSession(target, deps({ resume: vi.fn(async () => ({ session_id: 's2', running: false })) }));
+    expect(call).toHaveBeenCalledWith('prompt.submit', { session_id: 's2', text: 'second' });
+  });
+
+  it('is held, not sent, when Stop was pressed before the socket went', async () => {
+    store().applyEvent({ type: 'message.start', session_id: 's1' });
+    await store().submitPrompt('second');
+    await store().interrupt();
+    await reconnectSession(target, deps());
+    expect(submits('second')).toHaveLength(0);
+    expect(store().queued).toMatchObject({ text: 'second' });
+  });
+
+  it('is not released while the turn is still running', async () => {
+    await queueBehindLost();
+    await reconnectSession(target, deps({ resume: vi.fn(async () => ({ session_id: 's1', running: true })) }));
+    expect(submits('second')).toHaveLength(0);
+  });
+
+  /** Hermes runs its own queued prompt; sending the copy too would run it twice. */
+  it("never sends the gateway's own queued copy", async () => {
+    store().applyLiveState({ session_id: 's1', running: true, queued: { user: 'theirs' } });
+    await reconnectSession(target, deps());
+    expect(submits('theirs')).toHaveLength(0);
+    expect(store().queued).toBeNull();
+  });
+});
+
+/**
+ * No stored id means no resume and so no `running` from the gateway, and a
+ * lost submit's history is shorter than the screen — the one case the length
+ * guess cannot end. The stop button stayed lit for ever.
+ */
+describe('a lost prompt in a conversation with no stored id', () => {
+  const unsaved = { ...target, storedSessionId: null };
+
+  it('settles, and the session goes idle', async () => {
+    call.mockRejectedValueOnce(new ConnectionLost());
+    await store().submitPrompt('hello');
+    const bubble = store().messages.at(-1)!;
+    await reconnectSession(unsaved, deps());
+    expect(store().running).toBe(false);
+    expect(store().lostSubmit).toBeNull();
+    expect(store().messages.find((m) => m.id === bubble.id)).toMatchObject({ failed: true });
+  });
+
+  it('stands when history shows it went through', async () => {
+    call.mockRejectedValueOnce(new ConnectionLost());
+    await store().submitPrompt('hello');
+    await reconnectSession(unsaved, deps({ fetchHistory: vi.fn(async () => history(['user', 'hello'], ['assistant', 'Hi!'])) }));
+    expect(store().running).toBe(false);
+    expect(store().messages.some((m) => m.kind === 'user' && m.failed)).toBe(false);
+  });
+});

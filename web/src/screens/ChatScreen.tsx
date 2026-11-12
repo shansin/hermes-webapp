@@ -25,7 +25,7 @@ import { Empty, Loader } from '../components/shared/misc';
 import { useSession } from '../store/session';
 import { MenuButton } from '../components/shared/MenuButton';
 import { useUi } from '../store/ui';
-import { hermes, CONTROL_TIMEOUT_MS } from '../ws/client';
+import { hermes, CONTROL_TIMEOUT_MS, ConnectionLost, RpcError } from '../ws/client';
 import { createSession, fetchHistory, resumeSession } from '../api/gateway';
 import { fetchSessionTitle, fetchStoredMessages, useSessionRow } from '../api/sessions';
 import { useSlashRunner } from '../lib/useSlashRunner';
@@ -42,6 +42,21 @@ const CheckpointsSheet = lazy(() => import('../components/chat/CheckpointsSheet'
 const ContextSheet = lazy(() =>
   import('../components/chat/ContextSheet').then((m) => ({ default: m.ContextSheet })),
 );
+
+/**
+ * How a `doResume` ended, because the callers act on the difference:
+ *
+ *  - `ok` — the conversation is open.
+ *  - `gone` — Hermes answered and refused (an RPC error: no such session, not
+ *    in that profile). A new chat stands in, and a cold start forgets the id.
+ *  - `failed` — no answer worth trusting on a live socket (a timeout, a reply
+ *    that failed its schema). A new chat stands in, but the id is kept: the
+ *    session may well be there next time.
+ *  - `transient` — the socket or the network went. Nothing is decided; the
+ *    boot effect runs again when the connection reopens and retries.
+ *  - `busy` — another boot was already under way, and this one never started.
+ */
+type ResumeOutcome = 'ok' | 'gone' | 'failed' | 'transient' | 'busy';
 
 export function ChatScreen() {
   const [params, setParams] = useSearchParams();
@@ -202,20 +217,20 @@ export function ChatScreen() {
   };
 
   /**
-   * Resolves true when a live session was adopted. `remember: false` is the
-   * cold-start resume: reopening a conversation automatically is not activity
-   * in it, or the half-hour window would renew itself for ever.
+   * See `ResumeOutcome`. `remember: false` is the cold-start resume: reopening
+   * a conversation automatically is not activity in it, or the half-hour
+   * window would renew itself for ever.
    */
   const doResume = async (
     storedId: string,
     profile = resumeProfile,
     { remember = true }: { remember?: boolean } = {},
-  ): Promise<boolean> => {
-    if (bootingRef.current) return false;
+  ): Promise<ResumeOutcome> => {
+    if (bootingRef.current) return 'busy';
     // The socket can still read OPEN for a while after the radio drops, so
     // asking it first would buy a full timeout before learning what the
     // browser already knows. The cached-transcript effect takes it from here.
-    if (!navigator.onLine) return false;
+    if (!navigator.onLine) return 'transient';
     bootingRef.current = true;
     setBooting(true);
     reset();
@@ -316,20 +331,33 @@ export function ChatScreen() {
         // because its name could not be looked up is not.
       }
 
-      return true;
+      return 'ok';
     } catch (err) {
-      // Offline is not a failed resume, it is a missing network: falling back
-      // to `startNew` would spend a second timeout on a socket that cannot
-      // answer either, and the cached-transcript effect below covers the case
-      // properly. Leave the `resume=` intent in the URL so a reconnect picks
-      // it up.
-      if (!navigator.onLine || connection !== 'open') return false;
+      /**
+       * Offline is not a failed resume, it is a missing network: falling back
+       * to `startNew` would spend a second timeout on a socket that cannot
+       * answer either, and the cached-transcript effect below covers the case
+       * properly. Leave the `resume=` intent in the URL so a reconnect picks
+       * it up.
+       *
+       * The connection is read from the store, not this render's closure:
+       * the closure is the render that started the resume, which saw the
+       * socket open, so a socket that died mid-call read as a refusal — a new
+       * chat and, on a cold start, the conversation forgotten.
+       */
+      if (
+        err instanceof ConnectionLost ||
+        !navigator.onLine ||
+        useUi.getState().connection !== 'open'
+      ) {
+        return 'transient';
+      }
 
       toast(err instanceof Error ? err.message : 'Could not resume', 'error');
       // Fall back to a fresh session rather than leaving a dead screen.
       bootingRef.current = false;
       await startNew();
-      return false;
+      return err instanceof RpcError ? 'gone' : 'failed';
     } finally {
       bootingRef.current = false;
       setBooting(false);
@@ -361,11 +389,11 @@ export function ChatScreen() {
         return;
       }
 
-      void doResume(resumeId).then((ok) => {
+      void doResume(resumeId).then((outcome) => {
         // Clear the intent so a reconnect doesn't resume all over again —
         // but only on success, or a resume that failed for want of a network
         // would lose the very id the reconnect needs.
-        if (ok) setParams({}, { replace: true });
+        if (outcome === 'ok') setParams({}, { replace: true });
       });
       return;
     }
@@ -374,9 +402,11 @@ export function ChatScreen() {
      * A cold start (nothing in memory, no link) goes back to the conversation
      * this device was just in, if it was recent — the OS discarding a
      * backgrounded PWA should not cost the chat. Any intent in the URL wins;
-     * see `coldStartResume`. A resume that fails online falls back to a new
+     * see `coldStartResume`. A resume Hermes refuses falls back to a new
      * chat inside `doResume`, and the dead id is forgotten so the next cold
-     * start does not try it again.
+     * start does not try it again. Only a refusal: a socket that blipped
+     * mid-resume says nothing about the session, and this effect runs again
+     * when the connection reopens — with the record still there to retry.
      */
     const last = sessionId
       ? null
@@ -386,8 +416,8 @@ export function ChatScreen() {
           sharing: Boolean(shareId || shared),
         });
     if (last) {
-      void doResume(last.id, last.profile, { remember: false }).then((ok) => {
-        if (!ok && navigator.onLine && connection === 'open') forgetLastSession();
+      void doResume(last.id, last.profile, { remember: false }).then((outcome) => {
+        if (outcome === 'gone') forgetLastSession();
       });
       return;
     }
