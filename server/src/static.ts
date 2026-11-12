@@ -20,6 +20,8 @@
  *    it is the single largest cost of a cold load.
  *  - Everything carries an ETag, so a reload of the shell costs a 304 instead
  *    of re-streaming index.html.
+ *
+ * The shell also carries the Content-Security-Policy — see `cspFor`.
  */
 import { Hono } from 'hono';
 import { createReadStream, readFileSync } from 'node:fs';
@@ -29,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join, extname, normalize } from 'node:path';
 import { gzip, brotliCompress, constants as zlib } from 'node:zlib';
 import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 
 // The async forms run on libuv's threadpool, so compressing an asset no longer
 // stalls the event loop this process also relays the chat WebSocket on.
@@ -101,6 +104,13 @@ interface Entry {
    * last. A resolved promise costs a microtask to await.
    */
   enc: Map<Encoding, Promise<Buffer>>;
+  /**
+   * For an HTML file, the CSP sources admitting its inline scripts. Held on
+   * the entry so it is recomputed exactly when the file is: a rebuild under a
+   * running process (`SKIP_BUILD=1`) replaces the entry in `fresh()`, and a
+   * hash captured at boot would then block the new boot script.
+   */
+  scriptHashes?: Promise<string[]>;
 }
 
 /** urlPath (`/assets/index-abc.js`) -> entry. Built once at boot. */
@@ -317,7 +327,105 @@ async function warm(): Promise<void> {
 const etagOf = (e: Entry, enc: Encoding | null) =>
   `W/"${e.size.toString(36)}-${Math.trunc(e.mtimeMs).toString(36)}${enc ? `-${enc}` : ''}"`;
 
-async function send(e: Entry, urlPath: string, accept: string | undefined, inm: string | undefined) {
+/**
+ * `'sha256-…'` for every inline script in an HTML document.
+ *
+ * `index.html` carries one on purpose — the theme boot script, which has to
+ * run during parse, before the deferred module bundle, or an installed
+ * Android app paints its status bar the wrong colour (see the comment on it).
+ * Hashing it keeps `script-src` free of `'unsafe-inline'`, which is the
+ * directive that would let injected markup run.
+ *
+ * Read from the *built* file, because that is the text the browser hashes:
+ * the source in `web/index.html` passes through Vite on the way.
+ */
+export function inlineScriptHashes(html: string): string[] {
+  const out: string[] = [];
+  for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+    const attrs = m[1] ?? '';
+    const body = m[2] ?? '';
+    if (/\bsrc\s*=/i.test(attrs) || !body.trim()) continue;
+    // A data block (`application/json`, `importmap` aside) is never run, so
+    // it needs no permission to.
+    const type = /\btype\s*=\s*["']?([^"'\s>]+)/i.exec(attrs)?.[1]?.toLowerCase();
+    if (type && !['module', 'text/javascript', 'application/javascript', 'importmap'].includes(type)) continue;
+    // The HTML parser turns CRLF and lone CR into LF before the script's text
+    // exists, and that normalized text is what the browser hashes.
+    const text = body.replace(/\r\n?/g, '\n');
+    out.push(`'sha256-${createHash('sha256').update(text, 'utf8').digest('base64')}'`);
+  }
+  return out;
+}
+
+function scriptHashesOf(e: Entry): Promise<string[]> {
+  if (!e.scriptHashes) {
+    e.scriptHashes = readFile(e.abs, 'utf8')
+      .then(inlineScriptHashes)
+      .catch((err: unknown) => {
+        // Not cached: the next request reads again rather than serving a
+        // policy with the boot script missing for the life of the process.
+        e.scriptHashes = undefined;
+        throw err;
+      });
+  }
+  return e.scriptHashes;
+}
+
+/** A Host header fit to repeat inside a header: a name or address, and a port. */
+const SAFE_HOST = /^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i;
+
+/**
+ * The Content-Security-Policy for the app shell.
+ *
+ * What each source is there for, since every one of them is a hole if it is
+ * not needed:
+ *
+ *  - `script-src blob:` — live dictation loads its AudioWorklet from a blob
+ *    URL (`lib/liveDictation.ts`), and a worklet is governed by script-src.
+ *    Only script already running here can mint one.
+ *  - `style-src 'unsafe-inline'` — React `style` attributes and the `<style>`
+ *    mermaid writes into every SVG it renders.
+ *  - `img-src https:` — remote images in a transcript. The guard against an
+ *    image being a beacon (the agent can be talked into writing a URL that
+ *    carries data out) is that a remote image only loads when tapped; CSP is
+ *    the second layer, and it cannot tell a tapped image from an untapped one.
+ *    `data:`/`blob:` are local files and attachments.
+ *  - `media-src data:` — server-side text-to-speech comes back as a data URL
+ *    and is played with `new Audio()` (`lib/audio.ts`).
+ *  - `connect-src` — `'self'` plus this host's own `ws:`/`wss:` spelled out.
+ *    CSP3 has `'self'` match a same-host WebSocket, but older WebKit did not,
+ *    and on a browser like that the gateway socket — the whole app — would be
+ *    refused. The Host is checked for shape before being repeated in a
+ *    header; a request without a usable one gets the bare schemes instead.
+ *  - `frame-ancestors 'none'` — nothing frames the agent's controls.
+ */
+export function cspFor(scriptHashes: readonly string[], host: string | undefined): string {
+  const sockets =
+    host && SAFE_HOST.test(host) ? `ws://${host} wss://${host}` : 'ws: wss:';
+  return [
+    "default-src 'self'",
+    `script-src 'self' blob: ${scriptHashes.join(' ')}`.trim(),
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "media-src 'self' data: blob:",
+    "font-src 'self' data:",
+    `connect-src 'self' ${sockets}`,
+    "worker-src 'self'",
+    "manifest-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+  ].join('; ');
+}
+
+async function send(
+  e: Entry,
+  urlPath: string,
+  accept: string | undefined,
+  inm: string | undefined,
+  host?: string,
+) {
   const enc = negotiate(accept, e);
   const etag = etagOf(e, enc);
 
@@ -337,6 +445,13 @@ async function send(e: Entry, urlPath: string, accept: string | undefined, inm: 
    * as whatever the browser decided it was.
    */
   headers.set('X-Content-Type-Options', 'nosniff');
+
+  if (e.type.startsWith('text/html')) {
+    headers.set('Content-Security-Policy', cspFor(await scriptHashesOf(e), host));
+    // Transcripts are full of links out, and a URL inside this app — a session
+    // id, a file path in the workspace — is nobody else's business.
+    headers.set('Referrer-Policy', 'no-referrer');
+  }
 
   if (inm && inm.split(',').some((t) => t.trim() === etag)) {
     return new Response(null, { status: 304, headers });
@@ -362,14 +477,15 @@ staticRouter.get('*', async (c, next) => {
   const urlPath = new URL(c.req.url).pathname;
   const accept = c.req.header('accept-encoding');
   const inm = c.req.header('if-none-match');
+  const host = c.req.header('host');
 
   const hit = await fresh(urlPath);
-  if (hit) return send(hit, urlPath, accept, inm);
+  if (hit) return send(hit, urlPath, accept, inm, host);
 
   // Unknown path → SPA route. Never fall back for API calls.
   if (urlPath.startsWith('/api/') || urlPath.startsWith('/healthz')) return next();
 
   const shell = await fresh('/index.html');
   if (!shell) return next();
-  return send(shell, '/index.html', accept, inm);
+  return send(shell, '/index.html', accept, inm, host);
 });

@@ -1112,7 +1112,10 @@
   cursor: zoom-in;
 }
 
-.mermaid svg { max-width: none; height: auto; }
+/* The diagram is an <img> (see `chat/MermaidBlock.tsx`) carrying its natural
+   size: fit the column, never upscale — what mermaid's own inline
+   `max-width` did when the SVG was in the page. */
+.mermaid img { display: block; max-width: 100%; height: auto; }
 
 .mermaid--pending {
   color: var(--text-faint);
@@ -1166,7 +1169,7 @@
   min-width: 0;
 }
 
-.zoom__diagram svg { max-width: none; height: auto; }
+.zoom__diagram img { display: block; max-width: 100%; height: auto; }
 
 .zoom__image {
   display: block;
@@ -1446,6 +1449,24 @@
   color: var(--warn);
   text-decoration: none;
   cursor: pointer;
+}
+
+/* A remote image waiting for consent (`chat/RemoteImage.tsx`). Compact on
+   purpose: it is a question, not a picture-shaped hole. */
+.chat-image--remote {
+  margin: 0 0 0.6em;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: var(--type-detail);
+  color: var(--text-dim);
+  text-align: left;
+  word-break: break-all;
+  cursor: pointer;
+}
+
+.chat-image--remote:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* A user bubble's attachments sit above the caption, right-aligned with it. */

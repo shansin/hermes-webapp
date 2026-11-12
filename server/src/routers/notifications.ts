@@ -13,12 +13,43 @@
  */
 import { Hono } from 'hono';
 
-import { clearEntries, lastReadAt, listEntries, markRead, unreadCount } from '../push/feed.js';
+import { clearEntries, feedVersion, lastReadAt, listEntries, markRead, unreadCount } from '../push/feed.js';
 import { log } from '../log.js';
 
 export const notificationsRouter = new Hono();
 
+/**
+ * Whether an `If-None-Match` names `tag`, by the weak comparison RFC 9110
+ * prescribes for it. Weak because the tag does not survive the trip unchanged:
+ * `compress()` in index.ts prefixes `W/` when it gzips the body, and so does
+ * Cloudflare when it re-encodes one, and the browser hands back whichever it
+ * was given.
+ */
+function matches(inm: string | undefined, tag: string): boolean {
+  if (!inm) return false;
+  if (inm.trim() === '*') return true;
+  const opaque = tag.replace(/^W\//, '');
+  return inm.split(',').some((t) => t.trim().replace(/^W\//, '') === opaque);
+}
+
+/**
+ * Conditional, so the poll is nearly free.
+ *
+ * Every open tab refetches this every 60s for the badge (`useUnreadCount`),
+ * and the whole feed is a few hundred KB. It changes a handful of times a day.
+ * `no-cache` is what makes the saving automatic: the browser keeps the body
+ * and revalidates it on every fetch, sending `If-None-Match` itself and handing
+ * the cached 200 back to the page on a 304 — so the client code is a plain
+ * `fetch` and knows none of this. `no-store` would forbid exactly that.
+ */
 notificationsRouter.get('/push/feed', (c) => {
+  // Read before the body is built, and the body from the same tick: nothing
+  // can mutate the feed in between on a single-threaded loop.
+  const etag = `"${feedVersion()}"`;
+  c.header('ETag', etag);
+  c.header('Cache-Control', 'no-cache');
+  if (matches(c.req.header('if-none-match'), etag)) return c.body(null, 304);
+
   const entries = listEntries();
   return c.json({
     entries,

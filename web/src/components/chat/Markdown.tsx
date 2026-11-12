@@ -3,6 +3,11 @@
  *
  * Code blocks get their own header with the language and a copy button —
  * selecting text precisely on a phone is painful, so copy has to be a tap.
+ *
+ * The text is the model's, so it is untrusted: nothing in it may make the
+ * phone send a request by being rendered. Images from another origin wait for
+ * a tap (`RemoteImage`), and diagrams are drawn as inert images
+ * (`MermaidBlock`).
  */
 import { memo, useState, type ComponentProps, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
@@ -12,6 +17,7 @@ import { Link } from 'react-router-dom';
 import { IconCheck, IconCopy } from '../shared/Icons';
 import { MermaidBlock } from './MermaidBlock';
 import { LocalImage } from './LocalImage';
+import { RemoteImage, remoteImageHost } from './RemoteImage';
 import { localImagePath } from '../../lib/localImages';
 import { filesHref, inlineCodePath, resolveFilePath } from '../../lib/fileLinks';
 import { useSession } from '../../store/session';
@@ -160,9 +166,14 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
             // `file://` is unreachable from a page served over http, and a
             // bare absolute path resolves against the proxy's own origin and
             // 404s. Both become an authenticated read instead.
-            const local = localImagePath(typeof src === 'string' ? src : undefined, cwd);
+            const url = typeof src === 'string' ? src : undefined;
+            const local = localImagePath(url, cwd);
             if (local) return <LocalImage path={local} alt={alt} />;
-            return <img className="chat-image" src={typeof src === 'string' ? src : undefined} alt={alt ?? ''} />;
+            // Anything on another origin waits for a tap: rendering it would
+            // send a request whose URL the model wrote. See `RemoteImage`.
+            const host = url ? remoteImageHost(url) : null;
+            if (url && host) return <RemoteImage src={url} host={host} alt={alt} />;
+            return <img className="chat-image" src={url} alt={alt ?? ''} />;
           },
           a({ children, href }) {
             /* `workspace://path` is how the agent points at a file it touched,
@@ -175,8 +186,11 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
             if (local) {
               return <Link to={filesHref(local)}>{children}</Link>;
             }
+            // A link is a tap, so unlike an image it can't leak on render; the
+            // rel still matters once it is followed — no `window.opener` for
+            // the page it opens, and no referrer naming this proxy.
             return (
-              <a href={href} target="_blank" rel="noreferrer noopener">
+              <a href={href} target="_blank" rel="noopener noreferrer">
                 {children}
               </a>
             );

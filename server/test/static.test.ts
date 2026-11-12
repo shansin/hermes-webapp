@@ -12,6 +12,7 @@ import { mkdtemp, mkdir, writeFile, rm, utimes } from 'node:fs/promises';
 import { gunzipSync, brotliDecompressSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 let dist: string;
 let staticRouter: typeof import('../src/static.js')['staticRouter'];
@@ -326,5 +327,112 @@ describe('security headers', () => {
   it('stops browsers sniffing a content type', async () => {
     const res = await get('/index.html');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  const directives = (res: Response) =>
+    Object.fromEntries(
+      (res.headers.get('content-security-policy') ?? '')
+        .split(';')
+        .map((d) => d.trim().split(/\s+/))
+        .filter((d) => d[0])
+        .map(([name, ...sources]) => [name!, sources]),
+    );
+
+  it('puts a Content-Security-Policy and Referrer-Policy on the shell', async () => {
+    const res = await get('/index.html');
+    const csp = directives(res);
+    expect(csp['default-src']).toEqual(["'self'"]);
+    expect(csp['object-src']).toEqual(["'none'"]);
+    expect(csp['frame-ancestors']).toEqual(["'none'"]);
+    expect(csp['base-uri']).toEqual(["'self'"]);
+    // The directive that would let injected markup run.
+    expect(csp['script-src']).not.toContain("'unsafe-inline'");
+    expect(csp['script-src']).not.toContain("'unsafe-eval'");
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+  });
+
+  /* A client-side route reload is the shell too, and the commonest way in. */
+  it('puts the same policy on the SPA fallback', async () => {
+    const res = await get('/chat/some-session');
+    expect(res.headers.get('content-security-policy')).toContain("default-src 'self'");
+  });
+
+  /* A 304 refreshes the stored headers; a policy missing from it is not
+     removed, but one that changed would never arrive. */
+  it('carries the policy on a 304 as well', async () => {
+    const etag = (await get('/index.html')).headers.get('etag')!;
+    const res = await get('/index.html', { 'if-none-match': etag });
+    expect(res.status).toBe(304);
+    expect(res.headers.get('content-security-policy')).toContain("default-src 'self'");
+  });
+
+  it('leaves non-HTML responses without a document policy', async () => {
+    const res = await get('/assets/index-abc123.js');
+    expect(res.headers.get('content-security-policy')).toBeNull();
+  });
+
+  /* `'self'` covers a same-host socket in CSP3, but not in older WebKit, so
+     the gateway socket's own address is spelled out. */
+  it('admits WebSockets to this host only', async () => {
+    const csp = directives(await get('/index.html', { host: 'hermes.shsin.blog' }));
+    expect(csp['connect-src']).toEqual(["'self'", 'ws://hermes.shsin.blog', 'wss://hermes.shsin.blog']);
+    const lan = directives(await get('/index.html', { host: '192.168.1.20:3000' }));
+    expect(lan['connect-src']).toContain('ws://192.168.1.20:3000');
+  });
+
+  it('never repeats a malformed Host into the header', async () => {
+    const csp = directives(await get('/index.html', { host: "evil.example; script-src 'unsafe-inline'" }));
+    expect(csp['connect-src']).toEqual(["'self'", 'ws:', 'wss:']);
+    expect(csp['script-src']).not.toContain("'unsafe-inline'");
+  });
+
+  /* The theme boot script in index.html: hashed, so it runs without
+     `'unsafe-inline'` — and re-hashed when a rebuild changes it under a
+     running process, or the new one is blocked until a restart. */
+  it('admits the shell’s inline script by hash, and follows a rebuild', async () => {
+    const sha = (text: string) => `'sha256-${createHash('sha256').update(text).digest('base64')}'`;
+    const html = (script: string) => `<!doctype html><head><script>${script}</script></head>`;
+    const v1 = 'document.documentElement.dataset.theme="dark"';
+    const v2 = 'document.documentElement.dataset.theme="light"';
+    try {
+      await writeFile(join(dist, 'index.html'), html(v1));
+      const future = new Date(Date.now() + 10_000);
+      await utimes(join(dist, 'index.html'), future, future);
+      expect(directives(await get('/index.html'))['script-src']).toContain(sha(v1));
+
+      await writeFile(join(dist, 'index.html'), html(v2) + ' ');
+      const later = new Date(Date.now() + 20_000);
+      await utimes(join(dist, 'index.html'), later, later);
+      const after = directives(await get('/index.html'))['script-src'];
+      expect(after).toContain(sha(v2));
+      expect(after).not.toContain(sha(v1));
+    } finally {
+      await writeFile(join(dist, 'index.html'), '<!doctype html><title>Hermes</title>');
+    }
+  });
+});
+
+describe('inlineScriptHashes', () => {
+  let inlineScriptHashes: typeof import('../src/static.js').inlineScriptHashes;
+  beforeAll(async () => {
+    inlineScriptHashes = (await import('../src/static.js')).inlineScriptHashes;
+  });
+  const sha = (text: string) => `'sha256-${createHash('sha256').update(text).digest('base64')}'`;
+
+  it('hashes the exact text between the tags', () => {
+    const body = '\n  (function () { var x = 1; })();\n';
+    expect(inlineScriptHashes(`<script>${body}</script>`)).toEqual([sha(body)]);
+  });
+
+  it('skips external scripts, which `self` already covers', () => {
+    expect(
+      inlineScriptHashes('<script type="module" crossorigin src="/assets/index-abc.js"></script>'),
+    ).toEqual([]);
+  });
+
+  /* The parser normalizes line endings before the script exists, and the
+     browser hashes what the parser produced. */
+  it('hashes CRLF line endings as the browser sees them', () => {
+    expect(inlineScriptHashes('<script>a();\r\nb();\r</script>')).toEqual([sha('a();\nb();\n')]);
   });
 });

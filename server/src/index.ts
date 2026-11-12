@@ -20,6 +20,7 @@
  * rest of `/api`).
  */
 import { Hono } from 'hono';
+import { compress } from 'hono/compress';
 import { serve } from '@hono/node-server';
 import { readFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
@@ -27,6 +28,7 @@ import { createServer as createHttpsServer } from 'node:https';
 
 import { config, accessEnabled, getToken, resolveToken, upstreamHttp, upstreamHost } from './config.js';
 import { requireAccess } from './auth.js';
+import { requireSameOrigin } from './origin.js';
 import { log } from './log.js';
 import { apiProxy } from './routers/apiProxy.js';
 import { pushRouter } from './routers/push.js';
@@ -45,7 +47,15 @@ import { checkoutCommit } from './hermesCheckout.js';
 const app = new Hono();
 
 /**
- * The gate, first in line. Registered before every route — including
+ * A write from another origin is refused before anything else looks at it. The
+ * proxy rewrites Origin to loopback for Hermes, which disarms Hermes's own
+ * cross-origin check; this is that check, where the real header still exists.
+ * See `origin.ts` — the WebSocket upgrade path runs the same rule separately.
+ */
+app.use('*', requireSameOrigin);
+
+/**
+ * The gate, first in line among the credential checks. Registered before every route — including
  * `/healthz`, which `requireAccess` exempts itself rather than relying on
  * being declared above this line, so reordering the routes below can never
  * quietly open a door.
@@ -149,6 +159,17 @@ app.get('/healthz', async (c) => {
     restartNeeded: Boolean(commit && onDisk && commit !== onDisk),
   });
 });
+
+/**
+ * Compression for the JSON this process writes itself, and only that. The
+ * updates feed is the case that matters — a few hundred rows, ~450 KB, polled
+ * every minute — and it compresses ~10×. Not `/api/*`: those bodies are
+ * streamed through from Hermes (SSE, file downloads), and buffering them into
+ * a compressor would hold back every event until a block filled. Not the
+ * static router either, which precompresses (and brotli) on its own.
+ */
+app.use('/push/*', compress());
+app.use('/healthz', compress());
 
 app.route('/', shareRouter);
 app.route('/', pushRouter);

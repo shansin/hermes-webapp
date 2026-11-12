@@ -2,7 +2,8 @@
 #
 # Start Hem.
 #
-#   1. make sure the Hermes backend is up on loopback (start it if not)
+#   1. make sure the Hermes backend is up on loopback (start it if not —
+#      via hermes-backend.service when that unit is installed)
 #   2. make sure the web app is built
 #   3. optionally publish it over Tailscale (TAILSCALE=1)
 #   4. run the LAN-facing proxy, replacing one already on the port
@@ -16,7 +17,8 @@
 #   TAILSCALE=1 bash start.sh  # with the HTTPS front
 #   ENV_FILE=.env.public bash start.sh   # the Cloudflare Tunnel + Access deployment
 #
-# Everything is configurable through .env — see .env.example.
+# Everything is configurable through .env — see .env.example. The systemd
+# deployment (hermes-backend + hermes-webapp units) is in deploy/README.md.
 
 set -euo pipefail
 
@@ -81,7 +83,7 @@ for arg in "$@"; do
   case "${arg}" in
     --bg|--background) BACKGROUND=1 ;;
     --status)          STATUS_ONLY=1 ;;
-    -h|--help)         sed -n '3,18p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help)         sed -n '3,21p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
     *)                 die "Unknown option: ${arg}" ;;
   esac
 done
@@ -102,12 +104,22 @@ healthy() {
 # That is exactly what an in-place `hermes update` leaves behind: the gateway
 # rewrites its own systemd unit, exits 75, systemd restarts it, and the
 # replacement backend comes up with a token nobody else knows.
-authed() {
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+auth_code() {
+  curl -s -o /dev/null -w '%{http_code}' -m 5 \
     ${HERMES_TOKEN:+-H "Authorization: Bearer ${HERMES_TOKEN}"} \
-    "${BACKEND}/api/sessions?limit=1" 2>/dev/null || echo 000)"
-  [ "${code}" = "200" ]
+    "${BACKEND}/api/sessions?limit=1" 2>/dev/null || echo 000
+}
+
+authed() {
+  [ "$(auth_code)" = "200" ]
+}
+
+# Positively refused, as opposed to merely not-200: a backend busy enough to
+# time out the probe (000) or failing a request (5xx) holds the right token, and
+# restarting it over that would kill the turn that is keeping it busy. Used
+# where the answer to "not authed" is a restart under systemd.
+token_rejected() {
+  case "$(auth_code)" in 401|403) return 0 ;; *) return 1 ;; esac
 }
 
 # The proxy's own endpoint, as opposed to the backend's /api/health above: a
@@ -132,6 +144,40 @@ access_configured() {
   [ -n "${ACCESS_TEAM_DOMAIN:-}" ] && [ -n "${ACCESS_AUD:-}" ] && [ -n "${ACCESS_ALLOWED_EMAILS:-}" ]
 }
 
+# --- the backend's own unit ----------------------------------------------------
+#
+# Where hermes-backend.service is installed (deploy/README.md), systemd owns the
+# backend and this script never spawns one: it asks systemd to start the unit
+# and waits. Spawning it here put Hermes inside whatever launched start.sh — in
+# the hermes-webapp unit that was the proxy's cgroup, so every proxy restart,
+# deploy or crash SIGTERMed the agent mid-turn, and a backend that died on its
+# own was restarted by nothing. The nohup path below stays for machines without
+# the unit (a laptop, a dev box).
+BACKEND_UNIT=hermes-backend.service
+
+backend_unit_installed() {
+  command -v systemctl >/dev/null 2>&1 &&
+    systemctl --user cat "${BACKEND_UNIT}" >/dev/null 2>&1
+}
+
+backend_unit_state() {
+  systemctl --user is-active "${BACKEND_UNIT}" 2>/dev/null || true
+}
+
+# The systemd unit a PID belongs to, from its cgroup path ("" off Linux or when
+# it is in none). Answers "is the thing on the backend port the unit's Hermes,
+# or a leftover in hermes-webapp's cgroup / a hand-started one?".
+pid_unit() {
+  grep -oE '[^/]+\.service' "/proc/$1/cgroup" 2>/dev/null | tail -n 1 || true
+}
+
+backend_listener_unit() {
+  local pid
+  pid="$(pids_on_port "${HERMES_PORT}" | head -n 1)"
+  [ -n "${pid}" ] && pid_unit "${pid}"
+  return 0
+}
+
 proxy_up() {
   curl -fsS -m 3 "http://127.0.0.1:${PROXY_PORT}/healthz" >/dev/null 2>&1
 }
@@ -140,7 +186,7 @@ proxy_up() {
 #
 # Not by command line and not by environment: the server reads PROXY_PORT out
 # of .env itself, so it does not reliably appear in the process environment,
-# and the tree is pnpm -> tsx -> node.
+# and the command line is just `node --import tsx src/index.ts`.
 #
 # The trailing `|| true` matters: `grep` exits non-zero when nothing is
 # listening, and under `set -o pipefail` that would propagate out of the
@@ -173,7 +219,8 @@ stop_proxy() {
   # shellcheck disable=SC2086
   kill ${pids} 2>/dev/null || true
 
-  # Killing the listener is enough: tsx exits with it and pnpm follows.
+  # Killing the listener is enough: it is the whole proxy (node, with tsx's
+  # loader in-process — no pnpm or tsx CLI wrapper above it any more).
   for _ in $(seq 1 20); do
     port_free && return 0
     sleep 0.5
@@ -248,6 +295,27 @@ if [ "${STATUS_ONLY}" = "1" ]; then
   else
     warn "x Hermes backend down"
   fi
+  if backend_unit_installed; then
+    _state="$(backend_unit_state)"
+    _enabled="$(systemctl --user is-enabled "${BACKEND_UNIT}" 2>/dev/null || true)"
+    _owner="$(backend_listener_unit)"
+    if [ "${_state}" = "active" ]; then
+      bold "* ${BACKEND_UNIT}: ${_state} (${_enabled:-unknown})"
+    else
+      warn "x ${BACKEND_UNIT}: ${_state:-unknown} (${_enabled:-unknown}) — journalctl --user -u ${BACKEND_UNIT%.service}"
+    fi
+    # The pre-split layout, or a hand-started backend: it will die with whatever
+    # cgroup it is in, and the unit cannot start while it holds the port.
+    if [ -n "${_owner}" ] && [ "${_owner}" != "${BACKEND_UNIT}" ]; then
+      warn "! The backend on :${HERMES_PORT} runs in ${_owner}, not ${BACKEND_UNIT}."
+      [ "${_owner}" = "hermes-webapp.service" ] &&
+        warn "  Pre-migration layout: the next hermes-webapp restart kills it once (see deploy/README.md)."
+    fi
+  else
+    echo "  (no ${BACKEND_UNIT} — start.sh launches Hermes itself, under whatever runs start.sh)"
+    [ "$(backend_listener_unit)" = "hermes-webapp.service" ] &&
+      warn "! The backend runs inside hermes-webapp.service: every proxy restart kills it. deploy/README.md splits them."
+  fi
   proxy_up  && bold "* Proxy up on ${PROXY_PORT}"                          || warn "x Proxy not running"
   if access_configured; then
     bold "* Access gate configured (${ACCESS_TEAM_DOMAIN})"
@@ -285,6 +353,73 @@ stop_backend() {
   [ -n "${pids}" ] && kill -9 ${pids} 2>/dev/null || true
   sleep 1
 }
+
+# The backend is hermes-backend.service's: ask systemd for it, never spawn it.
+#
+# The token has to be written down for this to work. The unit and the proxy are
+# started independently, so a token minted here per run (the fallback path
+# below) would reach only the proxy; deploy/hermes-backend.sh reads HERMES_TOKEN
+# from the same .env (+ ENV_FILE) and exports it as
+# HERMES_DASHBOARD_SESSION_TOKEN.
+start_backend_unit() {
+  local owner i
+
+  [ -n "${HERMES_TOKEN}" ] || die "${BACKEND_UNIT} is installed but HERMES_TOKEN is empty.
+  The unit's Hermes adopts HERMES_TOKEN from .env and the proxy authenticates with
+  it, so it must be set there (deploy/install.sh generates one), then:
+    systemctl --user restart ${BACKEND_UNIT%.service}"
+
+  if healthy && token_rejected; then
+    owner="$(backend_listener_unit)"
+    if [ "${owner}" = "${BACKEND_UNIT}" ]; then
+      # The unit's own Hermes, launched before HERMES_TOKEN changed. A restart
+      # re-reads .env. Blocking: the stop can take up to TimeoutStopSec.
+      warn "! ${BACKEND_UNIT} is up but rejects our token — restarting it to re-read .env."
+      systemctl --user restart "${BACKEND_UNIT}" || die "systemctl --user restart ${BACKEND_UNIT} failed."
+    else
+      # A backend someone else started (an update's restart, a hand-run
+      # `hermes serve`, the pre-split one in hermes-webapp's cgroup): its token
+      # is unknowable, and it holds the port the unit needs.
+      warn "! The backend on ${HERMES_PORT} (${owner:-not in any unit}) rejects our token — reclaiming the port for ${BACKEND_UNIT}."
+      stop_backend
+    fi
+  fi
+
+  if healthy; then
+    bold "✓ Hermes backend already running on ${HERMES_HOST}:${HERMES_PORT} (${BACKEND_UNIT}: $(backend_unit_state))"
+    owner="$(backend_listener_unit)"
+    if [ -n "${owner}" ] && [ "${owner}" != "${BACKEND_UNIT}" ]; then
+      warn "  ! …but it runs in ${owner}, not ${BACKEND_UNIT}, so it dies with that."
+      warn "    Restart ${owner%.service} once when no turn is running to hand it over (deploy/README.md)."
+    fi
+  else
+    bold "→ Starting ${BACKEND_UNIT}…"
+    # --no-block: the unit may be sitting out RestartSec, or queued behind its
+    # own After= ordering at boot; health is the thing worth waiting on.
+    systemctl --user start --no-block "${BACKEND_UNIT}" \
+      || die "systemctl --user start ${BACKEND_UNIT} failed."
+    for i in $(seq 1 90); do
+      healthy && break
+      # `failed` only sticks for an exit the unit will not retry (78: config).
+      [ "${i}" -gt 3 ] && [ "$(backend_unit_state)" = "failed" ] && break
+      sleep 1
+    done
+    healthy || die "Hermes did not become healthy under ${BACKEND_UNIT} (state: $(backend_unit_state)). See:
+    journalctl --user -u ${BACKEND_UNIT%.service} -n 50
+    ${LOG_DIR}/hermes-serve.log"
+    bold "✓ Hermes backend ready (${BACKEND_UNIT})"
+  fi
+
+  authed || warn "  ! The backend still rejects HERMES_TOKEN. The unit reads .env + its own ENV_FILE
+    ($(systemctl --user show "${BACKEND_UNIT}" -p Environment --value 2>/dev/null | grep -oE 'ENV_FILE=[^ ]*' || echo 'ENV_FILE unset'));
+    this run read .env${ENV_FILE:+ + ${ENV_FILE}}. They must agree on HERMES_TOKEN."
+}
+
+if backend_unit_installed; then
+  start_backend_unit
+else
+# --- fallback: no hermes-backend.service (a laptop, a dev box) -----------------
+# Spawn Hermes ourselves. It lives and dies with whatever launched this script.
 
 if healthy && ! authed && [ -n "${HERMES_TOKEN}" ]; then
   # We hold a token, the backend will not take it, and its own token is
@@ -344,6 +479,8 @@ else
   healthy || die "Hermes did not become healthy. See ${SERVE_LOG}"
   bold "✓ Hermes backend ready"
 fi
+
+fi  # backend_unit_installed
 
 export HERMES_TOKEN
 
@@ -443,11 +580,20 @@ fi
 stop_proxy
 port_free || die "Port ${PROXY_PORT} is in use by: $(port_pids | tr '\n' ' ')"
 
+# node with tsx's ESM loader in-process, run from server/ (where tsx resolves
+# and its tsconfig lives) — the same as `pnpm --filter @hem/server start`, minus
+# the pnpm process (~135 MB) and the tsx CLI wrapper (~55 MB) that sat above it
+# for the life of the proxy and stretched every signal across three processes.
+# Keep in step with the `start` script in server/package.json.
+command -v node >/dev/null || die "node not found on PATH."
+PROXY_CMD=(node --import tsx src/index.ts)
+
 if [ "${BACKGROUND}" = "1" ]; then
   mkdir -p "${LOG_DIR}"
   bold "→ Starting the proxy in the background…"
-  # setsid so it outlives this shell and its terminal.
-  setsid nohup pnpm --filter @hem/server start \
+  # setsid so it outlives this shell and its terminal. The redirect is opened
+  # here, before the subshell's cd, so a relative LOG_DIR still means the repo's.
+  ( cd server && exec setsid nohup "${PROXY_CMD[@]}" ) \
     >> "${LOG_DIR}/hem.log" 2>&1 < /dev/null &
 
   for _ in $(seq 1 60); do
@@ -463,5 +609,6 @@ if [ "${BACKGROUND}" = "1" ]; then
   report
 else
   report
-  exec pnpm --filter @hem/server start
+  cd server
+  exec "${PROXY_CMD[@]}"
 fi

@@ -15,6 +15,10 @@
  * `Origin: http://192.168.1.50:3000`, which fails that check. We therefore open
  * the upstream socket with both headers pinned to the loopback address.
  *
+ * Pinning them also disarms that check, which existed to stop a foreign page
+ * opening this socket — so the proxy runs it itself, against the browser's
+ * real headers, before bridging (`origin.ts`).
+ *
  * Frames are relayed verbatim in both directions — the gateway speaks
  * newline-delimited JSON-RPC and we deliberately do not parse or reframe it.
  */
@@ -121,6 +125,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { getToken, resolveToken, upstreamWs, upstreamHost, accessEnabled } from '../config.js';
 import { verifyAccess, nodeHeaders } from '../auth.js';
+import { refuseUpgrade } from '../origin.js';
 import { log } from '../log.js';
 
 /** Paths the Hermes backend exposes as WebSockets and we forward as-is. */
@@ -208,6 +213,19 @@ export function attachWsProxy(server: {
      */
     const cfRay = req.headers['cf-ray'];
     const ray = typeof cfRay === 'string' ? cfRay : undefined;
+
+    // Origin before anything else. The upstream leg is opened with it
+    // rewritten to loopback, which is what Hermes checks it against — so its
+    // own guard against a foreign page opening this socket passes every time,
+    // and this is the only place the browser's real Origin is still visible.
+    // In LAN mode nothing else stands between any web page the user has open
+    // and the agent. See `origin.ts`.
+    if (refuseUpgrade(pathname, req.headers)) {
+      // Answered, not reset — the same reason as the Access refusal below.
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      socket.destroy();
+      return;
+    }
 
     if (accessEnabled) {
       const result = await verifyAccess(nodeHeaders(req.headers));

@@ -214,4 +214,17 @@ describe('MoaConfigSchema', () => {
     expect(parsed.presets.default.aggregator).toMatchObject({ provider: '', model: '' });
     expect(parsed.presets.default.max_tokens).toBe(4096);
   });
+
+  /* zod 4's `.default()` hands back its value unparsed; the aggregator's is a
+     `.prefault()` so the slot schema still fills in `enabled`. */
+  it('fills a missing aggregator through the slot schema', () => {
+    const parsed = MoaConfigSchema.parse({ presets: { default: {} } });
+    expect(parsed.presets.default.aggregator).toEqual({ provider: '', model: '', enabled: true });
+  });
+
+  it('keeps fields it does not know about', () => {
+    const parsed = MoaConfigSchema.parse({ presets: { default: { future: 1 } }, extra: 'x' });
+    expect(parsed).toMatchObject({ extra: 'x' });
+    expect(parsed.presets.default).toMatchObject({ future: 1 });
+  });
 });

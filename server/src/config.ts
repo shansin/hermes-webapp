@@ -76,6 +76,12 @@ const Schema = z.object({
     .optional()
     .transform((u) => u?.replace(/\/+$/, '')),
   /**
+   * Origins allowed to drive the proxy beyond its own, comma-separated — see
+   * `origin.ts`. Only needed for a front that rewrites `Host`; `*` switches
+   * the check off.
+   */
+  ALLOWED_ORIGINS: z.string().default(''),
+  /**
    * Cloudflare Access — the public-endpoint gate.
    *
    * Access performs the Google sign-in at Cloudflare's edge and forwards a

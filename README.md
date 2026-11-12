@@ -86,7 +86,11 @@ Everything is optional and documented in `.env.example`.
 Hermes protects its API with a per-process session token. There are two paths:
 
 - **We start Hermes** (the usual case): `start.sh` generates a token, exports it
-  as `HERMES_DASHBOARD_SESSION_TOKEN`, and the backend adopts it.
+  as `HERMES_DASHBOARD_SESSION_TOKEN`, and the backend adopts it. Under systemd
+  (`hermes-backend.service`, see [Surviving a reboot](#surviving-a-reboot)) the
+  backend is started independently of the proxy, so nothing can hand a minted
+  token from one to the other: `HERMES_TOKEN` must be set in `.env`, which both
+  units read (`deploy/install.sh` generates one if it is missing).
 - **Hermes is already running**: if it's `hermes dashboard`, the proxy scrapes
   the token out of the SPA HTML it serves on loopback. If it's a headless
   `hermes serve` you started yourself, set `HERMES_TOKEN` in `.env` to the value
@@ -111,7 +115,10 @@ surface that *does* need the token.
 `start.sh` handles this: it probes an authenticated endpoint as well as the
 health one, and a backend that is up but refuses our token gets stopped and
 restarted with the token exported, since that is the only way the two can agree
-again. So the fix is to re-run it:
+again. With `hermes-backend.service` installed, a foreign listener is stopped and
+the unit started in its place, and the unit's own Hermes is restarted through
+systemd (it re-reads `.env`) — and only on an outright 401/403, never on a slow
+answer. So the fix is to re-run it:
 
 ```bash
 bash start.sh --bg       # reclaims the backend and reports what it did
@@ -442,7 +449,7 @@ detection looks the way it does.
 
 `setup_hermes_shsin_blog.sh` stands the whole public deployment back up on a
 fresh machine — dependencies, web build, `cloudflared`, the tunnel, the Access
-application and its policy, `.env.public`, and both systemd services. It assumes
+application and its policy, `.env.public`, and the systemd services. It assumes
 only that Hermes itself is installed, needs no root, and is safe to re-run.
 
 ```bash
@@ -468,7 +475,7 @@ The one thing no script can do is the Google OAuth client — Google exposes no
 API for creating Web-application OAuth clients. If the identity provider is
 missing, the script prints the exact steps and the redirect URI, then stops.
 
-It finishes with seven checks, including the one that matters most: that
+It finishes with eight checks, including the one that matters most: that
 `/api/sessions` on the origin returns **401**. A 200 there would mean the proxy
 is trusting the tunnel blindly.
 
@@ -476,27 +483,44 @@ is trusting the tunnel blindly.
 
 `start.sh` alone does not: it detaches the proxy, which dies with the machine,
 and the tunnel would come back up to find nothing behind it — a Cloudflare 502
-that looks like Cloudflare's fault when nothing is listening. Two systemd
+that looks like Cloudflare's fault when nothing is listening. Three systemd
 **user** services close that (no root; `loginctl enable-linger $USER` is what
 makes user services start at boot without logging in):
 
 ```bash
-systemctl --user enable --now cloudflared      # the tunnel
-systemctl --user enable --now hermes-webapp    # start.sh, which also starts Hermes
+bash deploy/install.sh                          # copy Hem's two units from deploy/
+systemctl --user enable --now cloudflared       # the tunnel
+systemctl --user enable --now hermes-backend    # `hermes serve`, on its own
+systemctl --user enable --now hermes-webapp     # start.sh -> the proxy
 ```
 
-`hermes-webapp.service` runs `start.sh` in the foreground with
-`ENV_FILE=.env.public` and `SKIP_BUILD=1`, so it health-checks the Hermes
-backend and starts it if needed, then execs the proxy. Skipping the build keeps
-boot fast — run `pnpm build` yourself after changing code.
+The backend and the proxy are **separate units on purpose**. `hermes-backend`
+runs `hermes serve` through `deploy/hermes-backend.sh` (which loads `.env`,
+hands `HERMES_TOKEN` over as the session token, and appends to
+`.logs/hermes-serve.log`) and is restarted by systemd if it dies.
+`hermes-webapp` runs `start.sh` in the foreground with `ENV_FILE=.env.public`
+and `SKIP_BUILD=1`; with the backend unit installed, `start.sh` never spawns
+Hermes itself — it asks systemd to start `hermes-backend` if it is down, waits
+for health, then execs `node` on the proxy. Restarting the proxy (a deploy, a
+crash) therefore leaves the agent and its running turns alone; when Hermes was
+launched from inside the proxy's unit, every proxy restart killed it. Skipping
+the build keeps boot fast — run `pnpm build` yourself after changing code.
 
 ```bash
-systemctl --user status hermes-webapp
-journalctl --user -u hermes-webapp -f
+systemctl --user status hermes-backend hermes-webapp
+journalctl --user -u hermes-webapp -f      # the proxy
+tail -f .logs/hermes-serve.log             # the backend
 ```
 
-To take it down: `systemctl --user disable --now hermes-webapp`, then drop
-`ENV_FILE` and run `bash start.sh`. Nothing about the LAN setup was changed.
+Per-machine settings (node's PATH, the repo directory, the computer-use display
+variables) live in `~/.config/systemd/user/<unit>.d/override.conf`, which the
+installer writes once and never overwrites. `deploy/README.md` has the details,
+the one-time migration from the old single-unit layout, and how to roll back.
+
+To take it down: `systemctl --user disable --now hermes-webapp hermes-backend`,
+then drop `ENV_FILE` and run `bash start.sh` — with no backend unit running it
+starts Hermes itself, as on any machine without the units. Nothing about the
+LAN setup was changed.
 
 ## Security
 

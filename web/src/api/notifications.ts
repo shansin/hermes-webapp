@@ -46,6 +46,17 @@ interface FeedResponse {
 export const notificationKeys = { all: ['notifications'] as const };
 
 /**
+ * One read of the feed. A plain `fetch` in the default cache mode, and that is
+ * load-bearing: the proxy tags the feed and marks it `no-cache`, so the
+ * browser revalidates every poll with `If-None-Match` on its own and hands
+ * back its stored 200 on a 304 — the 60s badge poll costs headers rather than
+ * the whole feed. A `cache: 'no-store'` (or `'reload'`) here would quietly put
+ * the full download back on every tick. The service worker leaves `/push/*`
+ * alone (no runtime route matches it), so nothing in between interferes.
+ */
+export const fetchFeed = () => api.get<FeedResponse>('/push/feed');
+
+/**
  * The feed itself, and the badge, from one query.
  *
  * Deliberately one request rather than a separate count endpoint: the badge is
@@ -55,7 +66,7 @@ export const notificationKeys = { all: ['notifications'] as const };
 function useFeed() {
   return useQuery({
     queryKey: notificationKeys.all,
-    queryFn: () => api.get<FeedResponse>('/push/feed'),
+    queryFn: fetchFeed,
     /**
      * The socket pushes an invalidation the moment a job finishes (see
      * `useEventToasts`), so this is only the fallback for the case that

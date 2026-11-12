@@ -74,13 +74,16 @@ export const MoaSlotSchema = z
     reasoning_effort: z.string().nullish(),
     enabled: z.boolean().default(true),
   })
-  .passthrough();
+  .loose();
 export type MoaSlot = z.infer<typeof MoaSlotSchema>;
 
 export const MoaPresetSchema = z
   .object({
     reference_models: z.array(MoaSlotSchema).default([]),
-    aggregator: MoaSlotSchema.default({ provider: '', model: '' }),
+    /* `prefault`, not `default`: zod 4's default is returned as-is without
+       running the slot schema, so an absent aggregator would arrive without
+       `enabled`. A prefault is parsed, which is what zod 3's default did. */
+    aggregator: MoaSlotSchema.prefault({ provider: '', model: '' }),
     /** null = the parameter is omitted from the call, i.e. provider default. */
     reference_temperature: z.number().nullish(),
     aggregator_temperature: z.number().nullish(),
@@ -95,7 +98,7 @@ export const MoaPresetSchema = z
     fanout: z.string().nullish(),
     enabled: z.boolean().default(true),
   })
-  .passthrough();
+  .loose();
 export type MoaPreset = z.infer<typeof MoaPresetSchema>;
 
 /**
@@ -110,9 +113,9 @@ export const MoaConfigSchema = z
   .object({
     default_preset: z.string().default('default'),
     active_preset: z.string().default(''),
-    presets: z.record(MoaPresetSchema).default({}),
+    presets: z.record(z.string(), MoaPresetSchema).default({}),
   })
-  .passthrough();
+  .loose();
 export type MoaConfig = z.infer<typeof MoaConfigSchema>;
 
 /** An empty slot, for a reference being added before anything is picked. */

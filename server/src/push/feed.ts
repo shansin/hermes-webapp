@@ -281,6 +281,37 @@ export function flushFeed(): void {
 let seq = 0;
 
 /**
+ * Bumped on every change to what `GET /push/feed` returns — the entries and
+ * the read watermark — and nothing else. The route's ETag is built from it, so
+ * the badge's once-a-minute poll of a few hundred KB costs a 304 when nothing
+ * happened, which is nearly always.
+ *
+ * A counter rather than a hash of the body: hashing would mean serializing the
+ * whole feed to find out it need not be sent. The watermarks and run memory
+ * deliberately do not bump it — the sweeps touch those constantly, and none
+ * of it is in the response.
+ */
+let version = 0;
+const touched = () => {
+  version++;
+};
+
+/**
+ * Identifies this process's numbering, so a restart (version back at 0, the
+ * file perhaps edited meanwhile) can never answer a tag the last one issued.
+ */
+const epoch = `${process.pid.toString(36)}${Date.now().toString(36)}`;
+
+/**
+ * The feed's current version as an opaque token, for the route's ETag. Loads
+ * first: the counter only means something against state that has been read.
+ */
+export function feedVersion(): string {
+  const s = load();
+  return `${epoch}-${version}-${s.lastReadAt}`;
+}
+
+/**
  * Append one run to the feed, oldest first in storage.
  *
  * `at` is supplied by the caller because it is the moment the *run* ended, not
@@ -303,6 +334,7 @@ export function appendEntry(entry: FeedEntryInput): FeedEntry {
   rows.push(row);
   if (rows.length > MAX_ENTRIES) rows.splice(0, rows.length - MAX_ENTRIES);
   if (row.runId) markRunSeen(row.runId, false);
+  touched();
   persist();
   return row;
 }
@@ -334,6 +366,7 @@ export function appendUpdate(entry: FeedEntryInput): FeedEntry {
   ) {
     const row: FeedEntry = { ...newest, ...entry, id: newest.id };
     rows[rows.length - 1] = row;
+    touched();
     persist();
     return row;
   }
@@ -453,6 +486,7 @@ export function markRead(): void {
   const newest = s.entries.reduce((max, e) => Math.max(max, e.at), 0);
   if (newest <= s.lastReadAt) return;
   s.lastReadAt = newest;
+  touched();
   persist();
 }
 
@@ -474,6 +508,7 @@ export function clearEntries(): number {
   const removed = load().entries.length;
   if (!removed) return 0;
   state.entries = [];
+  touched();
   persist();
   return removed;
 }

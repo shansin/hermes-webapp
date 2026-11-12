@@ -622,7 +622,7 @@ export const useSession = create<SessionState>((set, get) => ({
 
       // The two delta cases are the only events on a per-token path — 30–60×
       // a second for the length of a turn. `TextDeltaSchema` is a
-      // `.passthrough()` object, so validating here allocated a fresh copy of
+      // `.loose()` object, so validating here allocated a fresh copy of
       // every delta payload; a shape check costs nothing and rejects exactly
       // the same things. The rest of the events stay on zod, where the
       // frequency is low and the payloads are worth checking properly.

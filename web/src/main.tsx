@@ -3,11 +3,17 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { registerSW } from 'virtual:pwa-register';
+import { z } from 'zod';
 import { App } from './App';
 
 import './styles/global.css';
 import './styles/chat.css';
 import './styles/viz.css';
+
+// zod 4 probes for `new Function` to JIT its object parsers; the CSP the
+// proxy sends forbids eval, so the probe only logs a violation per load.
+// Interpreted parsing is what it falls back to anyway — say so up front.
+z.config({ jitless: true });
 
 const queryClient = new QueryClient({
   defaultOptions: {

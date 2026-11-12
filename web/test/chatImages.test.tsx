@@ -11,7 +11,7 @@
  * authenticated file read rather than a request the browser cannot make.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
@@ -59,12 +59,17 @@ describe('images in a reply', () => {
     expect(img).toHaveAttribute('src', 'data:image/png;base64,AAAA');
   });
 
-  it('leaves a web image to the browser', async () => {
+  it('leaves a web image to the browser — once asked', async () => {
     render(
       <Wrap>
         <Markdown>{'![Logo](https://example.com/logo.png)'}</Markdown>
       </Wrap>,
     );
+
+    // Not fetched on render: a URL the model wrote is a request it chose.
+    // `remoteImages.test.tsx` covers the consent itself.
+    expect(screen.queryByAltText('Logo')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Load image from example.com: Logo' }));
 
     const img = await screen.findByAltText('Logo');
     expect(img).toHaveAttribute('src', 'https://example.com/logo.png');

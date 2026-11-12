@@ -21,22 +21,23 @@ export const CommandCatalogSchema = z
   .object({
     pairs: z.array(PairSchema).default([]),
     categories: z
-      .array(z.object({ name: z.string(), pairs: z.array(PairSchema).default([]) }).passthrough())
+      .array(z.object({ name: z.string(), pairs: z.array(PairSchema).default([]) }).loose())
       .default([]),
     /** Alias → canonical command, lower-cased keys. */
-    canon: z.record(z.string()).default({}),
+    canon: z.record(z.string(), z.string()).default({}),
     /** Per-skill provenance and observed usage, keyed by slash command. */
     skills: z
       .record(
+        z.string(),
         z
           .object({ origin: z.string().optional(), usage: z.number().optional() })
-          .passthrough(),
+          .loose(),
       )
       .default({}),
     skill_count: z.number().optional(),
     warning: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 export type CommandCatalog = z.infer<typeof CommandCatalogSchema>;
 
 export const CompletionItemSchema = z
@@ -47,7 +48,7 @@ export const CompletionItemSchema = z
     meta: z.string().default(''),
     kind: z.string().default('command'),
   })
-  .passthrough();
+  .loose();
 export type CompletionItem = z.infer<typeof CompletionItemSchema>;
 
 export const SlashCompletionsSchema = z
@@ -56,12 +57,12 @@ export const SlashCompletionsSchema = z
     /** Index in the typed text where `item.text` is spliced in. */
     replace_from: z.number().default(1),
   })
-  .passthrough();
+  .loose();
 export type SlashCompletions = z.infer<typeof SlashCompletionsSchema>;
 
 export const SlashExecResultSchema = z
   .object({ output: z.string().default(''), warning: z.string().optional() })
-  .passthrough();
+  .loose();
 export type SlashExecResult = z.infer<typeof SlashExecResultSchema>;
 
 /**
@@ -82,7 +83,7 @@ export const DispatchResultSchema = z
     target: z.string().optional(),
     name: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 export type DispatchResult = z.infer<typeof DispatchResultSchema>;
 
 export async function fetchCommandCatalog(): Promise<CommandCatalog> {

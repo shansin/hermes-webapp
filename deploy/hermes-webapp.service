@@ -1,0 +1,55 @@
+# Hem's proxy (+ the Cloudflare Access gate). The Hermes backend is NOT in this
+# unit any more — it is hermes-backend.service, pulled in by Wants= below.
+#
+# Installed by deploy/install.sh (which setup_hermes_shsin_blog.sh calls); see
+# deploy/README.md. Per-machine values (PATH to node, the repo directory) go in
+#   ~/.config/systemd/user/hermes-webapp.service.d/override.conf
+# which the installer writes once and never overwrites.
+
+[Unit]
+Description=Hem — proxy + Cloudflare Access gate
+After=network-online.target
+Wants=network-online.target
+After=cloudflared.service
+# Start the backend alongside, but do not tie their lifetimes together: Wants=
+# (not Requires=/BindsTo=) means restarting or stopping this unit leaves the
+# backend — and every turn it is running — alone. start.sh still waits for the
+# backend's health before it binds the proxy.
+Wants=hermes-backend.service
+After=hermes-backend.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Overridden per machine by the installer's override.conf.
+WorkingDirectory=%h/code/hermes-webapp
+# systemd does not run a login shell, so nvm's PATH additions are absent and
+# node would not be found. Name the paths rather than sourcing a profile — a
+# service that depends on shell rc files breaks the first time one changes.
+# The installer prepends node's (and pnpm's) directory in override.conf.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=ENV_FILE=.env.public
+# Boot stays fast; 'pnpm build' is a deliberate step after changing code.
+Environment=SKIP_BUILD=1
+# Foreground: start.sh checks the backend (asking systemd to start
+# hermes-backend.service if it is down — it never spawns Hermes itself while
+# that unit is installed), then execs node on the proxy directly, so the main
+# PID is the proxy and nothing else lives in this cgroup.
+ExecStart=/bin/bash start.sh
+Restart=always
+RestartSec=10
+# The proxy's own graceful shutdown (closing sockets, flushing push state) is
+# quick; it holds no agent work.
+TimeoutStopSec=15
+KillMode=control-group
+# The proxy alone is ~180 MB RSS after days up (node + tsx's loader + an esbuild
+# service at ~15 MB), versus ~375 MB when pnpm and the tsx CLI sat above it. Caps keep a leak from taking the box (and the
+# agent) down with it. If web/dist is missing, start.sh builds it in this unit
+# despite SKIP_BUILD=1, and a Vite build can exceed these — build by hand first.
+MemoryHigh=512M
+MemoryMax=1G
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

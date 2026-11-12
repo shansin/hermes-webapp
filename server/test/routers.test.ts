@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Hono } from 'hono';
+import { compress } from 'hono/compress';
 
 const dir = mkdtempSync(join(tmpdir(), 'hermes-routers-'));
 
@@ -336,6 +338,112 @@ describe('the cron feed endpoint', () => {
     );
     expect(await res.json()).toEqual({ ok: true, removed: 2 });
     expect(feed.listEntries()).toEqual([]);
+  });
+
+  /**
+   * The badge polls the whole feed once a minute from every open tab. It
+   * changes a few times a day, so nearly every poll should cost a 304 — and a
+   * 304 that is ever wrong means a badge that never moves, which nobody would
+   * trace back to a header.
+   */
+  describe('conditional requests', () => {
+    const getFeed = (headers: Record<string, string> = {}) =>
+      notificationsRouter.request(new Request('http://proxy.test/push/feed', { headers }));
+    const tagOf = async () => (await getFeed()).headers.get('etag')!;
+
+    it('tags the feed and asks the browser to revalidate every time', async () => {
+      const res = await getFeed();
+      expect(res.headers.get('etag')).toMatch(/^"[^"]+"$/);
+      // `no-cache`, not `no-store`: the browser has to keep the body to be
+      // able to send If-None-Match for it and reuse it on a 304.
+      expect(res.headers.get('cache-control')).toBe('no-cache');
+    });
+
+    it('answers 304 with no body while nothing has changed', async () => {
+      feed.appendEntry(entry({ runId: 'r1' }));
+      const etag = await tagOf();
+      const res = await getFeed({ 'if-none-match': etag });
+      expect(res.status).toBe(304);
+      expect(await res.text()).toBe('');
+      expect(res.headers.get('etag')).toBe(etag);
+    });
+
+    it.each([
+      ['a new entry', () => void feed.appendEntry(entry({ runId: 'r2', at: 5 }))],
+      [
+        'a repeat collapsing into the newest row',
+        () =>
+          void feed.appendUpdate(
+            entry({ runId: null, dedupeKey: 'k', at: 2, body: 'still down', source: 'system' }),
+          ),
+      ],
+      ['the screen marking it read', () => void feed.markRead()],
+      ['the feed being cleared', () => void feed.clearEntries()],
+    ])('sends the body again after %s', async (_label, mutate) => {
+      feed.appendUpdate(entry({ runId: null, dedupeKey: 'k', at: 1, source: 'system' }));
+      const etag = await tagOf();
+      mutate();
+      const res = await getFeed({ 'if-none-match': etag });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('etag')).not.toBe(etag);
+    });
+
+    /* The sweeps write these on every pass; none of it is in the response, so
+       none of it may cost the phone a download. */
+    it('does not change for bookkeeping the response does not contain', async () => {
+      feed.appendEntry(entry({ runId: 'r1' }));
+      const etag = await tagOf();
+      feed.setWatermark('kanban:t1', 'blocked');
+      feed.markRunSeen('r-other');
+      feed.markSeeded();
+      feed.markRead();
+      feed.markRead(); // the second is a no-op: nothing newer to watermark
+      const after = await tagOf();
+      expect((await getFeed({ 'if-none-match': after })).status).toBe(304);
+    });
+
+    /* A restart starts the counter again; a tag from the last process must
+       not match whatever this one happens to have reached. */
+    it('never reuses a tag across a restart', async () => {
+      const before = await tagOf();
+      feed.flushFeed();
+      vi.resetModules();
+      notificationsRouter = (await import('../src/routers/notifications.js')).notificationsRouter;
+      feed = await import('../src/push/feed.js');
+      // A different millisecond is all a fresh epoch needs.
+      await new Promise((r) => setTimeout(r, 2));
+      expect((await getFeed({ 'if-none-match': before })).status).toBe(200);
+    });
+
+    /* `compress()` weakens the tag when it gzips the body, and Cloudflare does
+       the same when it re-encodes, so the browser sends back `W/"…"`. */
+    it('matches the weakened tag a compressing hop hands the browser', async () => {
+      for (let i = 0; i < 20; i++) feed.appendEntry(entry({ runId: `r${i}`, body: 'x'.repeat(200) }));
+      const app = new Hono();
+      app.use('/push/*', compress());
+      app.route('/', notificationsRouter);
+
+      const first = await app.request(
+        new Request('http://proxy.test/push/feed', { headers: { 'accept-encoding': 'gzip' } }),
+      );
+      expect(first.headers.get('content-encoding')).toBe('gzip');
+      const weak = first.headers.get('etag')!;
+      expect(weak).toMatch(/^W\//);
+
+      const again = await app.request(
+        new Request('http://proxy.test/push/feed', {
+          headers: { 'accept-encoding': 'gzip', 'if-none-match': weak },
+        }),
+      );
+      expect(again.status).toBe(304);
+    });
+
+    it('accepts a list of tags and *', async () => {
+      const etag = await tagOf();
+      expect((await getFeed({ 'if-none-match': `"stale", ${etag}` })).status).toBe(304);
+      expect((await getFeed({ 'if-none-match': '*' })).status).toBe(304);
+      expect((await getFeed({ 'if-none-match': '"stale"' })).status).toBe(200);
+    });
   });
 
   /**

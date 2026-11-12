@@ -52,7 +52,7 @@ export const ActiveSubagentSchema = z
     owner_agent_session_id: z.string().nullish(),
     last_tool: z.string().nullish(),
   })
-  .passthrough();
+  .loose();
 export type ActiveSubagent = z.infer<typeof ActiveSubagentSchema>;
 
 export const DelegationStatusSchema = z
@@ -62,7 +62,7 @@ export const DelegationStatusSchema = z
     max_spawn_depth: z.number().optional(),
     max_concurrent_children: z.number().optional(),
   })
-  .passthrough();
+  .loose();
 export type DelegationStatus = z.infer<typeof DelegationStatusSchema>;
 
 export async function fetchDelegationStatus(): Promise<DelegationStatus> {

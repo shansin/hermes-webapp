@@ -3,26 +3,34 @@
  *
  * Shapes here were captured from live frames rather than inferred: the gateway
  * has no published schema, so each payload below was observed on the wire.
- * Everything is validated with a permissive zod schema (`.passthrough()` /
+ * Everything is validated with a permissive zod schema (`.loose()` /
  * optional fields) — a Hermes upgrade that adds a field must not break the app,
  * and an unknown event type is surfaced in the dev panel rather than thrown.
  */
 /**
  * A note on zod's weight, from the bundle audit.
  *
- * zod is ~130KB raw / ~13KB gzipped and sits in the **entry** chunk, third
- * behind react-dom and the app's own source. It was a candidate for a lazy
+ * zod sits in the **entry** chunk, third behind react-dom and the app's own
+ * source: ~13KB gzipped on zod 3, about 14KB more since the move to zod 4
+ * (forced by an advisory; eager total 168.5 → 182.9KB). It was a candidate for a lazy
  * boundary and is not one: these schemas validate gateway frames, the socket
  * opens in `App.tsx` on mount, and the first frame can arrive before a
  * dynamic import would resolve — so deferring it would mean either dropping
  * frames or hand-writing a second validator for the boot window, which is the
  * cost it was meant to save twice over.
  *
- * The reason it is large is that zod 3 does not tree-shake: the whole builder
- * API ships whether or not a schema uses it. Shrinking it means changing what
- * validates, not where it loads — `zod/mini`, or hand-rolled predicates —
- * which is a bigger decision than a chunk boundary and has not been made.
- * `pnpm analyze` reproduces the measurement.
+ * The reason it is large is that classic zod does not tree-shake: every
+ * schema carries the whole method-chaining API (zod 4's adds JSON Schema
+ * export and more) whether or not anything calls it. Shrinking it means
+ * changing what validates, not where it loads — `zod/mini`, the same engine
+ * with a functional API that does tree-shake (~7KB gzipped for shapes like
+ * these), or hand-rolled predicates — which is a bigger decision than a chunk
+ * boundary and has not been made. `pnpm analyze` reproduces the measurement.
+ *
+ * zod 4 notes for editing these: `.loose()` is what `.passthrough()` was;
+ * `z.record` takes a key schema; and `.default()` returns its value as-is
+ * rather than parsing it — use `.prefault()` where the default must pass
+ * through the schema (see `MoaPresetSchema.aggregator` in `api/moa.ts`).
  */
 import { z } from 'zod';
 
@@ -48,7 +56,7 @@ export const RpcEventSchema = z.object({
       session_id: z.string().optional(),
       payload: z.unknown().optional(),
     })
-    .passthrough(),
+    .loose(),
 });
 export type RpcEvent = z.infer<typeof RpcEventSchema>;
 
@@ -68,10 +76,10 @@ export const UsageSchema = z
     compressions: z.number().optional(),
     active_subagents: z.number().optional(),
   })
-  .passthrough();
+  .loose();
 export type Usage = z.infer<typeof UsageSchema>;
 
-export const TextDeltaSchema = z.object({ text: z.string() }).passthrough();
+export const TextDeltaSchema = z.object({ text: z.string() }).loose();
 
 /** `tool.start` — args aren't known yet, only a human-readable `context`. */
 export const ToolStartSchema = z
@@ -80,18 +88,18 @@ export const ToolStartSchema = z
     name: z.string(),
     context: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 /** `tool.complete` — carries the resolved args plus the tool's return value. */
 export const ToolCompleteSchema = z
   .object({
     tool_id: z.string(),
     name: z.string(),
-    args: z.record(z.unknown()).optional(),
+    args: z.record(z.string(), z.unknown()).optional(),
     duration_s: z.number().optional(),
     result: z.unknown().optional(),
   })
-  .passthrough();
+  .loose();
 
 /**
  * `subagent.*` — a delegated child agent's activity, relayed onto the *parent*
@@ -125,7 +133,7 @@ export const SubagentEventSchema = z
     files_read: z.array(z.string()).optional(),
     files_written: z.array(z.string()).optional(),
   })
-  .passthrough();
+  .loose();
 export type SubagentEvent = z.infer<typeof SubagentEventSchema>;
 
 export const MessageCompleteSchema = z
@@ -135,7 +143,7 @@ export const MessageCompleteSchema = z
     status: z.string().optional(),
     usage: UsageSchema.optional(),
   })
-  .passthrough();
+  .loose();
 
 /**
  * `approval.request` — the gateway derives `choices` from the permission flags,
@@ -154,7 +162,7 @@ export const ApprovalRequestSchema = z
     allow_permanent: z.boolean().optional(),
     smart_denied: z.boolean().optional(),
   })
-  .passthrough();
+  .loose();
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
 
 /**
@@ -181,7 +189,7 @@ export const ClarifyQuestionSchema = z
     choices: z.array(z.string()).nullish(),
     multi_select: z.boolean().optional(),
   })
-  .passthrough();
+  .loose();
 
 export const ClarifyRequestSchema = z
   .object({
@@ -191,9 +199,9 @@ export const ClarifyRequestSchema = z
     multi_select: z.boolean().optional(),
     questions: z.array(ClarifyQuestionSchema).optional(),
     /** Answers already locked in, replayed when a reconnect restores a batch. */
-    answers: z.record(z.string()).optional(),
+    answers: z.record(z.string(), z.string()).optional(),
   })
-  .passthrough();
+  .loose();
 export type ClarifyRequest = z.infer<typeof ClarifyRequestSchema>;
 
 export interface ClarifyQuestion {
@@ -238,20 +246,20 @@ export const SessionInfoSchema = z
     approval_mode: z.string().optional(),
     fast: z.boolean().optional(),
     yolo: z.boolean().optional(),
-    tools: z.record(z.array(z.string())).optional(),
-    skills: z.record(z.array(z.string())).optional(),
+    tools: z.record(z.string(), z.array(z.string())).optional(),
+    skills: z.record(z.string(), z.array(z.string())).optional(),
     cwd: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 export type SessionInfo = z.infer<typeof SessionInfoSchema>;
 
 export const SessionTitleSchema = z
   .object({ session_id: z.string().optional(), title: z.string() })
-  .passthrough();
+  .loose();
 
 export const StatusUpdateSchema = z
   .object({ kind: z.string().optional(), text: z.string().optional() })
-  .passthrough();
+  .loose();
 
 // --- session.create / history ------------------------------------------------
 
@@ -274,7 +282,7 @@ export const InflightTurnSchema = z
     error: z.string().optional(),
     status: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 export type InflightTurn = z.infer<typeof InflightTurnSchema>;
 
 export const SessionCreateResultSchema = z
@@ -309,11 +317,11 @@ export const SessionCreateResultSchema = z
     status: z.string().optional(),
     inflight: InflightTurnSchema.nullish(),
     /** A prompt the gateway accepted for the next turn, held while busy. */
-    queued: z.object({ user: z.string().default('') }).passthrough().nullish(),
+    queued: z.object({ user: z.string().default('') }).loose().nullish(),
     /** Raised while we were detached; the turn is still blocked on it. */
     pending_approval: ApprovalRequestSchema.optional(),
   })
-  .passthrough();
+  .loose();
 export type SessionCreateResult = z.infer<typeof SessionCreateResultSchema>;
 
 /** One entry of `session.history`. `role: "tool"` rows describe a tool call. */
@@ -329,16 +337,16 @@ export const HistoryMessageSchema = z
      * keeping: `context` is only an 80-char preview, so a clarify restored
      * from history would otherwise show a truncated question and no choices.
      */
-    args: z.record(z.unknown()).optional(),
+    args: z.record(z.string(), z.unknown()).optional(),
     /** What the call returned. Absent from `session.history`; the REST copy has it. */
     result: z.unknown().optional(),
   })
-  .passthrough();
+  .loose();
 export type HistoryMessage = z.infer<typeof HistoryMessageSchema>;
 
 export const SessionHistorySchema = z
   .object({ count: z.number().optional(), messages: z.array(HistoryMessageSchema) })
-  .passthrough();
+  .loose();
 
 export const ContextBreakdownSchema = z
   .object({
@@ -351,7 +359,7 @@ export const ContextBreakdownSchema = z
     estimated_total: z.number().optional(),
     model: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 export type ContextBreakdown = z.infer<typeof ContextBreakdownSchema>;
 
 export const ModelOptionsSchema = z
@@ -367,13 +375,13 @@ export const ModelOptionsSchema = z
           authenticated: z.boolean().optional(),
           warning: z.string().optional(),
           capabilities: z
-            .record(z.object({ fast: z.boolean().optional(), reasoning: z.boolean().optional() }))
+            .record(z.string(), z.object({ fast: z.boolean().optional(), reasoning: z.boolean().optional() }))
             .optional(),
         })
-        .passthrough(),
+        .loose(),
     ),
   })
-  .passthrough();
+  .loose();
 export type ModelOptions = z.infer<typeof ModelOptionsSchema>;
 
 /** Connection lifecycle as the UI cares about it. */

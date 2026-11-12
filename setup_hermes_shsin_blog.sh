@@ -449,43 +449,22 @@ RestartSec=5s
 WantedBy=default.target
 UNIT
 
-NODE_BIN="$(dirname "$(command -v node)")"
-PNPM_BIN="$(dirname "$(command -v pnpm)")"
-
-cat > "$HOME/.config/systemd/user/hermes-webapp.service" <<UNIT
-[Unit]
-Description=Hem — proxy + Cloudflare Access gate
-After=network-online.target
-Wants=network-online.target
-After=cloudflared.service
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-WorkingDirectory=${REPO_DIR}
-# systemd does not run a login shell, so nvm's PATH additions are absent and
-# pnpm would not be found. Name the paths rather than sourcing a profile — a
-# service that depends on shell rc files breaks the first time one changes.
-Environment=PATH=${PNPM_BIN}:${NODE_BIN}:/usr/local/bin:/usr/bin:/bin
-Environment=ENV_FILE=.env.public
-# Boot stays fast; 'pnpm build' is a deliberate step after changing code.
-Environment=SKIP_BUILD=1
-# Foreground: start.sh health-checks the Hermes backend, starts it if needed,
-# then execs the proxy — so this one unit covers both.
-ExecStart=/bin/bash start.sh
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
-UNIT
+# Hem's two units come from deploy/, copied rather than generated here, so the
+# repo is the single source of truth for them. Two units, not one: the Hermes
+# backend (hermes-backend.service) must not live in the proxy's cgroup, or every
+# proxy restart kills the agent mid-turn. deploy/install.sh writes this
+# machine's PATH and repo directory into <unit>.d/override.conf only when that
+# file does not exist yet, so re-running this script never drops a hand edit
+# made there; it backs up any unit copy it replaces. It also makes sure .env
+# carries a HERMES_TOKEN, which both units read. See deploy/README.md.
+bash "${REPO_DIR}/deploy/install.sh" || die "Installing the Hem units failed."
 
 systemctl --user daemon-reload
 systemctl --user enable --now cloudflared >/dev/null 2>&1
-systemctl --user enable --now hermes-webapp >/dev/null 2>&1
-bold "  ✓ cloudflared + hermes-webapp enabled and started"
+# --now starts what is stopped and leaves running units alone; install.sh has
+# said so above if hermes-webapp needs a restart to pick up a changed unit.
+systemctl --user enable --now hermes-backend hermes-webapp >/dev/null 2>&1
+bold "  ✓ cloudflared + hermes-backend + hermes-webapp enabled and started"
 
 # --- 10. verification --------------------------------------------------------
 
@@ -514,6 +493,7 @@ ss -ltn 2>/dev/null | grep -q "127.0.0.1:${PROXY_PORT}" \
   || bad "proxy is not bound to loopback — the LAN port is open"
 
 systemctl --user is-active --quiet cloudflared && ok "cloudflared running" || bad "cloudflared not running"
+systemctl --user is-active --quiet hermes-backend && ok "hermes-backend running" || bad "hermes-backend not running"
 systemctl --user is-active --quiet hermes-webapp && ok "hermes-webapp running" || bad "hermes-webapp not running"
 
 ip=$(dig +short "${FQDN}" @1.1.1.1 2>/dev/null | head -1)
@@ -532,6 +512,7 @@ echo
 if [ "$fail" -gt 0 ]; then
   warn "${fail} check(s) failed — see above."
   warn "Logs:  journalctl --user -u hermes-webapp -n 50"
+  warn "       journalctl --user -u hermes-backend -n 50   (and .logs/hermes-serve.log)"
   exit 1
 fi
 
@@ -546,8 +527,10 @@ cat <<EOF
   again from the URL above.
 
   Status:   bash start.sh --status   (from ${REPO_DIR})
-  Logs:     journalctl --user -u hermes-webapp -f
-  Restart:  systemctl --user restart hermes-webapp
+  Logs:     journalctl --user -u hermes-webapp -f        (proxy)
+            tail -f ${REPO_DIR}/.logs/hermes-serve.log   (Hermes backend)
+  Restart:  systemctl --user restart hermes-webapp       (proxy only — running turns survive)
+            systemctl --user restart hermes-backend      (the agent — ends running turns)
 
   After changing code:  pnpm build && systemctl --user restart hermes-webapp
   (the service runs with SKIP_BUILD=1, so it will not rebuild for you)

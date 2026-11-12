@@ -32,6 +32,8 @@ pnpm analyze                 # rebuild with a treemap at web/dist/stats.html
 
 Requires a Hermes backend on `127.0.0.1:9119` (`hermes serve --port 9119 --host 127.0.0.1`).
 
+**Deployment is two systemd user units, not one** (`deploy/`, installed by `deploy/install.sh`; see `deploy/README.md`). `hermes-backend.service` runs `hermes serve` via `deploy/hermes-backend.sh`; `hermes-webapp.service` runs `start.sh`, which execs `node --import tsx src/index.ts` from `server/` (no pnpm or tsx CLI process above the proxy). With the backend unit installed, `start.sh` **never spawns Hermes** — it `systemctl --user start`s the unit and waits for health; the `nohup hermes serve &` path is only the fallback for machines without the unit. Do not put the backend back under the proxy's unit: launched from `start.sh` inside `hermes-webapp`, Hermes sat in the proxy's cgroup, so every proxy restart, deploy or crash SIGTERMed the agent mid-turn and a backend that died alone was restarted by nothing. The computer-use display variables (`DISPLAY`, `XAUTHORITY`, `WAYLAND_DISPLAY`, `CUA_DRIVER_RS_ENABLE_WAYLAND`, …) belong to the backend unit — cua-driver is a child of `hermes serve`. Per-machine values go in `~/.config/systemd/user/<unit>.d/override.conf`, which the installer writes once and never overwrites.
+
 ## Architecture
 
 ### Why the proxy exists
@@ -42,7 +44,7 @@ Hermes refuses to be LAN-exposed: a non-loopback bind forces OAuth, and it valid
 
 Hermes mints a per-process `token_urlsafe(32)` held only in memory. Three states, all handled in `server/src/config.ts` (`resolveToken`, `getToken`, `clearToken`):
 
-- `start.sh` starts Hermes → it exports `HERMES_DASHBOARD_SESSION_TOKEN` and the backend adopts it.
+- `start.sh` starts Hermes → it exports `HERMES_DASHBOARD_SESSION_TOKEN` and the backend adopts it. Under `hermes-backend.service` the same export happens in `deploy/hermes-backend.sh`, from `HERMES_TOKEN` in `.env` (+ `ENV_FILE`) — the two units start independently, so the token must be written down there rather than minted per run.
 - A `hermes dashboard` we didn't start → the proxy scrapes the token out of the SPA HTML on loopback (lazy, hence the mutable module-level token).
 - A headless `hermes serve` someone else started → unknowable; set `HERMES_TOKEN` in `.env`.
 
@@ -226,7 +228,7 @@ Two document-level pieces still earn their place and should not be reverted as r
 
 Past 1000px `NavDrawer` renders *docked*: a permanent rail, no backdrop, no scroll lock, no drag, and crucially **no `useHistoryDismiss` sentinel** — a permanently-open overlay registering as dismissable eats the back button on every screen for ever. The docked rail also pushes instead of replacing, because there is no sentinel to land on and replacing would mean the stack never grows. The breakpoint is written twice on purpose (`WIDE_QUERY` in `lib/useMediaQuery.ts`, the media query in `global.css`); `matchMedia` cannot read a custom property, and if they drift the rail appears without the space reserved for it.
 
-**`POST /api/gateway/restart` restarts the messaging gateway, not the backend this app talks to.** It runs `hermes gateway restart` — `hermes-gateway.service`, the process serving Discord/Telegram and ticking cron. The `hermes serve` backend behind the proxy is supervised by the `hermes-webapp` unit, and a phone button to restart it would have to be answered by the process it revives. `hub/BackendControls.tsx` therefore offers the gateway restart under that name, plus the log tail and the update *check* (never the apply).
+**`POST /api/gateway/restart` restarts the messaging gateway, not the backend this app talks to.** It runs `hermes gateway restart` — `hermes-gateway.service`, the process serving Discord/Telegram and ticking cron. The `hermes serve` backend behind the proxy is supervised by its own unit, `hermes-backend.service` (not by `hermes-webapp`, which runs only the proxy), and a phone button to restart it would have to be answered by the process it revives. `hub/BackendControls.tsx` therefore offers the gateway restart under that name, plus the log tail and the update *check* (never the apply).
 
 **Updates** (`/notifications`, the screen formerly called Cron Notifications) is the one channel carrying everything Hermes reports, and three writers feed it. `push/cron.ts` writes scheduled runs; `push/updates.ts` writes the agent's own announcements (`notification.show`, `background.complete`, `subagent.complete`) and the backend going up and down; `push/kanban.ts` writes a card stopping. All of it goes through `push/feed.ts`, which is the proxy's own record and therefore the part that survives nobody being connected — a push you did not see is gone, a row is not. Its writes are debounced on the **leading** edge: the first append of a burst is on disk before the call returns, so "appended" and "recorded" stay the same statement, and only a burst — `cron.changed` arriving four times a run, a catch-up appending run by run — is collapsed. `flushFeed()` is wired into the signal handler, without which a proxy stopping inside the cooldown drops the row explaining why.
 
@@ -287,6 +289,8 @@ The PWA layer (manifest, Workbox SW, `public/push-sw.js`, `public/share-sw.js`, 
 ## Security posture
 
 The proxy itself has no user accounts: reaching `:3000` is full control of the agent. Which door is in front of that port is the whole security model, and there are two supported ones.
+
+A same-origin check (`server/src/origin.ts`) sits in front of both: a state-changing request or WS upgrade whose `Origin` is neither its own `Host`, `PUBLIC_URL`, nor in `ALLOWED_ORIGINS` is refused, because the proxy's loopback rewrite disarms Hermes's own Origin guard. It is deliberately that small — the Access gate is the boundary that matters.
 
 **LAN / Tailscale (default).** Nothing authenticates callers. Trusted home LAN only; remote access is Tailscale, never a forwarded port.
 

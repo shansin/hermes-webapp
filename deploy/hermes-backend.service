@@ -1,0 +1,104 @@
+# The Hermes backend (`hermes serve`) that Hem's proxy fronts — on its own.
+#
+# Installed by deploy/install.sh (which setup_hermes_shsin_blog.sh calls); see
+# deploy/README.md. Per-machine values (PATH, the repo directory, anything below
+# that differs on your box) belong in
+#   ~/.config/systemd/user/hermes-backend.service.d/override.conf
+# which the installer writes once and never overwrites, so re-running it keeps
+# hand edits. Edit that file (`systemctl --user edit hermes-backend`), not this
+# copy.
+#
+# Why a unit of its own: it used to be launched by start.sh with `nohup … &`
+# from inside hermes-webapp.service, which put it in the proxy's cgroup. Every
+# proxy restart, deploy or crash then SIGTERMed the agent mid-turn, and a
+# backend that died alone was restarted by nothing. Here the two live and die
+# separately: restarting the proxy leaves running turns alone.
+
+[Unit]
+Description=Hermes backend (hermes serve) for Hem
+After=network-online.target
+Wants=network-online.target
+# cua-driver (computer use) is spawned as a child of `hermes serve` and inherits
+# this unit's environment, so the display plumbing below has to be ready first.
+# A Wants= on a unit that does not exist on this machine is harmless.
+After=graphical-session.target
+After=hermes-xauth.service
+Wants=hermes-xauth.service
+# Never stop retrying: the app is useless without it.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Overridden per machine by the installer's override.conf.
+WorkingDirectory=%h/code/hermes-webapp
+# systemd does not run a login shell, so nvm's and Hermes' PATH additions are
+# absent. Name the paths rather than sourcing a profile — a service that depends
+# on shell rc files breaks the first time one changes. `hermes` is found in
+# ~/.local/bin (a shim that execs ~/.hermes/hermes-agent/.hermes/bin/hermes);
+# the installer prepends node's directory, since MCP servers and tools the agent
+# launches may need it.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Same layering as hermes-webapp.service, so both read HERMES_TOKEN from the
+# same files and the proxy holds the token this backend adopts.
+Environment=ENV_FILE=.env.public
+
+# --- computer use (cua-driver) -----------------------------------------------
+# Documented defaults for a GNOME/Wayland desktop with hermes-xauth.service;
+# override any of them in override.conf on a different machine. %t is the user
+# runtime directory (/run/user/<uid>).
+#
+# X display access for the cua-driver computer-use daemon (spawned as a child of
+# `hermes serve`, so it inherits this environment).
+# XAUTHORITY must be the *stable* symlink published by hermes-xauth.service:
+# mutter's real cookie file is named randomly per login, so a literal path here
+# works until the next login and then fails invisibly — `hermes computer-use
+# doctor` says "X11 is not reachable" and every capture comes back empty.
+# DBUS_SESSION_BUS_ADDRESS must carry no ,guid= suffix: the guid belongs to one
+# dbus-daemon run, and a stale one makes the AT-SPI (org.a11y.Bus) lookup hang,
+# which reads as an empty accessibility tree.
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=%t/hermes-xauth
+Environment=XDG_RUNTIME_DIR=%t
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+# GNOME here is a Wayland session: rootless Xwayland cannot capture the desktop
+# (root-window GetImage fails with BadMatch) and Wayland-native windows are not
+# in the X11 tree at all, so cua-driver's default X11 backend sees an empty
+# screen. The experimental Wayland backend captures through the Shell/portal and
+# is the only path that works on this machine.
+Environment=CUA_DRIVER_RS_ENABLE_WAYLAND=1
+# WAYLAND_DISPLAY is not inherited: this unit can start before
+# graphical-session.target and keeps the pre-login manager environment, even
+# though `systemctl --user show-environment` shows the variable later. Without
+# it the Wayland backend has no compositor socket, cua-driver falls back to X11
+# :0, and every computer_use call returns "window discovery returned no
+# windows" while `doctor` stays green — it concludes this is an X11 box.
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_CURRENT_DESKTOP=ubuntu:GNOME
+
+# The wrapper loads .env (+ ENV_FILE), exports HERMES_TOKEN as
+# HERMES_DASHBOARD_SESSION_TOKEN — an EnvironmentFile= cannot say A=$B — rotates
+# .logs/hermes-serve.log, and execs `hermes serve`, so the main PID is Hermes.
+ExecStart=/bin/bash deploy/hermes-backend.sh
+
+# Restart however it ended, not only on a non-zero exit: a SIGTERM or a clean
+# exit 0 from something other than `systemctl stop` (an update, say) is still a
+# dead backend. 78 (EX_CONFIG) is the wrapper's "HERMES_TOKEN missing" — retrying
+# that every few seconds would only fill the journal.
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=78
+
+# SIGTERM to Hermes alone, then SIGKILL to whatever it left behind (cua-driver,
+# MCP servers) — the shape Hermes' own hermes-gateway.service uses, so Hermes
+# gets to tear its children down itself. A stop still ends any running turn;
+# the timeout is for persisting session state, not for finishing work.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

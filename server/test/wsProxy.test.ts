@@ -38,6 +38,17 @@ vi.mock('../src/config.js', () => ({
   get upstreamHost() {
     return upstreamHostValue;
   },
+  // Read by the real `origin.ts`, which these tests run against rather than a
+  // stub: the check lives in the handshake, and only a real handshake shows
+  // which headers it reads. The phone below connects to 127.0.0.1 with the
+  // Origin of a LAN address, so it is admitted the way a Host-rewriting
+  // front's name would be.
+  config: {
+    PUBLIC_URL: undefined,
+    get ALLOWED_ORIGINS() {
+      return `http://192.168.1.50:${proxyPort}`;
+    },
+  },
 }));
 vi.mock('../src/log.js', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -290,6 +301,69 @@ describe('the Access gate on upgrades', () => {
 
     const client = track(await openClient());
     expect(client.readyState).toBe(WebSocket.OPEN);
+    await upgraded();
+  });
+});
+
+/**
+ * The bridge rewrites Origin to loopback, which is exactly what Hermes checks
+ * it against — so Hermes's own refusal of a foreign page can never fire, and
+ * this is the only place one can be turned away. In LAN mode it is the only
+ * thing between any web page the user has open and the agent.
+ */
+describe('the origin check on upgrades', () => {
+  const refusal = (path: string, headers: Record<string, string>) =>
+    new Promise<WebSocket>((resolve, reject) => {
+      const client = new WebSocket(`ws://127.0.0.1:${proxyPort}${path}`, { headers });
+      client.once('open', () => resolve(client));
+      client.once('error', reject);
+    }).then(
+      (c) => {
+        track(c);
+        return null;
+      },
+      (e: Error) => e,
+    );
+
+  it('refuses a page from another origin, with a status, and never dials Hermes', async () => {
+    const err = await refusal('/api/ws', { origin: 'https://evil.example' });
+    // Answered rather than reset, like the Access refusal: a reset is 1006,
+    // indistinguishable from the network being down.
+    expect(err?.message).toMatch(/403/);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(upgrades).toEqual([]);
+  });
+
+  it('refuses an opaque `null` origin — a sandboxed frame or a data: page', async () => {
+    const err = await refusal('/api/ws', { origin: 'null' });
+    expect(err?.message).toMatch(/403/);
+  });
+
+  it('guards the dictation stream as well', async () => {
+    const err = await refusal('/api/audio/transcribe-stream', { origin: 'https://evil.example' });
+    expect(err?.message).toMatch(/403/);
+  });
+
+  it('admits the app’s own origin', async () => {
+    track(await openClient());
+    await upgraded();
+  });
+
+  /* Same-origin: whatever name the app was loaded under, the page's Origin
+     and the handshake's Host agree. */
+  it('admits a page from the host it is addressed to', async () => {
+    track(await openClient('/api/ws', { origin: `http://127.0.0.1:${proxyPort}` }));
+    await upgraded();
+  });
+
+  /* Not a browser: nothing sent an Origin, so there is no page to distrust. */
+  it('admits a client that sends no Origin at all', async () => {
+    const client = await new Promise<WebSocket>((resolve, reject) => {
+      const c = new WebSocket(`ws://127.0.0.1:${proxyPort}/api/ws`);
+      c.once('open', () => resolve(c));
+      c.once('error', reject);
+    });
+    track(client);
     await upgraded();
   });
 });
