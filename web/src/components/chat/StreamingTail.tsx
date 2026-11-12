@@ -47,7 +47,10 @@ const STREAM_RENDER_MS = 100;
 function StreamingMarkdown({ text }: { text: string }) {
   const { stable, open } = useMemo(() => splitStableMarkdown(text), [text]);
 
-  if (!stable) return <Markdown>{open}</Markdown>;
+  // The open block is the one still being written, so it draws mermaid fences
+  // as code (see `Markdown`'s `streaming`). The stable half is finished and
+  // draws them — once, since its string does not change between ticks.
+  if (!stable) return <Markdown streaming>{open}</Markdown>;
 
   return (
     <>
@@ -56,7 +59,7 @@ function StreamingMarkdown({ text }: { text: string }) {
       <div className="md-stable">
         <Markdown>{stable}</Markdown>
       </div>
-      <Markdown>{open}</Markdown>
+      <Markdown streaming>{open}</Markdown>
     </>
   );
 }

@@ -9,7 +9,7 @@
  * a tap (`RemoteImage`), and diagrams are drawn as inert images
  * (`MermaidBlock`).
  */
-import { memo, useState, type ComponentProps, type ReactNode } from 'react';
+import { memo, useContext, useState, type ComponentProps, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { rehypeHighlightLocal } from './highlight';
@@ -21,6 +21,7 @@ import { RemoteImage, remoteImageHost } from './RemoteImage';
 import { localImagePath } from '../../lib/localImages';
 import { filesHref, inlineCodePath, resolveFilePath } from '../../lib/fileLinks';
 import { useSession } from '../../store/session';
+import { NO_CWD_PROVIDER, WorkspaceCwd } from './workspaceCwd';
 import { buzz } from '../../lib/haptics';
 import { copyText } from '../../lib/share';
 
@@ -120,10 +121,48 @@ const urlTransform: MarkdownProps['urlTransform'] = (url, key, node) => {
 const remarkPlugins: MarkdownProps['remarkPlugins'] = [remarkGfm];
 const rehypePlugins: MarkdownProps['rehypePlugins'] = [rehypeHighlightLocal];
 
-export const Markdown = memo(function Markdown({ children }: { children: string }) {
-  // The workspace root for resolving `workspace://` links.
-  const cwd = useSession((s) => s.info?.cwd) ?? undefined;
+interface Props {
+  children: string;
+  /**
+   * The text is still arriving: draw a mermaid fence as code, not a diagram.
+   *
+   * The streaming tail re-renders its open block ten times a second, and a
+   * mermaid fence in that block is unfinished by definition. Drawn as a
+   * diagram, it fetched the ~900KB diagrams chunk mid-stream and queued a
+   * `mermaid.render` per tick — serialized inside mermaid, so the backlog
+   * kept redrawing half-diagrams (or failing them) for seconds after the
+   * reply had finished, and the block flickered between "Drawing…", an
+   * error and a picture. The source is what a half-written diagram actually
+   * is; it becomes a picture once its block is finished, in the tail's
+   * stable half or in the completed message.
+   */
+  streaming?: boolean;
+}
 
+/**
+ * The cwd comes from `WorkspaceCwd` when the transcript provides it (see that
+ * file for why), and from the store otherwise — two components, not a
+ * conditional hook, so each path keeps a fixed set of hooks.
+ */
+export const Markdown = memo(function Markdown(props: Props) {
+  const cwd = useContext(WorkspaceCwd);
+  if (cwd === NO_CWD_PROVIDER) return <SessionCwdMarkdown {...props} />;
+  return <MarkdownBody {...props} cwd={cwd} />;
+});
+
+function SessionCwdMarkdown(props: Props) {
+  const cwd = useSession((s) => s.info?.cwd) ?? undefined;
+  return <MarkdownBody {...props} cwd={cwd} />;
+}
+
+function MarkdownBody({
+  children,
+  streaming = false,
+  cwd,
+}: Props & {
+  /** The workspace root for resolving `workspace://` links. */
+  cwd: string | undefined;
+}) {
   return (
     <div className="md">
       <ReactMarkdown
@@ -146,8 +185,8 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
             // A mermaid fence becomes a diagram instead of a code block. Only
             // an explicit fence qualifies, which is the only kind there is now
             // that detection is off — a guess rendered through mermaid would
-            // mangle real code.
-            if (lang === 'mermaid' && text.trim()) {
+            // mangle real code. Not while streaming: see `streaming` above.
+            if (lang === 'mermaid' && text.trim() && !streaming) {
               return <MermaidBlock source={text.trim()} />;
             }
 
@@ -227,4 +266,4 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
       </ReactMarkdown>
     </div>
   );
-});
+}

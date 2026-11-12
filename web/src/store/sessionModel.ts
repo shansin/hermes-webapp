@@ -8,7 +8,13 @@
  * and re-exports the types, so `import { type ChatMessage } from
  * '../store/session'` keeps working everywhere.
  */
-import type { Usage } from '../ws/types';
+import {
+  MessageCompleteSchema,
+  SubagentEventSchema,
+  ToolCompleteSchema,
+  ToolStartSchema,
+  type Usage,
+} from '../ws/types';
 import { clarifyQuestionsOf, indexClarifyResults } from '../lib/clarifyExchange';
 
 /**
@@ -94,6 +100,44 @@ export type ChatMessage =
       status: 'running' | 'done';
       at: MessageTime;
     };
+
+/** A `prompt.submit` lost with its socket — see the store's `lostSubmit`. */
+export interface LostSubmit {
+  /** The bubble it was sent from. */
+  id: string;
+  text: string;
+  display?: string;
+  at: MessageTime;
+}
+
+/**
+ * Settle a lost submit once the gateway says the session is idle.
+ *
+ * History decides: a last user turn with this text means it went through
+ * and has since finished, so `messages` stands. Otherwise it never arrived,
+ * and its bubble is marked failed — or put back, marked, when the transcript
+ * being installed no longer has it, because what someone typed must survive
+ * a dropped connection.
+ */
+export function settleLostSubmit(
+  messages: ChatMessage[],
+  history: { role: string; text?: string | null }[],
+  lost: LostSubmit,
+): ChatMessage[] {
+  const lastUser = lastIndexOf(history, (m) => m.role === 'user');
+  if (lastUser >= 0 && history[lastUser]!.text === lost.text) return messages;
+  if (messages.some((m) => m.id === lost.id)) {
+    return replaceLast(
+      messages,
+      (m) => m.id === lost.id && m.kind === 'user',
+      (m) => ({ ...m, failed: true }),
+    );
+  }
+  return [
+    ...messages,
+    { kind: 'user', id: lost.id, text: lost.text, displayText: lost.display, at: lost.at, failed: true },
+  ];
+}
 
 /** Events a replay must not fold in again — see `applyReplay`. */
 export const NOT_REPLAYED = new Set(['message.start', 'message.delta', 'reasoning.delta', 'thinking.delta']);
@@ -193,4 +237,281 @@ export function deltaText(payload: unknown): string | null {
   if (typeof payload !== 'object' || payload === null) return null;
   const t = (payload as { text?: unknown }).text;
   return typeof t === 'string' ? t : null;
+}
+
+/*
+ * Per-event transcript folds.
+ *
+ * The pure half of the store's `applyEvent`: each takes the state it reads and
+ * the event payload, and returns the patch to apply — or null for a payload
+ * that failed its schema, which the store then ignores outright. What stays in
+ * the store is what is not pure: haptics, the session filter, and releasing a
+ * queued prompt once a turn ends. Ids come in through `newId` so the store
+ * keeps one sequence for every message it ever made.
+ */
+
+/** The slice of store state a turn's events fold over. */
+export interface TurnState {
+  messages: ChatMessage[];
+  streamingText: string;
+  streamingReasoning: string;
+  usage: Usage | null;
+  clarifyAnswers: Record<string, unknown>;
+  profile: string | null;
+}
+
+/** What a fold may change. */
+export interface TurnPatch {
+  messages?: ChatMessage[];
+  running?: boolean;
+  streamingText?: string;
+  streamingReasoning?: string;
+  thinkingHint?: string;
+  statusLine?: string;
+  usage?: Usage | null;
+  clarifyAnswers?: Record<string, unknown>;
+  inflightPrompt?: null;
+  clarify?: null;
+  approval?: null;
+}
+
+type NewId = () => string;
+
+export function foldToolStart(s: TurnState, payload: unknown, newId: NewId): TurnPatch | null {
+  const p = ToolStartSchema.safeParse(payload);
+  if (!p.success) return null;
+  return {
+    statusLine: '',
+    messages: [
+      ...s.messages,
+      {
+        kind: 'tool',
+        id: newId(),
+        toolId: p.data.tool_id,
+        name: p.data.name,
+        context: p.data.context,
+        status: 'running',
+        at: Date.now(),
+      },
+    ],
+  };
+}
+
+export function foldToolComplete(s: TurnState, payload: unknown): TurnPatch | null {
+  const p = ToolCompleteSchema.safeParse(payload);
+  if (!p.success) return null;
+  const patch: TurnPatch = {
+    messages: replaceLast(
+      s.messages,
+      (m) => m.kind === 'tool' && m.toolId === p.data.tool_id,
+      (m) => ({
+        ...m,
+        status: 'done' as const,
+        args: p.data.args,
+        result: p.data.result,
+        durationS: p.data.duration_s,
+      }),
+    ),
+  };
+
+  /**
+   * Remember a clarify's answer the moment it lands. The row itself already
+   * carries it, but the next reconnect rebuilds this transcript from
+   * `session.history`, which does not — so watching a question get answered
+   * and then losing that answer to a passing blip is the same bug as never
+   * recovering it on resume.
+   */
+  if (p.data.name === 'clarify' && p.data.result !== undefined) {
+    patch.clarifyAnswers = { ...s.clarifyAnswers, ...answersFrom(p.data.result) };
+  }
+  return patch;
+}
+
+/** The end of a turn. `interrupted` decides whether a queued prompt may follow. */
+export function foldMessageComplete(
+  s: TurnState,
+  payload: unknown,
+  newId: NewId,
+): { patch: TurnPatch; interrupted: boolean } {
+  const p = MessageCompleteSchema.safeParse(payload);
+  const text = p.success ? (p.data.text ?? s.streamingText) : s.streamingText;
+  const reasoning = p.success ? p.data.reasoning : s.streamingReasoning;
+  const usage = p.success ? p.data.usage : undefined;
+  const interrupted = p.success && p.data.status === 'interrupted';
+
+  const patch: TurnPatch = {
+    running: false,
+    /**
+     * The turn is over, so anything it was parked on is moot — it was
+     * answered, interrupted, or hit the gateway's own timeout and
+     * auto-proceeded. Leaving either sheet up would be worse than the bug it
+     * replaced: a modal that cannot be dismissed, over a turn that has already
+     * moved on.
+     *
+     * `approval` belongs here for exactly the same reason and was missing,
+     * which made the ordinary way out of an approval the one that trapped you:
+     * an `approval.request` is deliberately not dismissible, so a person who
+     * does not want to grant it reaches for Stop — and `session.interrupt`
+     * ends the turn with a `message.complete` that cleared the clarify beside
+     * it and left the approval sheet standing over a finished conversation,
+     * with no button on it that could still do anything. Only starting or
+     * resuming another session got out of it.
+     */
+    clarify: null,
+    approval: null,
+    streamingText: '',
+    streamingReasoning: '',
+    thinkingHint: '',
+    statusLine: '',
+    usage: usage ?? s.usage,
+    // The turn's prompt is in the transcript now, either as the bubble that
+    // submitted it or as the one grafted on resume.
+    inflightPrompt: null,
+    messages: [
+      /**
+       * Nothing can still be running once the turn is over.
+       *
+       * A tool card is cleared by its own `tool.complete`, which is a single
+       * event that a dropped socket, an interrupt or a gateway that never
+       * emitted it all lose — and the card then pulses for ever, on a
+       * conversation that finished, because nothing else ever looked at it
+       * again.
+       */
+      ...s.messages.map((m) =>
+        (m.kind === 'tool' || m.kind === 'subagent') && m.status === 'running'
+          ? { ...m, status: 'done' as const }
+          : m,
+      ),
+      {
+        kind: 'assistant',
+        id: newId(),
+        text,
+        reasoning: reasoning || undefined,
+        usage,
+        interrupted,
+        at: Date.now(),
+      },
+    ],
+  };
+  return { patch, interrupted };
+}
+
+/**
+ * One `subagent.*` event onto its card. `created` is true when the event had
+ * no card to update — a `tool`/`complete` with no preceding `start` still
+ * deserves one.
+ */
+export function foldSubagent(
+  s: TurnState,
+  type: string,
+  payload: unknown,
+  newId: NewId,
+): { patch: TurnPatch; created: boolean } | null {
+  const p = SubagentEventSchema.safeParse(payload);
+  if (!p.success) return null;
+  const d = p.data;
+  // Identity fields are all optional. Fall back through the ids the gateway
+  // might send, then to a single flat card, so an older emitter degrades to
+  // one card rather than a new card per event.
+  const agentId = d.subagent_id || d.child_session_id || 'subagent';
+  const existing = s.messages.find((m) => m.kind === 'subagent' && m.agentId === agentId);
+  const tokens =
+    d.input_tokens != null || d.output_tokens != null ? (d.input_tokens ?? 0) + (d.output_tokens ?? 0) : undefined;
+
+  if (!existing) {
+    return {
+      created: true,
+      patch: {
+        messages: [
+          ...s.messages,
+          {
+            kind: 'subagent',
+            id: newId(),
+            agentId,
+            goal: d.goal || d.text || 'Delegated task',
+            model: d.model,
+            depth: d.depth,
+            activity: type === 'subagent.complete' ? undefined : (d.tool_name ?? d.text),
+            summary: d.summary,
+            status: type === 'subagent.complete' ? 'done' : 'running',
+            durationS: d.duration_seconds,
+            tokens,
+            filesWritten: d.files_written,
+            at: Date.now(),
+          },
+        ],
+      },
+    };
+  }
+
+  return {
+    created: false,
+    patch: {
+      messages: replaceLast(
+        s.messages,
+        (m) => m.kind === 'subagent' && m.agentId === agentId,
+        (m) => {
+          if (m.kind !== 'subagent') return m;
+          if (type === 'subagent.complete') {
+            return {
+              ...m,
+              status: 'done' as const,
+              activity: undefined,
+              summary: d.summary || d.text || m.summary,
+              durationS: d.duration_seconds ?? m.durationS,
+              tokens: tokens ?? m.tokens,
+              filesWritten: d.files_written ?? m.filesWritten,
+            };
+          }
+          return {
+            ...m,
+            goal: d.goal || m.goal,
+            model: d.model ?? m.model,
+            activity: d.tool_name ?? d.text ?? m.activity,
+          };
+        },
+      ),
+    },
+  };
+}
+
+/**
+ * A failure outside a turn, as a notice. `provider_not_configured` is the one
+ * with a fix in this app: no model provider is set up, and the Models screen
+ * is where one is chosen.
+ */
+export function foldError(s: TurnState, payload: unknown, newId: NewId): TurnPatch {
+  const p = payload as { message?: unknown; code?: unknown } | undefined;
+  const text = typeof p?.message === 'string' && p.message ? p.message : 'Something went wrong.';
+  const action =
+    p?.code === 'provider_not_configured'
+      ? { label: 'Set up a model', to: s.profile ? `/models?profile=${encodeURIComponent(s.profile)}` : '/models' }
+      : undefined;
+  return {
+    messages: [
+      ...s.messages,
+      { kind: 'notice', id: newId(), text, tone: 'error', label: 'Hermes', action, at: Date.now() },
+    ],
+  };
+}
+
+/** The answer to a side question (`prompt.btw`), as a notice. */
+export function foldBtwComplete(s: TurnState, payload: unknown, newId: NewId): TurnPatch {
+  const p = payload as { question?: unknown; text?: unknown } | undefined;
+  const text = typeof p?.text === 'string' ? p.text : '';
+  const question = typeof p?.question === 'string' ? p.question : '';
+  const failed = text.startsWith('error: ');
+  return {
+    messages: [
+      ...s.messages,
+      {
+        kind: 'notice',
+        id: newId(),
+        text: text || '(no answer)',
+        tone: failed ? 'error' : 'info',
+        label: question ? `Side question — ${question}` : 'Side question',
+        at: Date.now(),
+      },
+    ],
+  };
 }

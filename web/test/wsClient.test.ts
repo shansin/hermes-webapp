@@ -7,7 +7,7 @@
  * `helpers/mockSocket`) because none of that is reachable against a real one.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HermesClient, RpcError, defaultWsUrl, CONTROL_TIMEOUT_MS } from '../src/ws/client';
+import { HermesClient, RpcError, ConnectionLost, defaultWsUrl, CONTROL_TIMEOUT_MS } from '../src/ws/client';
 import { MockSocket, installMockSocket } from './helpers/mockSocket';
 
 /**
@@ -421,6 +421,63 @@ describe('reconnecting', () => {
 
     vi.advanceTimersByTime(60_000);
     expect(MockSocket.instances).toHaveLength(afterResume);
+  });
+});
+
+/**
+ * Call ids are per connection, so a reply can only ever arrive on the socket
+ * the call went out on. A socket `discard`ed on the way to its replacement has
+ * its `onclose` detached — which was the only thing that failed its calls — so
+ * a `prompt.submit` sent just before the radio dropped hung for the full 180s
+ * and then stamped its bubble failed, possibly over a turn running by then.
+ */
+describe('calls on a socket that is replaced', () => {
+  it('fails them at once when a CLOSING socket is replaced on resume', async () => {
+    const stale = connected();
+    const pending = client.call('prompt.submit', { text: 'hi' });
+    stale.close();
+
+    client.connect({ resume: true });
+    await expect(pending).rejects.toBeInstanceOf(ConnectionLost);
+  });
+
+  it('fails them when the URL changes', async () => {
+    connected();
+    const pending = client.call('session.list');
+    client.setUrl('ws://test/api/ws?token=abc');
+    await expect(pending).rejects.toBeInstanceOf(ConnectionLost);
+  });
+
+  it('says which call was lost', async () => {
+    const socket = connected();
+    const pending = client.call('prompt.submit');
+    socket.drop();
+    await expect(pending).rejects.toMatchObject({ name: 'ConnectionLost', method: 'prompt.submit' });
+  });
+
+  it('leaves calls on the replacement socket alone', async () => {
+    const stale = connected();
+    const lost = client.call('prompt.submit');
+    stale.close();
+    client.connect({ resume: true });
+    const fresh = MockSocket.last;
+    fresh.open();
+
+    const kept = client.call('session.resume');
+    await expect(lost).rejects.toBeInstanceOf(ConnectionLost);
+    // The stale socket's close lands now; it must not take the new call with it.
+    await Promise.resolve();
+    fresh.deliverJson({ jsonrpc: '2.0', id: fresh.lastSent().id, result: { ok: true } });
+    await expect(kept).resolves.toEqual({ ok: true });
+  });
+
+  it('does not let a lost call time out later on top of its rejection', async () => {
+    const stale = connected();
+    const pending = client.call('prompt.submit');
+    stale.close();
+    client.connect({ resume: true });
+    await expect(pending).rejects.toBeInstanceOf(ConnectionLost);
+    expect(() => vi.advanceTimersByTime(200_000)).not.toThrow();
   });
 });
 

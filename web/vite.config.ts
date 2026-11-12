@@ -285,11 +285,28 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/api/, /^\/healthz/, /^\/push/, /^\/share/, /[?&]cf_login=/],
         runtimeCaching: [
           {
-            // Session history is the one thing worth reading offline.
+            /**
+             * Session history is the one thing worth reading offline — but
+             * only offline. This was StaleWhileRevalidate, which answers from
+             * the cache *first* even with a perfectly good network, and the
+             * cached copy is whatever the transcript was the last time it was
+             * read. Reopening a session showed it as it had been; worse,
+             * `restoreClarifyAnswers` read its answers out of that copy and
+             * stamped "Not answered" on a clarify that had been answered since.
+             * The fresh response arrived a moment later and went only into the
+             * cache, for the *next* read to be stale about something else.
+             *
+             * NetworkFirst with a short timeout, as the list rule below: the
+             * network when it is there, the cache when it is not or when it
+             * hangs. Same timeout, so a flaky connection degrades both reads
+             * the same way. The caveat recorded on that rule about an expired
+             * Access session applies here unchanged — it applied to SWR too.
+             */
             urlPattern: /\/api\/sessions\/[^/]+\/messages/,
-            handler: 'StaleWhileRevalidate',
+            handler: 'NetworkFirst',
             options: {
               cacheName: 'hermes-session-history',
+              networkTimeoutSeconds: 4,
               expiration: { maxEntries: 60, maxAgeSeconds: 60 * 60 * 24 * 7 },
             },
           },

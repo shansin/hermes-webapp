@@ -62,6 +62,8 @@ interface Pending {
   reject: (err: Error) => void;
   method: string;
   timer: ReturnType<typeof setTimeout>;
+  /** The socket the call went out on: ids are only ever answered on it. */
+  socket: WebSocket;
 }
 
 const RECONNECT_BASE_MS = 500;
@@ -224,7 +226,7 @@ export class HermesClient {
       if (this.ws !== socket) return;
       this.ws = null;
       // Fail in-flight calls rather than letting their promises hang forever.
-      this.rejectAllPending(new Error('connection closed'));
+      this.rejectPending(socket);
       if (this.closedByUser) {
         this.setState('closed');
       } else {
@@ -247,8 +249,6 @@ export class HermesClient {
     // `closedByUser` — so a shutdown immediately followed by a reconnect could
     // have the old socket schedule a retry on top of the new one.
     this.discard(this.ws);
-    // Nothing is coming back for calls issued before the shutdown.
-    this.rejectAllPending(new Error('connection closed'));
     this.setState('closed');
   }
 
@@ -429,6 +429,7 @@ export class HermesClient {
         reject,
         method,
         timer,
+        socket,
       });
 
       for (const h of this.frameHandlers) h('out', frame);
@@ -465,9 +466,18 @@ export class HermesClient {
     return () => this.frameHandlers.delete(h);
   }
 
-  /** Drop a socket without letting its lifecycle events run. */
+  /**
+   * Drop a socket without letting its lifecycle events run.
+   *
+   * Its in-flight calls are failed here, because detaching `onclose` is what
+   * used to fail them: a call that went out on a socket the phone then
+   * replaced (CLOSING on resume, wedged in CONNECTING, a URL change) sat
+   * pending for its whole budget — 180s for a `prompt.submit` — although its
+   * answer could only ever arrive on the socket just thrown away.
+   */
   private discard(socket: WebSocket | null): void {
     if (!socket) return;
+    this.rejectPending(socket);
     socket.onopen = null;
     socket.onmessage = null;
     socket.onclose = null;
@@ -486,12 +496,14 @@ export class HermesClient {
     for (const h of this.stateHandlers) h(s);
   }
 
-  private rejectAllPending(err: Error): void {
-    for (const [, entry] of this.pending) {
+  /** Fail every call still waiting on `socket` with `ConnectionLost`. */
+  private rejectPending(socket: WebSocket): void {
+    for (const [id, entry] of this.pending) {
+      if (entry.socket !== socket) continue;
+      this.pending.delete(id);
       clearTimeout(entry.timer);
-      entry.reject(err);
+      entry.reject(new ConnectionLost(entry.method));
     }
-    this.pending.clear();
   }
 
   private scheduleReconnect(): void {
@@ -528,6 +540,22 @@ export class RpcError extends Error {
   ) {
     super(message);
     this.name = 'RpcError';
+  }
+}
+
+/**
+ * A call whose socket went away before it answered.
+ *
+ * Distinct from a gateway error or a refused send because the outcome is
+ * *unknown*, not failed: the frame may well have reached Hermes, and the turn a
+ * lost `prompt.submit` started may be running right now. Callers that would
+ * otherwise report failure should let the reconnect's `session.resume` say
+ * what actually happened.
+ */
+export class ConnectionLost extends Error {
+  constructor(public method: string) {
+    super('connection closed');
+    this.name = 'ConnectionLost';
   }
 }
 

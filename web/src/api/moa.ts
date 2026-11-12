@@ -54,7 +54,10 @@
  * surfaced if the two ever disagree.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { z } from 'zod';
+// `zod/mini`, not `zod`, although this is a lazy route: classic zod here pulled
+// every core schema class into the entry chunk, which shares that core. See
+// the note in `ws/types.ts`.
+import * as z from 'zod/mini';
 import { api } from './client';
 import { withProfile } from './hub';
 
@@ -66,39 +69,35 @@ import { withProfile } from './hub';
  * `enabled` is meaningful on a reference (a disabled advisor stays configured
  * but sits the turn out) and ignored on the aggregator, which always runs.
  */
-export const MoaSlotSchema = z
-  .object({
-    provider: z.string().default(''),
-    model: z.string().default(''),
-    /** Per-slot thinking level; null means the provider's own default. */
-    reasoning_effort: z.string().nullish(),
-    enabled: z.boolean().default(true),
-  })
-  .loose();
+export const MoaSlotSchema = z.looseObject({
+  provider: z._default(z.string(), ''),
+  model: z._default(z.string(), ''),
+  /** Per-slot thinking level; null means the provider's own default. */
+  reasoning_effort: z.nullish(z.string()),
+  enabled: z._default(z.boolean(), true),
+});
 export type MoaSlot = z.infer<typeof MoaSlotSchema>;
 
-export const MoaPresetSchema = z
-  .object({
-    reference_models: z.array(MoaSlotSchema).default([]),
-    /* `prefault`, not `default`: zod 4's default is returned as-is without
-       running the slot schema, so an absent aggregator would arrive without
-       `enabled`. A prefault is parsed, which is what zod 3's default did. */
-    aggregator: MoaSlotSchema.prefault({ provider: '', model: '' }),
-    /** null = the parameter is omitted from the call, i.e. provider default. */
-    reference_temperature: z.number().nullish(),
-    aggregator_temperature: z.number().nullish(),
-    /** null = inherit `auxiliary.moa_reference.timeout` (900s). */
-    reference_timeout: z.number().nullish(),
-    /** Whether a failed advisor is disclosed in the answer. */
-    degraded_reference_policy: z.string().default('loud'),
-    max_tokens: z.number().default(4096),
-    /** null = advisors are uncapped. */
-    reference_max_tokens: z.number().nullish(),
-    /** `user_turn` | `per_iteration` | `every_n:<N>`. */
-    fanout: z.string().nullish(),
-    enabled: z.boolean().default(true),
-  })
-  .loose();
+export const MoaPresetSchema = z.looseObject({
+  reference_models: z._default(z.array(MoaSlotSchema), []),
+  /* `prefault`, not `default`: zod 4's default is returned as-is without
+     running the slot schema, so an absent aggregator would arrive without
+     `enabled`. A prefault is parsed, which is what zod 3's default did. */
+  aggregator: z.prefault(MoaSlotSchema, { provider: '', model: '' }),
+  /** null = the parameter is omitted from the call, i.e. provider default. */
+  reference_temperature: z.nullish(z.number()),
+  aggregator_temperature: z.nullish(z.number()),
+  /** null = inherit `auxiliary.moa_reference.timeout` (900s). */
+  reference_timeout: z.nullish(z.number()),
+  /** Whether a failed advisor is disclosed in the answer. */
+  degraded_reference_policy: z._default(z.string(), 'loud'),
+  max_tokens: z._default(z.number(), 4096),
+  /** null = advisors are uncapped. */
+  reference_max_tokens: z.nullish(z.number()),
+  /** `user_turn` | `per_iteration` | `every_n:<N>`. */
+  fanout: z.nullish(z.string()),
+  enabled: z._default(z.boolean(), true),
+});
 export type MoaPreset = z.infer<typeof MoaPresetSchema>;
 
 /**
@@ -109,13 +108,11 @@ export type MoaPreset = z.infer<typeof MoaPresetSchema>;
  * here: two shapes for one fact is how they drift, and `presets` is the one
  * that can express more than a single preset.
  */
-export const MoaConfigSchema = z
-  .object({
-    default_preset: z.string().default('default'),
-    active_preset: z.string().default(''),
-    presets: z.record(z.string(), MoaPresetSchema).default({}),
-  })
-  .loose();
+export const MoaConfigSchema = z.looseObject({
+  default_preset: z._default(z.string(), 'default'),
+  active_preset: z._default(z.string(), ''),
+  presets: z._default(z.record(z.string(), MoaPresetSchema), {}),
+});
 export type MoaConfig = z.infer<typeof MoaConfigSchema>;
 
 /** An empty slot, for a reference being added before anything is picked. */

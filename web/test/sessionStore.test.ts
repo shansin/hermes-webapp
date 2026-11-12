@@ -12,6 +12,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../src/lib/haptics', () => ({ buzz: vi.fn(), setHapticsEnabled: vi.fn() }));
 
 const call = vi.fn(async () => ({}) as unknown);
+const { ConnectionLost } = vi.hoisted(() => ({
+  ConnectionLost: class ConnectionLost extends Error {
+    constructor(public method = 'prompt.submit') {
+      super('connection closed');
+      this.name = 'ConnectionLost';
+    }
+  },
+}));
 vi.mock('../src/ws/client', () => ({
   hermes: {
     call: (...args: unknown[]) => call(...(args as [])),
@@ -19,6 +27,7 @@ vi.mock('../src/ws/client', () => ({
     onState: () => () => {},
     state: 'open',
   },
+  ConnectionLost,
 }));
 
 const undoTurns = vi.fn(async () => '');
@@ -732,5 +741,190 @@ describe('reset', () => {
       title: '',
       usage: null,
     });
+  });
+});
+
+/**
+ * An async action that resumes after the user switched conversation must not
+ * write into the one now on screen. Each case parks the action on its `await`,
+ * switches, and lets it finish.
+ */
+describe('switching conversation mid-action', () => {
+  function switchTo(sessionId: string) {
+    store().reset();
+    store().adoptSession({ sessionId });
+    store().loadHistory([{ role: 'user', text: `in ${sessionId}` }]);
+  }
+
+  it("does not land a rewind's transcript or prompt in the other session", async () => {
+    store().loadHistory([
+      { role: 'user', text: 'A prompt' },
+      { role: 'assistant', text: 'A reply' },
+    ]);
+    let undone: (v: string) => void = () => {};
+    undoTurns.mockImplementationOnce(() => new Promise<string>((r) => (undone = r)));
+    const rewinding = store().retryLast();
+
+    switchTo('s2');
+    undone('');
+    await rewinding;
+
+    expect(store().messages.map((m) => 'text' in m && m.text)).toEqual(['in s2']);
+    expect(call).not.toHaveBeenCalledWith('prompt.submit', expect.anything());
+    expect(store().error).toBeNull();
+  });
+
+  it("does not stamp a failed submit's error on the other session", async () => {
+    let fail: (e: Error) => void = () => {};
+    call.mockImplementationOnce(() => new Promise((_, rej) => (fail = rej)));
+    const submitting = store().submitPrompt('to A');
+
+    switchTo('s2');
+    fail(new Error('boom'));
+    await submitting;
+
+    expect(store().error).toBeNull();
+    expect(store().messages.some((m) => m.kind === 'user' && m.failed)).toBe(false);
+  });
+
+  it("does not show the other session's usage", async () => {
+    let answer: (v: unknown) => void = () => {};
+    call.mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    const refreshing = store().refreshUsage();
+
+    switchTo('s2');
+    answer({ input: 999, output: 1 });
+    await refreshing;
+
+    expect(store().usage).toBeNull();
+  });
+
+  it('does not put a failed approval sheet back over the other session', async () => {
+    useSession.setState({ approval: { id: 1, command: 'rm -rf', choices: ['once'] } as never });
+    let fail: (e: Error) => void = () => {};
+    call.mockImplementationOnce(() => new Promise((_, rej) => (fail = rej)));
+    const answering = store().respondApproval('once');
+
+    switchTo('s2');
+    fail(new Error('boom'));
+    await answering;
+
+    expect(store().approval).toBeNull();
+    expect(store().error).toBeNull();
+  });
+});
+
+/**
+ * Every reconnect reloads history. Fresh ids on every row remounted every
+ * `MessageRow` — markdown parsed again, expanded cards collapsed — to show
+ * exactly the same transcript.
+ */
+describe('message ids across a resync', () => {
+  const history = [
+    { role: 'user', text: 'hi' },
+    { role: 'assistant', text: 'hello' },
+    { role: 'tool', name: 'Bash', context: 'ls' },
+    { role: 'assistant', text: 'listed' },
+  ];
+  const ids = () => store().messages.map((m) => m.id);
+
+  it('keeps every id when nothing changed', () => {
+    store().loadHistory(history);
+    const before = ids();
+    store().loadHistory(history, { resync: true });
+    expect(ids()).toEqual(before);
+  });
+
+  it('gives new ids only to the rows that changed', () => {
+    store().loadHistory(history);
+    const before = ids();
+    store().loadHistory([...history.slice(0, 3), { role: 'assistant', text: 'listed, then more' }, { role: 'user', text: 'next' }], {
+      resync: true,
+    });
+    const after = ids();
+
+    expect(after.slice(0, 3)).toEqual(before.slice(0, 3));
+    expect(after[3]).not.toBe(before[3]);
+    expect(new Set(after).size).toBe(after.length);
+  });
+
+  it('does not carry ids into a different conversation', () => {
+    store().loadHistory(history);
+    const before = ids();
+    store().loadHistory(history);
+    expect(ids().some((id) => before.includes(id))).toBe(false);
+  });
+});
+
+describe('live state that says the session is idle', () => {
+  /** `StreamingTail` draws these whether or not a turn is running. */
+  it('clears a reply left half-written by a lost message.complete', () => {
+    emit('message.start');
+    emit('message.delta', { text: 'Half a rep' });
+    emit('reasoning.delta', { text: 'thinking' });
+    store().applyLiveState({ session_id: 's1', running: false });
+
+    expect(store().streamingText).toBe('');
+    expect(store().streamingReasoning).toBe('');
+  });
+
+  it('stops tool cards pulsing', () => {
+    emit('message.start');
+    emit('tool.start', { tool_id: 't1', name: 'terminal' });
+    store().applyLiveState({ session_id: 's1', running: false });
+
+    expect(store().messages[0]).toMatchObject({ kind: 'tool', status: 'done' });
+  });
+
+  it('keeps the reply when a turn is still running', () => {
+    emit('message.start');
+    emit('message.delta', { text: 'Half a rep' });
+    store().applyLiveState({ session_id: 's1', running: true });
+
+    expect(store().streamingText).toBe('Half a rep');
+  });
+});
+
+/**
+ * A resume's `open_requests` reach the store before the result does — while
+ * `doResume` has the store on no session at all — and were held unseen. The
+ * sheet then fell back to `pending_approval`'s copy, which has no `srqId`, so
+ * `request.cancel` could not close it.
+ */
+describe('open requests carried by a resume', () => {
+  const approval = (sessionId: string) => ({
+    id: 'srq-9',
+    method: 'approval',
+    params: { session_id: sessionId, request_id: 'a1', command: 'rm -rf build', choices: ['once', 'deny'] },
+    replayed: true,
+    respond: vi.fn(() => true),
+    fail: vi.fn(() => true),
+  });
+
+  it('attaches them once the session is adopted, with their request id', () => {
+    store().reset();
+    store().applyServerRequest(approval('s7'));
+    expect(store().approval).toBeNull();
+
+    store().adoptSession({ sessionId: 's7' });
+    store().applyLiveState({
+      session_id: 's7',
+      running: true,
+      pending_approval: { request_id: 'a1', command: 'rm -rf build', choices: ['once', 'deny'] },
+      open_requests: [{ id: 'srq-9', method: 'approval' }],
+    } as never);
+
+    expect(store().approval?.srqId).toBe('srq-9');
+    store().cancelServerRequest('srq-9');
+    expect(store().approval).toBeNull();
+  });
+
+  it('attaches nothing that belongs to another session', () => {
+    store().reset();
+    store().applyServerRequest(approval('elsewhere'));
+    store().adoptSession({ sessionId: 's7' });
+    store().applyLiveState({ session_id: 's7', open_requests: [{ id: 'srq-9' }] } as never);
+
+    expect(store().approval).toBeNull();
   });
 });

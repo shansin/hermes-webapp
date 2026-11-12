@@ -28,6 +28,7 @@ vi.mock('../src/store/session', () => ({
 }));
 
 import { Markdown } from '../src/components/chat/Markdown';
+import { WorkspaceCwd } from '../src/components/chat/workspaceCwd';
 
 const show = (md: string) =>
   render(<MemoryRouter>{(<Markdown>{md}</Markdown>) as ReactNode}</MemoryRouter>);
@@ -116,5 +117,28 @@ describe('several in one message', () => {
       '/files?path=%2Fhome%2Fshsin%2Freport.md',
       '/files?path=%2Fhome%2Fshsin%2Fbrief.md',
     ]);
+  });
+});
+
+/**
+ * The transcript hands the cwd down once (`WorkspaceCwd`) instead of every
+ * message subscribing to the store for it; outside the transcript there is no
+ * provider and the store is read as before. Both paths have to resolve.
+ */
+describe('where the cwd comes from', () => {
+  it('prefers the one the transcript provides', () => {
+    render(
+      <MemoryRouter>
+        <WorkspaceCwd value="/srv/other">
+          <Markdown>{'See [the plan](workspace://notes/plan.md).'}</Markdown>
+        </WorkspaceCwd>
+      </MemoryRouter>,
+    );
+    expect(hrefs()).toEqual(['/files?path=%2Fsrv%2Fother%2Fnotes%2Fplan.md']);
+  });
+
+  it('falls back to the session store without a provider', () => {
+    show('See [the plan](workspace://notes/plan.md).');
+    expect(hrefs()).toEqual(['/files?path=%2Fcode%2Fapp%2Fnotes%2Fplan.md']);
   });
 });

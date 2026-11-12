@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { registerSW } from 'virtual:pwa-register';
-import { z } from 'zod';
+import { config as zodConfig } from 'zod/mini';
 import { App } from './App';
 
 import './styles/global.css';
@@ -13,7 +13,15 @@ import './styles/viz.css';
 // zod 4 probes for `new Function` to JIT its object parsers; the CSP the
 // proxy sends forbids eval, so the probe only logs a violation per load.
 // Interpreted parsing is what it falls back to anyway — say so up front.
-z.config({ jitless: true });
+// Through `zod/mini`, not `zod`: the config is the one global both builds
+// share, and importing classic zod here would put all of it back in the entry
+// chunk (see the note in `ws/types.ts`).
+zodConfig({ jitless: true });
+// Classic zod registered English issue messages on import; `zod/mini` leaves
+// them out, and a failed parse would otherwise say only "Invalid input" in
+// the error a screen shows. Nothing needs them before first paint, so they
+// load after it.
+void import('zod/v4/locales/en.js').then((m) => zodConfig(m.default()));
 
 const queryClient = new QueryClient({
   defaultOptions: {

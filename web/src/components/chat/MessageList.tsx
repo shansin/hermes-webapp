@@ -15,7 +15,10 @@
  *
  * Three modes share this list, and they are mutually exclusive by design:
  * reading, searching (a query bar filters and steps between matches), and
- * selecting (long-press, then tap to build a range to copy or share).
+ * selecting (long-press, then tap to build a range to copy or share). The
+ * state for the last two, and for reading a reply aloud, lives in its own hook
+ * beside this file (`useTranscriptSearch`, `useSelection`, `useReadAloud`);
+ * what stays here is scrolling, turn navigation and the rows.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { splitAttachedImages } from '../../lib/localImages';
@@ -42,12 +45,14 @@ import {
 } from '../shared/Icons';
 import { Empty, formatTokens } from '../shared/misc';
 import { useSession, type ChatMessage, type MessageTime } from '../../store/session';
-import { onSpeakingChange, speak, stopSpeaking } from '../../lib/audio';
 import { useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
-import { useDebounced } from '../../lib/useDebounced';
 import { useLongPress } from '../../lib/useLongPress';
-import { chatToMarkdown, copyText, messageText, outcomeToast, shareText } from '../../lib/share';
+import { copyText, outcomeToast, shareText } from '../../lib/share';
+import { useTranscriptSearch } from './useTranscriptSearch';
+import { useSelection } from './useSelection';
+import { useReadAloud, type VoicePhase } from './useReadAloud';
+import { WorkspaceCwd } from './workspaceCwd';
 
 const NEAR_BOTTOM_PX = 120;
 
@@ -70,12 +75,6 @@ export function unreadSince(messages: { id: string }[], anchorId: string | null)
 }
 
 /**
- * How long the find box must sit still before the transcript is filtered.
- * Matches the session list's search, which settles on the same budget.
- */
-const SEARCH_DEBOUNCE_MS = 250;
-
-/**
  * Clock time for a message, or null when it isn't known.
  *
  * Restored history has no timestamps, so those messages simply don't get one —
@@ -91,9 +90,6 @@ function Stamp({ at }: { at: MessageTime }) {
   );
 }
 
-/** Where a read-aloud request has got to. */
-type VoicePhase = 'pending' | 'playing';
-
 interface MessageListProps {
   searchOpen: boolean;
   onCloseSearch: () => void;
@@ -105,6 +101,8 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
   const rewinding = useSession((s) => s.rewinding);
   const retryLast = useSession((s) => s.retryLast);
   const resendFailed = useSession((s) => s.resendFailed);
+  /** Subscribed once here and provided to every `Markdown`; see `workspaceCwd.ts`. */
+  const cwd = useSession((s) => s.info?.cwd);
   const toast = useUi((s) => s.toast);
 
   const ref = useRef<HTMLDivElement>(null);
@@ -145,108 +143,25 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
     else nodes.current.delete(id);
   }, []);
 
-  // --- search ------------------------------------------------------------
-  const [query, setQuery] = useState('');
-  const [matchIdx, setMatchIdx] = useState(0);
+  // Entering selection closes a user bubble's actions. Stable, because it is
+  // folded into a callback every row receives.
+  const closeActions = useCallback(() => setOpenActions(null), []);
 
-  /**
-   * Search on the settled value. The raw one still drives the input, so typing
-   * stays responsive — but every keystroke was otherwise a full rescan of the
-   * transcript *and* a re-render of the filtered list, on the screen where the
-   * transcript is by definition long enough to need searching.
-   *
-   * `filtering` below keys off this too, so the list and the match count flip
-   * together instead of showing "no matches" for a beat on every character.
-   */
-  const settledQuery = useDebounced(query, SEARCH_DEBOUNCE_MS);
+  const {
+    query,
+    setQuery,
+    settledQuery,
+    matches,
+    matchSet,
+    matchIdx,
+    currentMatch,
+    stepMatch,
+    closeSearch,
+    filtering,
+  } = useTranscriptSearch({ searchOpen, messages, nodes, onCloseSearch });
 
-  /**
-   * The transcript, lowercased once. Rebuilt when the messages change rather
-   * than when the query does, so stepping through a search doesn't re-case
-   * every message; built only while the search bar is open, so a conversation
-   * that is never searched never pays for it or holds the second copy.
-   */
-  const haystack = useMemo(
-    () => (searchOpen ? messages.map((m) => ({ id: m.id, text: messageText(m).toLowerCase() })) : null),
-    [searchOpen, messages],
-  );
-
-  const matches = useMemo(() => {
-    const q = settledQuery.trim().toLowerCase();
-    if (!q || !haystack) return [];
-    return haystack.filter((h) => h.text.includes(q)).map((h) => h.id);
-  }, [haystack, settledQuery]);
-
-  /**
-   * The same ids as a set. Every row asks "am I a match" on every render, and
-   * an array scan there is quadratic in the transcript length — on the one
-   * screen where the transcript is already long enough to need searching.
-   */
-  const matchSet = useMemo(() => new Set(matches), [matches]);
-
-  // A new query starts from the top rather than keeping a position that meant
-  // something about the previous set of hits. Keyed on the settled value, so
-  // the reset lands with the match set it belongs to.
-  useEffect(() => {
-    setMatchIdx(0);
-  }, [settledQuery]);
-
-  const currentMatch = matches[matchIdx] ?? null;
-
-  // Bring the active hit into view. `center` rather than the default, so a
-  // match near the bottom doesn't end up under the composer.
-  useEffect(() => {
-    if (!currentMatch) return;
-    nodes.current.get(currentMatch)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }, [currentMatch]);
-
-  const stepMatch = useCallback(
-    (delta: number) => {
-      if (matches.length === 0) return;
-      buzz('tap');
-      setMatchIdx((i) => (i + delta + matches.length) % matches.length);
-    },
-    [matches.length],
-  );
-
-  // Closing search must not leave the transcript filtered by a stale query.
-  const closeSearch = useCallback(() => {
-    setQuery('');
-    onCloseSearch();
-  }, [onCloseSearch]);
-
-  // --- selection ---------------------------------------------------------
-  const [selecting, setSelecting] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
-
-  const beginSelection = useCallback((id: string) => {
-    buzz('approval');
-    setSelecting(true);
-    setSelected(new Set([id]));
-    setOpenActions(null);
-  }, []);
-
-  const toggleSelected = useCallback((id: string) => {
-    buzz('tap');
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const endSelection = useCallback(() => {
-    setSelecting(false);
-    setSelected(new Set());
-  }, []);
-
-  // Selection is over ids, but the export has to read in transcript order —
-  // and a range shared out of order would be nonsense.
-  const selectedMarkdown = useCallback(
-    () => chatToMarkdown(messages.filter((m) => selected.has(m.id))),
-    [messages, selected],
-  );
+  const { selecting, selected, beginSelection, toggleSelected, endSelection, selectedMarkdown } =
+    useSelection({ messages, onBegin: closeActions });
 
   /**
    * Retry only makes sense on the newest reply — rerunning an older one would
@@ -296,72 +211,7 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
     void retryLast();
   }, [retryLast]);
 
-  /**
-   * The message being read aloud, and how far along that is.
-   *
-   * `pending` covers the gap between the tap and the first sound: the TTS
-   * round trip is a network request, and a button that stays on "Play" through
-   * it reads as a tap that did nothing.
-   *
-   * Mirrored into a ref so the toggle below can stay a stable callback —
-   * `MessageRow` is memoized, and a handler that changed identity every time
-   * playback advanced would re-render the whole transcript.
-   */
-  const [voice, setVoice] = useState<{ id: string; phase: VoicePhase } | null>(null);
-  const voiceRef = useRef<{ id: string; phase: VoicePhase } | null>(null);
-  const setVoiceState = useCallback((v: { id: string; phase: VoicePhase } | null) => {
-    voiceRef.current = v;
-    setVoice(v);
-  }, []);
-
-  /**
-   * Invalidates an in-flight start. Bumped on every tap, so a request that
-   * comes back after the user changed their mind can tell it was superseded
-   * and decline to claim the button.
-   */
-  const speakGen = useRef(0);
-
-  // Playback also ends by itself, and the button has to follow it back. A stop
-  // reported while we are still `pending` belongs to the *previous* clip —
-  // `speak` tears the old one down before starting ours — so it must not clear
-  // a request that hasn't begun yet.
-  useEffect(
-    () =>
-      onSpeakingChange((on) => {
-        if (!on && voiceRef.current?.phase === 'playing') setVoiceState(null);
-      }),
-    [setVoiceState],
-  );
-
-  const onSpeak = useCallback(
-    async (id: string, text: string) => {
-      // A second tap on the same message cancels, whether it is already
-      // playing or still being fetched.
-      if (voiceRef.current?.id === id) {
-        speakGen.current++;
-        stopSpeaking();
-        setVoiceState(null);
-        return;
-      }
-
-      const gen = ++speakGen.current;
-      setVoiceState({ id, phase: 'pending' });
-      try {
-        await speak(text);
-        if (speakGen.current !== gen) return;
-        setVoiceState({ id, phase: 'playing' });
-      } catch (e) {
-        if (speakGen.current !== gen) return;
-        setVoiceState(null);
-        toast(e instanceof Error ? e.message : 'Speech unavailable', 'warn');
-      }
-    },
-    [setVoiceState, toast],
-  );
-
-  // Searching hides everything that doesn't match: on a phone a filtered list
-  // beats hunting for highlighted bubbles in a wall of text.
-  const filtering = searchOpen && settledQuery.trim().length > 0;
+  const { voice, onSpeak } = useReadAloud(toast);
 
   const isNearBottom = () => {
     const el = ref.current;
@@ -465,14 +315,11 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
     if (target) nodes.current.get(target.id)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   };
 
-  // Leaving the chat must not leave a voice reading into an empty room.
-  useEffect(() => stopSpeaking, []);
-
   const empty = messages.length === 0 && !running;
   const visible = filtering ? messages.filter((m) => matchSet.has(m.id)) : messages;
 
   return (
-    <>
+    <WorkspaceCwd value={cwd}>
       {searchOpen && (
         <ChatSearchBar
           query={query}
@@ -531,30 +378,41 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
           <div className="chat-search__none">No messages match “{settledQuery.trim()}”.</div>
         )}
 
-        {visible.map((m) => (
-          <MessageRow
-            key={m.id}
-            m={m}
-            register={register}
-            showDivider={!filtering && m.id === historyBoundary}
-            isMatch={searchOpen && matchSet.has(m.id)}
-            isCurrentMatch={m.id === currentMatch}
-            selecting={selecting}
-            isSelected={selected.has(m.id)}
-            onBeginSelection={beginSelection}
-            onToggleSelected={toggleSelected}
-            openActions={openActions === m.id}
-            onToggleActions={onToggleActions}
-            onEdit={onEdit}
-            onResend={onResend}
-            isLastAssistant={m.id === lastAssistantId}
-            running={running}
-            rewinding={rewinding}
-            onRetry={onRetry}
-            onSpeak={onSpeak}
-            voice={voice?.id === m.id ? voice.phase : null}
-          />
-        ))}
+        {visible.map((m) => {
+          /**
+           * Whether this row draws a control that `running` / `rewinding`
+           * disable: retry on the newest reply, "Send again" on a failed
+           * prompt, "Edit & resend" in an open action bar. Every other row
+           * gets a constant `false`, so a turn starting or ending re-renders
+           * those few rows instead of the whole memoized transcript.
+           */
+          const live =
+            m.id === lastAssistantId || (m.kind === 'user' && (m.failed || openActions === m.id));
+          return (
+            <MessageRow
+              key={m.id}
+              m={m}
+              register={register}
+              showDivider={!filtering && m.id === historyBoundary}
+              isMatch={searchOpen && matchSet.has(m.id)}
+              isCurrentMatch={m.id === currentMatch}
+              selecting={selecting}
+              isSelected={selected.has(m.id)}
+              onBeginSelection={beginSelection}
+              onToggleSelected={toggleSelected}
+              openActions={openActions === m.id}
+              onToggleActions={onToggleActions}
+              onEdit={onEdit}
+              onResend={onResend}
+              isLastAssistant={m.id === lastAssistantId}
+              running={live && running}
+              rewinding={live && rewinding}
+              onRetry={onRetry}
+              onSpeak={onSpeak}
+              voice={voice?.id === m.id ? voice.phase : null}
+            />
+          );
+        })}
 
         {/* After the tail, not before: a background delegation outlives the
             turn that dispatched it, so this block is about what is still
@@ -619,7 +477,7 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
           if (id) void useSession.getState().editTurn(id, text);
         }}
       />
-    </>
+    </WorkspaceCwd>
   );
 }
 
@@ -638,6 +496,10 @@ interface RowProps {
   onEdit: (id: string, text: string) => void;
   onResend: (id: string) => void;
   isLastAssistant: boolean;
+  /**
+   * The session's, but only on a row with a control they disable — false on
+   * every other, so a turn boundary does not re-render the transcript.
+   */
   running: boolean;
   rewinding: boolean;
   onRetry: () => void;

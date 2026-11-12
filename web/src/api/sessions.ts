@@ -555,9 +555,8 @@ export function useSessionMessages(id: string | null, profile?: string | null) {
      *
      * On the 10s default this refetched a whole conversation's messages every
      * time the tab regained focus or the component remounted — over the same
-     * URL Workbox serves StaleWhileRevalidate, so each of those was two
-     * fetches: the cached copy handed straight back, then a network round trip
-     * behind it, for a document that had not changed. New messages in a
+     * URL, for a document that had not changed (Workbox now serves it
+     * network-first, falling back to its cache only offline or after 4s). New messages in a
      * session being watched arrive over the socket and land in `store/session`,
      * not here; this is the *stored* copy, which only moves when a turn
      * completes.

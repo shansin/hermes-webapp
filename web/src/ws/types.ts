@@ -3,46 +3,50 @@
  *
  * Shapes here were captured from live frames rather than inferred: the gateway
  * has no published schema, so each payload below was observed on the wire.
- * Everything is validated with a permissive zod schema (`.loose()` /
+ * Everything is validated with a permissive zod schema (`z.looseObject` /
  * optional fields) — a Hermes upgrade that adds a field must not break the app,
  * and an unknown event type is surfaced in the dev panel rather than thrown.
  */
 /**
  * A note on zod's weight, from the bundle audit.
  *
- * zod sits in the **entry** chunk, third behind react-dom and the app's own
- * source: ~13KB gzipped on zod 3, about 14KB more since the move to zod 4
- * (forced by an advisory; eager total 168.5 → 182.9KB). It was a candidate for a lazy
- * boundary and is not one: these schemas validate gateway frames, the socket
- * opens in `App.tsx` on mount, and the first frame can arrive before a
- * dynamic import would resolve — so deferring it would mean either dropping
- * frames or hand-writing a second validator for the boot window, which is the
- * cost it was meant to save twice over.
+ * zod sits in the **entry** chunk and has to: these schemas validate gateway
+ * frames, the socket opens in `App.tsx` on mount, and the first frame can
+ * arrive before a dynamic import would resolve — so a lazy boundary would mean
+ * dropping frames or hand-writing a second validator for the boot window.
  *
- * The reason it is large is that classic zod does not tree-shake: every
- * schema carries the whole method-chaining API (zod 4's adds JSON Schema
- * export and more) whether or not anything calls it. Shrinking it means
- * changing what validates, not where it loads — `zod/mini`, the same engine
- * with a functional API that does tree-shake (~7KB gzipped for shapes like
- * these), or hand-rolled predicates — which is a bigger decision than a chunk
- * boundary and has not been made. `pnpm analyze` reproduces the measurement.
+ * What it could do is weigh less. Classic zod does not tree-shake — every
+ * schema carries the whole method-chaining API, and zod 4's adds JSON Schema
+ * export — so the move to zod 4 (forced by an advisory) took the eager total
+ * from 168.5 to 182.9KB gzipped. Every schema in the app is therefore on
+ * `zod/mini`: the same engine and parse semantics behind a functional API the
+ * bundler can prune, which took the eager total to 164.3KB.
  *
- * zod 4 notes for editing these: `.loose()` is what `.passthrough()` was;
- * `z.record` takes a key schema; and `.default()` returns its value as-is
- * rather than parsing it — use `.prefault()` where the default must pass
- * through the schema (see `MoaPresetSchema.aggregator` in `api/moa.ts`).
+ * "Every" matters. The two builds share zod's core, and a shared module lands
+ * in the entry chunk — so one classic `import { z } from 'zod'`, even on a lazy
+ * route, pulls every core schema class (email, JWT, CIDR, …) back into it.
+ * `api/moa.ts` did exactly that for 9KB. `main.tsx` sets `jitless` and loads
+ * the English issue messages (which classic registered on import) through
+ * the same entry, and `test/wireSchemas.test.ts` refuses a classic import.
+ *
+ * Editing these: `z.looseObject` is what `.passthrough()` was — unknown fields
+ * pass through, which is the whole tolerance contract. Wrappers are functions
+ * (`z.optional(x)`, `z.nullish(x)`, `z._default(x, v)`); `z.record` takes a key
+ * schema; and `_default` returns its value as-is rather than parsing it — use
+ * `z.prefault` where the default must pass through the schema (see
+ * `MoaPresetSchema.aggregator` in `api/moa.ts`).
  */
-import { z } from 'zod';
+import * as z from 'zod/mini';
 
 // --- envelopes ---------------------------------------------------------------
 
 export const RpcResponseSchema = z.object({
   jsonrpc: z.literal('2.0'),
   id: z.union([z.number(), z.string()]),
-  result: z.unknown().optional(),
-  error: z
-    .object({ code: z.number(), message: z.string(), data: z.unknown().optional() })
-    .optional(),
+  result: z.optional(z.unknown()),
+  error: z.optional(
+    z.object({ code: z.number(), message: z.string(), data: z.optional(z.unknown()) }),
+  ),
 });
 export type RpcResponse = z.infer<typeof RpcResponseSchema>;
 
@@ -50,56 +54,48 @@ export type RpcResponse = z.infer<typeof RpcResponseSchema>;
 export const RpcEventSchema = z.object({
   jsonrpc: z.literal('2.0'),
   method: z.literal('event'),
-  params: z
-    .object({
-      type: z.string(),
-      session_id: z.string().optional(),
-      payload: z.unknown().optional(),
-    })
-    .loose(),
+  params: z.looseObject({
+    type: z.string(),
+    session_id: z.optional(z.string()),
+    payload: z.optional(z.unknown()),
+  }),
 });
 export type RpcEvent = z.infer<typeof RpcEventSchema>;
 
 // --- payloads (observed) -----------------------------------------------------
 
-export const UsageSchema = z
-  .object({
-    model: z.string().optional(),
-    input: z.number().optional(),
-    output: z.number().optional(),
-    reasoning: z.number().optional(),
-    total: z.number().optional(),
-    calls: z.number().optional(),
-    context_used: z.number().optional(),
-    context_max: z.number().optional(),
-    context_percent: z.number().optional(),
-    compressions: z.number().optional(),
-    active_subagents: z.number().optional(),
-  })
-  .loose();
+export const UsageSchema = z.looseObject({
+  model: z.optional(z.string()),
+  input: z.optional(z.number()),
+  output: z.optional(z.number()),
+  reasoning: z.optional(z.number()),
+  total: z.optional(z.number()),
+  calls: z.optional(z.number()),
+  context_used: z.optional(z.number()),
+  context_max: z.optional(z.number()),
+  context_percent: z.optional(z.number()),
+  compressions: z.optional(z.number()),
+  active_subagents: z.optional(z.number()),
+});
 export type Usage = z.infer<typeof UsageSchema>;
 
-export const TextDeltaSchema = z.object({ text: z.string() }).loose();
+export const TextDeltaSchema = z.looseObject({ text: z.string() });
 
 /** `tool.start` — args aren't known yet, only a human-readable `context`. */
-export const ToolStartSchema = z
-  .object({
-    tool_id: z.string(),
-    name: z.string(),
-    context: z.string().optional(),
-  })
-  .loose();
+export const ToolStartSchema = z.looseObject({
+  tool_id: z.string(),
+  name: z.string(),
+  context: z.optional(z.string()),
+});
 
 /** `tool.complete` — carries the resolved args plus the tool's return value. */
-export const ToolCompleteSchema = z
-  .object({
-    tool_id: z.string(),
-    name: z.string(),
-    args: z.record(z.string(), z.unknown()).optional(),
-    duration_s: z.number().optional(),
-    result: z.unknown().optional(),
-  })
-  .loose();
+export const ToolCompleteSchema = z.looseObject({
+  tool_id: z.string(),
+  name: z.string(),
+  args: z.optional(z.record(z.string(), z.unknown())),
+  duration_s: z.optional(z.number()),
+  result: z.optional(z.unknown()),
+});
 
 /**
  * `subagent.*` — a delegated child agent's activity, relayed onto the *parent*
@@ -112,57 +108,51 @@ export const ToolCompleteSchema = z
  * Every identity field is optional: older emitters omit them, and the gateway's
  * own comment says clients should fall back to flat rendering when they do.
  */
-export const SubagentEventSchema = z
-  .object({
-    goal: z.string().optional(),
-    task_count: z.number().optional(),
-    task_index: z.number().optional(),
-    subagent_id: z.string().optional(),
-    parent_id: z.string().optional(),
-    child_session_id: z.string().optional(),
-    depth: z.number().optional(),
-    model: z.string().optional(),
-    tool_name: z.string().optional(),
-    /** Human-readable preview of what the child is doing right now. */
-    text: z.string().optional(),
-    status: z.string().optional(),
-    summary: z.string().optional(),
-    duration_seconds: z.number().optional(),
-    input_tokens: z.number().optional(),
-    output_tokens: z.number().optional(),
-    files_read: z.array(z.string()).optional(),
-    files_written: z.array(z.string()).optional(),
-  })
-  .loose();
+export const SubagentEventSchema = z.looseObject({
+  goal: z.optional(z.string()),
+  task_count: z.optional(z.number()),
+  task_index: z.optional(z.number()),
+  subagent_id: z.optional(z.string()),
+  parent_id: z.optional(z.string()),
+  child_session_id: z.optional(z.string()),
+  depth: z.optional(z.number()),
+  model: z.optional(z.string()),
+  tool_name: z.optional(z.string()),
+  /** Human-readable preview of what the child is doing right now. */
+  text: z.optional(z.string()),
+  status: z.optional(z.string()),
+  summary: z.optional(z.string()),
+  duration_seconds: z.optional(z.number()),
+  input_tokens: z.optional(z.number()),
+  output_tokens: z.optional(z.number()),
+  files_read: z.optional(z.array(z.string())),
+  files_written: z.optional(z.array(z.string())),
+});
 export type SubagentEvent = z.infer<typeof SubagentEventSchema>;
 
-export const MessageCompleteSchema = z
-  .object({
-    text: z.string().optional(),
-    reasoning: z.string().optional(),
-    status: z.string().optional(),
-    usage: UsageSchema.optional(),
-  })
-  .loose();
+export const MessageCompleteSchema = z.looseObject({
+  text: z.optional(z.string()),
+  reasoning: z.optional(z.string()),
+  status: z.optional(z.string()),
+  usage: z.optional(UsageSchema),
+});
 
 /**
  * `approval.request` — the gateway derives `choices` from the permission flags,
  * so it is present in practice, but we default it defensively: an approval
  * sheet with no buttons would wedge the turn.
  */
-export const ApprovalRequestSchema = z
-  .object({
-    tool: z.string().optional(),
-    name: z.string().optional(),
-    command: z.string().optional(),
-    description: z.string().optional(),
-    reason: z.string().optional(),
-    risk: z.string().optional(),
-    choices: z.array(z.string()).default(['once', 'deny']),
-    allow_permanent: z.boolean().optional(),
-    smart_denied: z.boolean().optional(),
-  })
-  .loose();
+export const ApprovalRequestSchema = z.looseObject({
+  tool: z.optional(z.string()),
+  name: z.optional(z.string()),
+  command: z.optional(z.string()),
+  description: z.optional(z.string()),
+  reason: z.optional(z.string()),
+  risk: z.optional(z.string()),
+  choices: z._default(z.array(z.string()), ['once', 'deny']),
+  allow_permanent: z.optional(z.boolean()),
+  smart_denied: z.optional(z.boolean()),
+});
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
 
 /**
@@ -180,28 +170,24 @@ export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
  * gateway completes only once every `qid` has been answered. `normalizeClarify`
  * folds them into one list so nothing downstream has to know which arrived.
  */
-export const ClarifyQuestionSchema = z
-  .object({
-    qid: z.string().optional(),
-    question: z.string().default(''),
-    // Null, not merely absent, is how the gateway spells an open-ended
-    // question — one to be answered with free text rather than a choice.
-    choices: z.array(z.string()).nullish(),
-    multi_select: z.boolean().optional(),
-  })
-  .loose();
+export const ClarifyQuestionSchema = z.looseObject({
+  qid: z.optional(z.string()),
+  question: z._default(z.string(), ''),
+  // Null, not merely absent, is how the gateway spells an open-ended
+  // question — one to be answered with free text rather than a choice.
+  choices: z.nullish(z.array(z.string())),
+  multi_select: z.optional(z.boolean()),
+});
 
-export const ClarifyRequestSchema = z
-  .object({
-    request_id: z.string(),
-    question: z.string().optional(),
-    choices: z.array(z.string()).nullish(),
-    multi_select: z.boolean().optional(),
-    questions: z.array(ClarifyQuestionSchema).optional(),
-    /** Answers already locked in, replayed when a reconnect restores a batch. */
-    answers: z.record(z.string(), z.string()).optional(),
-  })
-  .loose();
+export const ClarifyRequestSchema = z.looseObject({
+  request_id: z.string(),
+  question: z.optional(z.string()),
+  choices: z.nullish(z.array(z.string())),
+  multi_select: z.optional(z.boolean()),
+  questions: z.optional(z.array(ClarifyQuestionSchema)),
+  /** Answers already locked in, replayed when a reconnect restores a batch. */
+  answers: z.optional(z.record(z.string(), z.string())),
+});
 export type ClarifyRequest = z.infer<typeof ClarifyRequestSchema>;
 
 export interface ClarifyQuestion {
@@ -238,28 +224,28 @@ export function normalizeClarify(data: ClarifyRequest): ClarifyPrompt {
   };
 }
 
-export const SessionInfoSchema = z
-  .object({
-    model: z.string().optional(),
-    provider: z.string().optional(),
-    reasoning_effort: z.string().optional(),
-    approval_mode: z.string().optional(),
-    fast: z.boolean().optional(),
-    yolo: z.boolean().optional(),
-    tools: z.record(z.string(), z.array(z.string())).optional(),
-    skills: z.record(z.string(), z.array(z.string())).optional(),
-    cwd: z.string().optional(),
-  })
-  .loose();
+export const SessionInfoSchema = z.looseObject({
+  model: z.optional(z.string()),
+  provider: z.optional(z.string()),
+  reasoning_effort: z.optional(z.string()),
+  approval_mode: z.optional(z.string()),
+  fast: z.optional(z.boolean()),
+  yolo: z.optional(z.boolean()),
+  tools: z.optional(z.record(z.string(), z.array(z.string()))),
+  skills: z.optional(z.record(z.string(), z.array(z.string()))),
+  cwd: z.optional(z.string()),
+});
 export type SessionInfo = z.infer<typeof SessionInfoSchema>;
 
-export const SessionTitleSchema = z
-  .object({ session_id: z.string().optional(), title: z.string() })
-  .loose();
+export const SessionTitleSchema = z.looseObject({
+  session_id: z.optional(z.string()),
+  title: z.string(),
+});
 
-export const StatusUpdateSchema = z
-  .object({ kind: z.string().optional(), text: z.string().optional() })
-  .loose();
+export const StatusUpdateSchema = z.looseObject({
+  kind: z.optional(z.string()),
+  text: z.optional(z.string()),
+});
 
 // --- session.create / history ------------------------------------------------
 
@@ -272,116 +258,108 @@ export const StatusUpdateSchema = z
  * redirects — extra user messages sent into the same turn — carried alongside
  * the original prompt rather than over it.
  */
-export const InflightTurnSchema = z
-  .object({
-    user: z.string().default(''),
-    assistant: z.string().default(''),
-    streaming: z.boolean().optional(),
-    corrections: z.array(z.string()).optional(),
-    /** A retained failed turn: present only once the turn has stopped. */
-    error: z.string().optional(),
-    status: z.string().optional(),
-  })
-  .loose();
+export const InflightTurnSchema = z.looseObject({
+  user: z._default(z.string(), ''),
+  assistant: z._default(z.string(), ''),
+  streaming: z.optional(z.boolean()),
+  corrections: z.optional(z.array(z.string())),
+  /** A retained failed turn: present only once the turn has stopped. */
+  error: z.optional(z.string()),
+  status: z.optional(z.string()),
+});
 export type InflightTurn = z.infer<typeof InflightTurnSchema>;
 
-export const SessionCreateResultSchema = z
-  .object({
-    session_id: z.string(),
-    stored_session_id: z.string().optional(),
-    message_count: z.number().optional(),
-    messages: z.array(z.unknown()).optional(),
-    info: SessionInfoSchema.optional(),
-    /**
-     * A question the agent is already parked on. Resuming is the only way back
-     * to it: `clarify.request` fired while this client was detached, and the
-     * gateway replays the pending prompt here rather than re-emitting it.
-     */
-    pending_clarify: ClarifyRequestSchema.optional(),
-    /**
-     * The live-turn projection, and the reason it is read at all.
-     *
-     * `running` is the gateway's own answer to "is a turn in flight right
-     * now", and nothing else can supply it after a cold start: `message.start`
-     * fired at a client that no longer exists, so a reopened app saw deltas
-     * arriving into a store that believed the session was idle. That showed as
-     * a missing stop button and a missing working indicator, and — worse —
-     * `submitPrompt` sending the next message straight at a busy session,
-     * where the gateway rejects it (4009) and the bubble is stamped failed.
-     *
-     * `inflight` carries the half of that turn no transcript has yet: the
-     * agent flushes to SQLite at turn end, so the prompt being answered and
-     * the reply so far exist only here until it completes.
-     */
-    running: z.boolean().optional(),
-    status: z.string().optional(),
-    inflight: InflightTurnSchema.nullish(),
-    /** A prompt the gateway accepted for the next turn, held while busy. */
-    queued: z.object({ user: z.string().default('') }).loose().nullish(),
-    /** Raised while we were detached; the turn is still blocked on it. */
-    pending_approval: ApprovalRequestSchema.optional(),
-  })
-  .loose();
+export const SessionCreateResultSchema = z.looseObject({
+  session_id: z.string(),
+  stored_session_id: z.optional(z.string()),
+  message_count: z.optional(z.number()),
+  messages: z.optional(z.array(z.unknown())),
+  info: z.optional(SessionInfoSchema),
+  /**
+   * A question the agent is already parked on. Resuming is the only way back
+   * to it: `clarify.request` fired while this client was detached, and the
+   * gateway replays the pending prompt here rather than re-emitting it.
+   */
+  pending_clarify: z.optional(ClarifyRequestSchema),
+  /**
+   * The live-turn projection, and the reason it is read at all.
+   *
+   * `running` is the gateway's own answer to "is a turn in flight right
+   * now", and nothing else can supply it after a cold start: `message.start`
+   * fired at a client that no longer exists, so a reopened app saw deltas
+   * arriving into a store that believed the session was idle. That showed as
+   * a missing stop button and a missing working indicator, and — worse —
+   * `submitPrompt` sending the next message straight at a busy session,
+   * where the gateway rejects it (4009) and the bubble is stamped failed.
+   *
+   * `inflight` carries the half of that turn no transcript has yet: the
+   * agent flushes to SQLite at turn end, so the prompt being answered and
+   * the reply so far exist only here until it completes.
+   */
+  running: z.optional(z.boolean()),
+  status: z.optional(z.string()),
+  inflight: z.nullish(InflightTurnSchema),
+  /** A prompt the gateway accepted for the next turn, held while busy. */
+  queued: z.nullish(z.looseObject({ user: z._default(z.string(), '') })),
+  /** Raised while we were detached; the turn is still blocked on it. */
+  pending_approval: z.optional(ApprovalRequestSchema),
+});
 export type SessionCreateResult = z.infer<typeof SessionCreateResultSchema>;
 
 /** One entry of `session.history`. `role: "tool"` rows describe a tool call. */
-export const HistoryMessageSchema = z
-  .object({
-    role: z.string(),
-    text: z.string().optional(),
-    name: z.string().optional(),
-    context: z.string().optional(),
-    reasoning: z.string().optional(),
-    /**
-     * The call's resolved arguments. Present on replayed `tool` rows and worth
-     * keeping: `context` is only an 80-char preview, so a clarify restored
-     * from history would otherwise show a truncated question and no choices.
-     */
-    args: z.record(z.string(), z.unknown()).optional(),
-    /** What the call returned. Absent from `session.history`; the REST copy has it. */
-    result: z.unknown().optional(),
-  })
-  .loose();
+export const HistoryMessageSchema = z.looseObject({
+  role: z.string(),
+  text: z.optional(z.string()),
+  name: z.optional(z.string()),
+  context: z.optional(z.string()),
+  reasoning: z.optional(z.string()),
+  /**
+   * The call's resolved arguments. Present on replayed `tool` rows and worth
+   * keeping: `context` is only an 80-char preview, so a clarify restored
+   * from history would otherwise show a truncated question and no choices.
+   */
+  args: z.optional(z.record(z.string(), z.unknown())),
+  /** What the call returned. Absent from `session.history`; the REST copy has it. */
+  result: z.optional(z.unknown()),
+});
 export type HistoryMessage = z.infer<typeof HistoryMessageSchema>;
 
-export const SessionHistorySchema = z
-  .object({ count: z.number().optional(), messages: z.array(HistoryMessageSchema) })
-  .loose();
+export const SessionHistorySchema = z.looseObject({
+  count: z.optional(z.number()),
+  messages: z.array(HistoryMessageSchema),
+});
 
-export const ContextBreakdownSchema = z
-  .object({
-    categories: z.array(
-      z.object({ id: z.string(), label: z.string(), tokens: z.number(), color: z.string().optional() }),
-    ),
-    context_max: z.number().optional(),
-    context_used: z.number().optional(),
-    context_percent: z.number().optional(),
-    estimated_total: z.number().optional(),
-    model: z.string().optional(),
-  })
-  .loose();
+export const ContextBreakdownSchema = z.looseObject({
+  categories: z.array(
+    z.object({ id: z.string(), label: z.string(), tokens: z.number(), color: z.optional(z.string()) }),
+  ),
+  context_max: z.optional(z.number()),
+  context_used: z.optional(z.number()),
+  context_percent: z.optional(z.number()),
+  estimated_total: z.optional(z.number()),
+  model: z.optional(z.string()),
+});
 export type ContextBreakdown = z.infer<typeof ContextBreakdownSchema>;
 
-export const ModelOptionsSchema = z
-  .object({
-    providers: z.array(
-      z
-        .object({
-          slug: z.string(),
-          name: z.string(),
-          is_current: z.boolean().optional(),
-          models: z.array(z.string()).default([]),
-          total_models: z.number().optional(),
-          authenticated: z.boolean().optional(),
-          warning: z.string().optional(),
-          capabilities: z
-            .record(z.string(), z.object({ fast: z.boolean().optional(), reasoning: z.boolean().optional() }))
-            .optional(),
-        })
-        .loose(),
-    ),
-  })
-  .loose();
+export const ModelOptionsSchema = z.looseObject({
+  providers: z.array(
+    z.looseObject({
+      slug: z.string(),
+      name: z.string(),
+      is_current: z.optional(z.boolean()),
+      models: z._default(z.array(z.string()), []),
+      total_models: z.optional(z.number()),
+      authenticated: z.optional(z.boolean()),
+      warning: z.optional(z.string()),
+      capabilities: z.optional(
+        z.record(
+          z.string(),
+          z.object({ fast: z.optional(z.boolean()), reasoning: z.optional(z.boolean()) }),
+        ),
+      ),
+    }),
+  ),
+});
 export type ModelOptions = z.infer<typeof ModelOptionsSchema>;
 
 /** Connection lifecycle as the UI cares about it. */

@@ -25,10 +25,10 @@ export function preloadMarkdown(): void {
   void import('./Markdown');
 }
 
-export function Markdown({ children }: { children: string }) {
+export function Markdown({ children, streaming }: { children: string; streaming?: boolean }) {
   return (
     <Suspense fallback={<div className="md md--plain">{children}</div>}>
-      <MarkdownImpl>{children}</MarkdownImpl>
+      <MarkdownImpl streaming={streaming}>{children}</MarkdownImpl>
     </Suspense>
   );
 }

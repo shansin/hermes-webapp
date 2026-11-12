@@ -12,57 +12,52 @@
  * Shapes are permissive for the same reason as `ws/types.ts`: there's no
  * published schema, and a Hermes upgrade that adds a field must not break us.
  */
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { hermes, RpcError } from '../ws/client';
 
-const PairSchema = z.tuple([z.string(), z.string()]).rest(z.string());
+const PairSchema = z.tuple([z.string(), z.string()], z.string());
 
-export const CommandCatalogSchema = z
-  .object({
-    pairs: z.array(PairSchema).default([]),
-    categories: z
-      .array(z.object({ name: z.string(), pairs: z.array(PairSchema).default([]) }).loose())
-      .default([]),
-    /** Alias → canonical command, lower-cased keys. */
-    canon: z.record(z.string(), z.string()).default({}),
-    /** Per-skill provenance and observed usage, keyed by slash command. */
-    skills: z
-      .record(
-        z.string(),
-        z
-          .object({ origin: z.string().optional(), usage: z.number().optional() })
-          .loose(),
-      )
-      .default({}),
-    skill_count: z.number().optional(),
-    warning: z.string().optional(),
-  })
-  .loose();
+export const CommandCatalogSchema = z.looseObject({
+  pairs: z._default(z.array(PairSchema), []),
+  categories: z._default(
+    z.array(z.looseObject({ name: z.string(), pairs: z._default(z.array(PairSchema), []) })),
+    [],
+  ),
+  /** Alias → canonical command, lower-cased keys. */
+  canon: z._default(z.record(z.string(), z.string()), {}),
+  /** Per-skill provenance and observed usage, keyed by slash command. */
+  skills: z._default(
+    z.record(
+      z.string(),
+      z.looseObject({ origin: z.optional(z.string()), usage: z.optional(z.number()) }),
+    ),
+    {},
+  ),
+  skill_count: z.optional(z.number()),
+  warning: z.optional(z.string()),
+});
 export type CommandCatalog = z.infer<typeof CommandCatalogSchema>;
 
-export const CompletionItemSchema = z
-  .object({
-    /** The replacement text. Note: no leading slash. */
-    text: z.string(),
-    display: z.string().default(''),
-    meta: z.string().default(''),
-    kind: z.string().default('command'),
-  })
-  .loose();
+export const CompletionItemSchema = z.looseObject({
+  /** The replacement text. Note: no leading slash. */
+  text: z.string(),
+  display: z._default(z.string(), ''),
+  meta: z._default(z.string(), ''),
+  kind: z._default(z.string(), 'command'),
+});
 export type CompletionItem = z.infer<typeof CompletionItemSchema>;
 
-export const SlashCompletionsSchema = z
-  .object({
-    items: z.array(CompletionItemSchema).default([]),
-    /** Index in the typed text where `item.text` is spliced in. */
-    replace_from: z.number().default(1),
-  })
-  .loose();
+export const SlashCompletionsSchema = z.looseObject({
+  items: z._default(z.array(CompletionItemSchema), []),
+  /** Index in the typed text where `item.text` is spliced in. */
+  replace_from: z._default(z.number(), 1),
+});
 export type SlashCompletions = z.infer<typeof SlashCompletionsSchema>;
 
-export const SlashExecResultSchema = z
-  .object({ output: z.string().default(''), warning: z.string().optional() })
-  .loose();
+export const SlashExecResultSchema = z.looseObject({
+  output: z._default(z.string(), ''),
+  warning: z.optional(z.string()),
+});
 export type SlashExecResult = z.infer<typeof SlashExecResultSchema>;
 
 /**
@@ -73,17 +68,15 @@ export type SlashExecResult = z.infer<typeof SlashExecResultSchema>;
  *                        `message` is expanded model-facing scaffolding.
  *  - `alias`           — `target` is another command to run
  */
-export const DispatchResultSchema = z
-  .object({
-    type: z.string().default('exec'),
-    output: z.string().optional(),
-    message: z.string().optional(),
-    display: z.string().optional(),
-    notice: z.string().optional(),
-    target: z.string().optional(),
-    name: z.string().optional(),
-  })
-  .loose();
+export const DispatchResultSchema = z.looseObject({
+  type: z._default(z.string(), 'exec'),
+  output: z.optional(z.string()),
+  message: z.optional(z.string()),
+  display: z.optional(z.string()),
+  notice: z.optional(z.string()),
+  target: z.optional(z.string()),
+  name: z.optional(z.string()),
+});
 export type DispatchResult = z.infer<typeof DispatchResultSchema>;
 
 export async function fetchCommandCatalog(): Promise<CommandCatalog> {

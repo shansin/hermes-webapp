@@ -26,7 +26,7 @@
  * still leads with the sources that survive it.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { z } from 'zod';
+import * as z from 'zod/mini';
 import { hermes, CONTROL_TIMEOUT_MS } from '../ws/client';
 import { useUi } from '../store/ui';
 
@@ -36,33 +36,29 @@ import { useUi } from '../store/ui';
  * subagent that has not called a tool yet carries no `last_tool` and one
  * dispatched a moment ago may not have its `goal` echoed back.
  */
-export const ActiveSubagentSchema = z
-  .object({
-    subagent_id: z.string(),
-    parent_id: z.string().nullish(),
-    depth: z.number().nullish(),
-    goal: z.string().nullish(),
-    delegation_id: z.string().nullish(),
-    model: z.string().nullish(),
-    /** Epoch seconds. */
-    started_at: z.number().nullish(),
-    status: z.string().nullish(),
-    tool_count: z.number().nullish(),
-    /** The session whose turn dispatched this child. */
-    owner_agent_session_id: z.string().nullish(),
-    last_tool: z.string().nullish(),
-  })
-  .loose();
+export const ActiveSubagentSchema = z.looseObject({
+  subagent_id: z.string(),
+  parent_id: z.nullish(z.string()),
+  depth: z.nullish(z.number()),
+  goal: z.nullish(z.string()),
+  delegation_id: z.nullish(z.string()),
+  model: z.nullish(z.string()),
+  /** Epoch seconds. */
+  started_at: z.nullish(z.number()),
+  status: z.nullish(z.string()),
+  tool_count: z.nullish(z.number()),
+  /** The session whose turn dispatched this child. */
+  owner_agent_session_id: z.nullish(z.string()),
+  last_tool: z.nullish(z.string()),
+});
 export type ActiveSubagent = z.infer<typeof ActiveSubagentSchema>;
 
-export const DelegationStatusSchema = z
-  .object({
-    active: z.array(ActiveSubagentSchema).default([]),
-    paused: z.boolean().optional(),
-    max_spawn_depth: z.number().optional(),
-    max_concurrent_children: z.number().optional(),
-  })
-  .loose();
+export const DelegationStatusSchema = z.looseObject({
+  active: z._default(z.array(ActiveSubagentSchema), []),
+  paused: z.optional(z.boolean()),
+  max_spawn_depth: z.optional(z.number()),
+  max_concurrent_children: z.optional(z.number()),
+});
 export type DelegationStatus = z.infer<typeof DelegationStatusSchema>;
 
 export async function fetchDelegationStatus(): Promise<DelegationStatus> {

@@ -31,6 +31,7 @@ import { useSlashRunner } from '../lib/useSlashRunner';
 import { takeShared } from '../lib/sharedIntake';
 import { useActivity } from '../lib/useActivity';
 import { buzz } from '../lib/haptics';
+import { reconnectSession } from '../lib/reconnectFlow';
 
 export function ChatScreen() {
   const [params, setParams] = useSearchParams();
@@ -99,7 +100,6 @@ export function ChatScreen() {
   const adopt = useSession((s) => s.adoptSession);
   const loadHistory = useSession((s) => s.loadHistory);
   const restoreClarifyAnswers = useSession((s) => s.restoreClarifyAnswers);
-  const applyResync = useSession((s) => s.applyResync);
   const applyLiveState = useSession((s) => s.applyLiveState);
   const setTitle = useSession((s) => s.setTitle);
   const refreshUsage = useSession((s) => s.refreshUsage);
@@ -395,7 +395,21 @@ export function ChatScreen() {
    * from disk, not the one we were watching.
    */
   const wasLive = useRef(false);
+  /**
+   * Which connection attempt a reconnect flow belongs to. Bumped on every
+   * connection change and on unmount — deliberately *not* on a session id
+   * change, because a rebuilt runtime's adopt is the flow changing it itself,
+   * and cancelling on that skipped the very transcript load it was there for.
+   */
+  const reconnectGen = useRef(0);
+  useEffect(
+    () => () => {
+      reconnectGen.current++;
+    },
+    [],
+  );
   useEffect(() => {
+    const gen = ++reconnectGen.current;
     const live = connection === 'open';
     const reconnected = live && !wasLive.current;
     wasLive.current = live;
@@ -404,18 +418,10 @@ export function ChatScreen() {
     // still being adopted has nothing to reconcile against yet.
     if (!reconnected || !sessionId || resumeId || wantNew || bootingRef.current) return;
 
-    let alive = true;
-    void (async () => {
-      try {
-        // No stored id — a session.create that has not answered yet, or one
-        // Hermes never persisted. Nothing to resume against; reconcile alone.
-        if (!storedSessionId) {
-          const history = await fetchHistory(sessionId);
-          if (alive) applyResync(history);
-          void refreshUsage();
-          return;
-        }
-
+    void reconnectSession(
+      {
+        sessionId,
+        storedSessionId,
         /**
          * The conversation's own profile, read from the store.
          *
@@ -425,74 +431,27 @@ export function ChatScreen() {
          * this session belongs to. Resuming without it addresses the *active*
          * profile, so a reconnect on another agent's conversation either
          * failed outright or reattached to the wrong store, and the fallback
-         * below then rebuilt it there.
+         * then rebuilt it there.
          */
-        const profile = useSession.getState().profile;
-        const res = await resumeSession(storedSessionId, profile);
-        if (!alive) return;
-        const rebuilt = res.session_id !== sessionId;
-        if (rebuilt) {
-          adopt({
-            sessionId: res.session_id,
-            storedSessionId: res.stored_session_id ?? storedSessionId,
-            profile,
-            info: res.info,
-          });
-        }
-
-        /**
-         * Before the transcript, and on both paths: `loadHistory` grafts the
-         * running turn's prompt onto what it builds, so it has to know there
-         * is one first. This is also the only thing that restores an approval
-         * or a clarify raised while the socket was down — a rebuilt session is
-         * not the only way to miss one.
-         */
-        applyLiveState(res);
-
-        const history = await fetchHistory(res.session_id);
-        if (!alive) return;
-        if (rebuilt) loadHistory(history);
-        // The gateway just said whether a turn is in flight; that beats
-        // guessing it from how much the transcript grew.
-        else applyResync(history, { running: res.running });
-
-        /**
-         * History stops at the turn before a running one, so the resync just
-         * took that turn's tool cards off the screen. Put them back from the
-         * gateway's event ring — see `applyReplay`. Not on a rebuilt session:
-         * a new runtime has a new ring, and nothing in it is this turn's.
-         */
-        if (!rebuilt && res.running) {
-          const store = useSession.getState();
-          store.beginReplayWindow();
-          try {
-            const replay = await hermes.call<{ events?: unknown[] }>(
-              'session.events.since',
-              { session_id: res.session_id, last_seen: 0 },
-              { timeoutMs: CONTROL_TIMEOUT_MS },
-            );
-            if (alive) store.applyReplay(replay?.events ?? []);
-            else store.applyReplay([]);
-          } catch {
-            // A backend without the ring, or a socket that dropped again:
-            // the turn's cards come back when it completes, as they always did.
-            store.applyReplay([]);
-          }
-        }
-        void refreshUsage();
-      } catch {
-        // The resume itself failed — a gateway that is up but refusing (a
-        // reap still settling), or a socket that dropped again underneath us.
-        // The full rebuild is the fallback it always was.
-        if (!alive || !storedSessionId) return;
-        await doResume(storedSessionId, useSession.getState().profile);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
+        profile: useSession.getState().profile,
+      },
+      {
+        resume: resumeSession,
+        fetchHistory,
+        eventsSince: (sid) =>
+          hermes.call<{ events?: unknown[] }>(
+            'session.events.since',
+            { session_id: sid, last_seen: 0 },
+            { timeoutMs: CONTROL_TIMEOUT_MS },
+          ),
+        rebuild: doResume,
+        isCurrent: () => reconnectGen.current === gen,
+      },
+    );
+    // Keyed on the connection alone: the session ids are read, not watched,
+    // so the flow's own adopt cannot start a second one alongside it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection, sessionId]);
+  }, [connection]);
 
   /**
    * Offline: show the stored transcript instead of a spinner.

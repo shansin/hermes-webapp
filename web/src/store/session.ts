@@ -26,13 +26,9 @@ import {
   ClarifyRequestSchema,
   normalizeClarify,
   ContextBreakdownSchema,
-  MessageCompleteSchema,
   SessionInfoSchema,
   SessionTitleSchema,
   StatusUpdateSchema,
-  SubagentEventSchema,
-  ToolCompleteSchema,
-  ToolStartSchema,
   UsageSchema,
   type ApprovalRequest,
   type ClarifyPrompt,
@@ -43,20 +39,26 @@ import {
   type SessionInfo,
   type Usage,
 } from '../ws/types';
-import { hermes, type ServerRequest } from '../ws/client';
+import { hermes, ConnectionLost, type ServerRequest } from '../ws/client';
 import { undoTurns } from '../api/gateway';
 import { indexClarifyResults } from '../lib/clarifyExchange';
 import { buzz } from '../lib/haptics';
 import {
   LIVE_TURN_EVENTS,
   NOT_REPLAYED,
-  answersFrom,
   deltaText,
+  foldBtwComplete,
+  foldError,
+  foldMessageComplete,
+  foldSubagent,
+  foldToolComplete,
+  foldToolStart,
   lastIndexOf,
   replaceLast,
+  settleLostSubmit,
   withClarifyAnswers,
   type ChatMessage,
-  type MessageTime,
+  type LostSubmit,
 } from './sessionModel';
 import { answerServerRequest, liveRequests } from './serverRequests';
 
@@ -140,6 +142,15 @@ interface SessionState {
    */
   inflightPrompt: { user: string; corrections: string[] } | null;
 
+  /**
+   * A `prompt.submit` whose socket died before it answered — sent or not,
+   * nobody knows yet. Its bubble is left unmarked until the reconnect's
+   * `session.resume` (running → it went through) or history (is it there?)
+   * settles it; stamping it failed on the spot offered a resend of a prompt
+   * the agent was already answering, which then bounced off the busy session.
+   */
+  lostSubmit: LostSubmit | null;
+
   // --- actions
   reset: () => void;
   adoptSession: (r: {
@@ -215,6 +226,50 @@ type Get = () => SessionState;
 type Set = (partial: Partial<SessionState>) => void;
 
 /**
+ * Which conversation the store is on, as a counter: bumped by `reset` and by
+ * `adoptSession` taking a different handle.
+ *
+ * Every async action captures it before its first `await` and checks it after
+ * each one. Without that, a reply landing after the user switched sessions
+ * wrote into the new one — a rewind put A's truncated transcript into B and
+ * then submitted A's prompt to B; a failed submit stamped an error on B. The
+ * gateway handle alone is not enough to compare: leaving a conversation and
+ * coming back can resume the very same live handle.
+ */
+let epoch = 0;
+export const sessionEpoch = (): number => epoch;
+const stillOn = (token: number): boolean => token === epoch;
+
+/**
+ * Put a server request on screen, if it belongs to the session on screen.
+ * `quiet` skips the buzz, for one re-delivered rather than freshly raised.
+ */
+function showServerRequest(get: Get, set: Set, req: ServerRequest, quiet: boolean): void {
+  const s = get();
+  const sid = typeof req.params.session_id === 'string' ? req.params.session_id : undefined;
+  if (!s.sessionId || (sid && sid !== s.sessionId)) return;
+
+  if (req.method === 'approval') {
+    const p = ApprovalRequestSchema.safeParse(req.params);
+    if (!p.success) return;
+    // A replay of the request already on screen keeps its sheet (and its
+    // armed "always" button) rather than flashing a new one.
+    if (s.approval?.srqId === req.id) return;
+    if (!quiet) vibrate('approval');
+    set({ approval: { ...p.data, id: ++approvalSeq, srqId: req.id } });
+    return;
+  }
+
+  // The request id stands in for clarify's own: it is what the answer is
+  // correlated on, and the params no longer carry a `request_id`.
+  const p = ClarifyRequestSchema.safeParse({ ...req.params, request_id: req.id });
+  if (!p.success) return;
+  if (s.clarify?.requestId === req.id) return;
+  if (!quiet) vibrate('approval');
+  set({ clarify: { ...normalizeClarify(p.data), id: ++clarifySeq } });
+}
+
+/**
  * Rewind the conversation to the user message at `idx` and run it again.
  *
  * Retry and edit-and-regenerate are the same operation: both drop everything
@@ -235,18 +290,22 @@ async function rewind(get: Get, set: Set, idx: number, replacement?: string): Pr
   }
 
   const turns = messages.slice(idx).filter((m) => m.kind === 'user').length;
+  const token = sessionEpoch();
   set({ rewinding: true, error: null });
   try {
     const prefill = await undoTurns(sessionId, turns);
+    // Switched away while the undo was out: this transcript and this prompt
+    // belong to a conversation no longer on screen.
+    if (!stillOn(token)) return;
     set({ messages: messages.slice(0, idx) });
     const text = replacement ?? (prefill || target.text);
     // A skill command keeps showing its short invocation, not the expansion —
     // but only when resending it unchanged. Edited text is its own message.
     await get().submitPrompt(text, replacement ? undefined : { display: target.displayText });
   } catch (err) {
-    set({ error: err instanceof Error ? err.message : 'Could not rewind the conversation' });
+    if (stillOn(token)) set({ error: err instanceof Error ? err.message : 'Could not rewind the conversation' });
   } finally {
-    set({ rewinding: false });
+    if (stillOn(token)) set({ rewinding: false });
   }
 }
 
@@ -271,8 +330,10 @@ export const useSession = create<SessionState>((set, get) => ({
   queued: null,
   rewinding: false,
   inflightPrompt: null,
+  lostSubmit: null,
 
-  reset: () =>
+  reset: () => {
+    epoch++;
     set({
       sessionId: null,
       storedSessionId: null,
@@ -294,9 +355,12 @@ export const useSession = create<SessionState>((set, get) => ({
       queued: null,
       rewinding: false,
       inflightPrompt: null,
-    }),
+      lostSubmit: null,
+    });
+  },
 
-  adoptSession: ({ sessionId, storedSessionId, profile, info, pendingClarify }) =>
+  adoptSession: ({ sessionId, storedSessionId, profile, info, pendingClarify }) => {
+    if (sessionId !== get().sessionId) epoch++;
     set({
       sessionId,
       storedSessionId: storedSessionId ?? null,
@@ -308,7 +372,8 @@ export const useSession = create<SessionState>((set, get) => ({
       clarify: pendingClarify
         ? { ...normalizeClarify(pendingClarify), id: ++clarifySeq }
         : null,
-    }),
+    });
+  },
 
   /**
    * Take the gateway's word for what this session is doing.
@@ -341,6 +406,47 @@ export const useSession = create<SessionState>((set, get) => ({
 
     if (running && partial.length > s.streamingText.length) next.streamingText = partial;
 
+    if (running) {
+      // A turn is in flight, so a submit lost with its socket got through.
+      next.lostSubmit = null;
+    } else {
+      /**
+       * Idle, on the gateway's word, so nothing on screen may still look
+       * live. The reply buffers are what a `message.complete` lost in the gap
+       * would have cleared — `StreamingTail` draws them whether or not a turn
+       * is running, so a reconnect onto a rebuilt runtime left the half-written
+       * reply frozen under the transcript — and the same goes for a card the
+       * turn never got to complete.
+       */
+      next.streamingText = '';
+      next.streamingReasoning = '';
+      next.thinkingHint = '';
+      next.statusLine = '';
+      if (s.messages.some((m) => (m.kind === 'tool' || m.kind === 'subagent') && m.status === 'running')) {
+        next.messages = s.messages.map((m) =>
+          (m.kind === 'tool' || m.kind === 'subagent') && m.status === 'running'
+            ? { ...m, status: 'done' as const }
+            : m,
+        );
+      }
+    }
+
+    /**
+     * The resume's `open_requests`, which the client handed to
+     * `applyServerRequest` just before this — while `doResume` had the store
+     * on no session at all, or a reconnect onto a rebuilt runtime still held
+     * the old handle, so they were held rather than shown. Attach them now
+     * the session is adopted: the copy below has no `srqId`, so it can be
+     * answered but never withdrawn, and `request.cancel` left its sheet up.
+     */
+    const open = (result as { open_requests?: unknown }).open_requests;
+    if (Array.isArray(open)) {
+      for (const entry of open as { id?: unknown }[]) {
+        const req = typeof entry?.id === 'string' ? liveRequests.get(entry.id) : undefined;
+        if (req) showServerRequest(get, set, req, true);
+      }
+    }
+
     /**
      * Both blocking prompts, restored for the same reason: the event fired at
      * a client that was not there, and the agent is still parked on it. An
@@ -358,7 +464,11 @@ export const useSession = create<SessionState>((set, get) => ({
     }
     if (result.pending_clarify) {
       const p = ClarifyRequestSchema.safeParse(result.pending_clarify);
-      if (p.success) next.clarify = { ...normalizeClarify(p.data), id: ++clarifySeq };
+      // Likewise never over the server request's own copy.
+      const shown = get().clarify;
+      if (p.success && !(shown && liveRequests.has(shown.requestId))) {
+        next.clarify = { ...normalizeClarify(p.data), id: ++clarifySeq };
+      }
     }
 
     // A prompt the gateway accepted for the next turn. Shown in the same strip
@@ -383,46 +493,51 @@ export const useSession = create<SessionState>((set, get) => ({
     const prior = opts?.resync ? get().messages : [];
 
     /**
-     * The time already known for the message at this position, when the
-     * server's copy agrees with what we are showing. History carries no
-     * timestamps of its own — see `MessageTime` — so without this a
-     * reconnect would strip the clock off every message in the session.
+     * The message already on screen at this position, when the server's copy
+     * agrees with it. Its time and its id carry over: history has no
+     * timestamps of its own — see `MessageTime` — so without this a reconnect
+     * stripped the clock off every message, and a fresh id per row remounted
+     * every `MessageRow` on every reconnect (markdown parsed again, expanded
+     * cards collapsed, measured sizes lost) to show the same transcript.
      */
-    const priorTime = (i: number, kind: ChatMessage['kind'], text: string): MessageTime => {
+    const priorMatch = (i: number, kind: ChatMessage['kind'], text: string): ChatMessage | null => {
       const old = prior[i];
       if (!old || old.kind !== kind) return null;
-      if (kind === 'tool') return old.kind === 'tool' && old.name === text ? old.at : null;
-      return 'text' in old && old.text === text ? old.at : null;
+      if (kind === 'tool') return old.kind === 'tool' && old.name === text ? old : null;
+      return 'text' in old && old.text === text ? old : null;
     };
 
     const out: ChatMessage[] = [];
     for (const [i, m] of messages.entries()) {
       if (m.role === 'user') {
         const text = m.text ?? '';
-        out.push({ kind: 'user', id: nextId(), text, at: priorTime(i, 'user', text) });
+        const old = priorMatch(i, 'user', text);
+        out.push({ kind: 'user', id: old?.id ?? nextId(), text, at: old?.at ?? null });
       } else if (m.role === 'assistant') {
         const text = m.text ?? '';
+        const old = priorMatch(i, 'assistant', text);
         out.push({
           kind: 'assistant',
-          id: nextId(),
+          id: old?.id ?? nextId(),
           text,
           reasoning: m.reasoning,
-          at: priorTime(i, 'assistant', text),
+          at: old?.at ?? null,
         });
       } else if (m.role === 'tool') {
         // Replayed history has no tool_id and no result — only what was
         // called, and the arguments it was called with.
         const name = m.name ?? 'tool';
+        const old = priorMatch(i, 'tool', name);
         out.push({
           kind: 'tool',
-          id: nextId(),
-          toolId: `hist-${seq}`,
+          id: old?.id ?? nextId(),
+          toolId: old?.kind === 'tool' ? old.toolId : `hist-${seq}`,
           name,
           context: m.context,
           args: m.args,
           result: m.result,
           status: 'done',
-          at: priorTime(i, 'tool', name),
+          at: old?.at ?? null,
         });
       }
     }
@@ -444,7 +559,7 @@ export const useSession = create<SessionState>((set, get) => ({
      * Deduplicated against what history did return, because a turn that
      * completes between the resume and the fetch lands in both.
      */
-    const { inflightPrompt, running } = get();
+    const { inflightPrompt, running, lostSubmit } = get();
     if (running && inflightPrompt) {
       for (const text of [inflightPrompt.user, ...inflightPrompt.corrections]) {
         if (!text || out.some((m) => m.kind === 'user' && m.text === text)) continue;
@@ -452,9 +567,13 @@ export const useSession = create<SessionState>((set, get) => ({
       }
     }
 
+    // Idle now, so history is the last word on a submit lost with its socket.
+    const settled = lostSubmit && !running ? settleLostSubmit(out, messages, lostSubmit) : out;
+
     set({
-      messages: withClarifyAnswers(out, get().clarifyAnswers),
+      messages: withClarifyAnswers(settled, get().clarifyAnswers),
       queued: opts?.resync ? get().queued : null,
+      ...(lostSubmit && !running ? { lostSubmit: null } : {}),
     });
   },
 
@@ -469,29 +588,7 @@ export const useSession = create<SessionState>((set, get) => ({
   applyServerRequest: (req) => {
     if (req.method !== 'approval' && req.method !== 'clarify') return false;
     liveRequests.set(req.id, req);
-
-    const s = get();
-    const sid = typeof req.params.session_id === 'string' ? req.params.session_id : undefined;
-    if (!s.sessionId || (sid && sid !== s.sessionId)) return true;
-
-    if (req.method === 'approval') {
-      const p = ApprovalRequestSchema.safeParse(req.params);
-      if (!p.success) return true;
-      // A replay of the request already on screen keeps its sheet (and its
-      // armed "always" button) rather than flashing a new one.
-      if (s.approval?.srqId === req.id) return true;
-      if (!req.replayed) vibrate('approval');
-      set({ approval: { ...p.data, id: ++approvalSeq, srqId: req.id } });
-      return true;
-    }
-
-    // The request id stands in for clarify's own: it is what the answer is
-    // correlated on, and the params no longer carry a `request_id`.
-    const p = ClarifyRequestSchema.safeParse({ ...req.params, request_id: req.id });
-    if (!p.success) return true;
-    if (s.clarify?.requestId === req.id) return true;
-    if (!req.replayed) vibrate('approval');
-    set({ clarify: { ...normalizeClarify(p.data), id: ++clarifySeq } });
+    showServerRequest(get, set, req, req.replayed);
     return true;
   },
 
@@ -530,6 +627,13 @@ export const useSession = create<SessionState>((set, get) => ({
    *    `events.since` round trip is out, and they are in the ring too.
    *    `beginReplayWindow` starts noting the lowest `seq` applied live, and
    *    anything at or above it is left out here.
+   *  - **Not a turn that is over.** The window opens only after the history
+   *    fetch, so a `message.complete` that arrived live before it is below
+   *    the floor; replaying from the start then printed the turn's cards and
+   *    its reply a second time over the copy history (or that live event)
+   *    had already put there. Idle, or a completion in the ring, and there is
+   *    nothing left to restore. A card already on screen is likewise not
+   *    started again — a resync that kept the local transcript keeps them.
    */
   applyReplay: (events) => {
     const floor = replayFloor ?? Number.POSITIVE_INFINITY;
@@ -548,11 +652,20 @@ export const useSession = create<SessionState>((set, get) => ({
     }
     if (start < 0) return false;
 
+    const turn = frames.slice(start + 1);
+    if (!get().running || turn.some((f) => f.type === 'message.complete')) return false;
+
+    const onScreen = (payload: unknown): boolean => {
+      const id = (payload as { tool_id?: unknown } | null)?.tool_id;
+      return typeof id === 'string' && get().messages.some((m) => m.kind === 'tool' && m.toolId === id);
+    };
+
     replayMuted = true;
     try {
-      for (const frame of frames.slice(start + 1)) {
+      for (const frame of turn) {
         if (NOT_REPLAYED.has(frame.type)) continue;
         if (typeof frame.seq === 'number' && frame.seq >= floor) continue;
+        if (frame.type === 'tool.start' && onScreen(frame.payload)) continue;
         get().applyEvent(frame);
       }
     } finally {
@@ -613,6 +726,7 @@ export const useSession = create<SessionState>((set, get) => ({
       case 'message.start':
         set({
           running: true,
+          lostSubmit: null,
           streamingText: '',
           streamingReasoning: '',
           thinkingHint: '',
@@ -653,121 +767,23 @@ export const useSession = create<SessionState>((set, get) => ({
       }
 
       case 'tool.start': {
-        const p = ToolStartSchema.safeParse(payload);
-        if (!p.success) return;
+        const patch = foldToolStart(s, payload, nextId);
+        if (!patch) return;
         vibrate('tool');
-        set({
-          statusLine: '',
-          messages: [
-            ...s.messages,
-            {
-              kind: 'tool',
-              id: nextId(),
-              toolId: p.data.tool_id,
-              name: p.data.name,
-              context: p.data.context,
-              status: 'running',
-              at: Date.now(),
-            },
-          ],
-        });
+        set(patch);
         return;
       }
 
       case 'tool.complete': {
-        const p = ToolCompleteSchema.safeParse(payload);
-        if (!p.success) return;
-
-        /**
-         * Remember a clarify's answer the moment it lands. The row itself
-         * already carries it, but the next reconnect rebuilds this transcript
-         * from `session.history`, which does not — so watching a question get
-         * answered and then losing that answer to a passing blip is the same
-         * bug as never recovering it on resume.
-         */
-        if (p.data.name === 'clarify' && p.data.result !== undefined) {
-          set({ clarifyAnswers: { ...s.clarifyAnswers, ...answersFrom(p.data.result) } });
-        }
-
-        set({
-          messages: replaceLast(
-            s.messages,
-            (m) => m.kind === 'tool' && m.toolId === p.data.tool_id,
-            (m) => ({
-              ...m,
-              status: 'done' as const,
-              args: p.data.args,
-              result: p.data.result,
-              durationS: p.data.duration_s,
-            }),
-          ),
-        });
+        const patch = foldToolComplete(s, payload);
+        if (patch) set(patch);
         return;
       }
 
       case 'message.complete': {
-        const p = MessageCompleteSchema.safeParse(payload);
-        const text = p.success ? (p.data.text ?? s.streamingText) : s.streamingText;
-        const reasoning = p.success ? p.data.reasoning : s.streamingReasoning;
-        const usage = p.success ? p.data.usage : undefined;
-        const interrupted = p.success && p.data.status === 'interrupted';
-
+        const { patch, interrupted } = foldMessageComplete(s, payload, nextId);
         vibrate('done');
-        set({
-          running: false,
-          /**
-           * The turn is over, so anything it was parked on is moot — it was
-           * answered, interrupted, or hit the gateway's own timeout and
-           * auto-proceeded. Leaving either sheet up would be worse than the
-           * bug it replaced: a modal that cannot be dismissed, over a turn
-           * that has already moved on.
-           *
-           * `approval` belongs here for exactly the same reason and was
-           * missing, which made the ordinary way out of an approval the one
-           * that trapped you: an `approval.request` is deliberately not
-           * dismissible, so a person who does not want to grant it reaches for
-           * Stop — and `session.interrupt` ends the turn with a
-           * `message.complete` that cleared the clarify beside it and left the
-           * approval sheet standing over a finished conversation, with no
-           * button on it that could still do anything. Only starting or
-           * resuming another session got out of it.
-           */
-          clarify: null,
-          approval: null,
-          streamingText: '',
-          streamingReasoning: '',
-          thinkingHint: '',
-          statusLine: '',
-          usage: usage ?? s.usage,
-          // The turn's prompt is in the transcript now, either as the bubble
-          // that submitted it or as the one grafted on resume.
-          inflightPrompt: null,
-          messages: [
-            /**
-             * Nothing can still be running once the turn is over.
-             *
-             * A tool card is cleared by its own `tool.complete`, which is a
-             * single event that a dropped socket, an interrupt or a gateway
-             * that never emitted it all lose — and the card then pulses for
-             * ever, on a conversation that finished, because nothing else ever
-             * looked at it again.
-             */
-            ...s.messages.map((m) =>
-              (m.kind === 'tool' || m.kind === 'subagent') && m.status === 'running'
-                ? { ...m, status: 'done' as const }
-                : m,
-            ),
-            {
-              kind: 'assistant',
-              id: nextId(),
-              text,
-              reasoning: reasoning || undefined,
-              usage,
-              interrupted,
-              at: Date.now(),
-            },
-          ],
-        });
+        set(patch);
 
         // Release a message typed during the turn. An interrupted turn is the
         // one case we hold it back: the user stopped the agent, so firing the
@@ -785,75 +801,10 @@ export const useSession = create<SessionState>((set, get) => ({
       case 'subagent.tool':
       case 'subagent.thinking':
       case 'subagent.complete': {
-        const p = SubagentEventSchema.safeParse(payload);
-        if (!p.success) return;
-        const d = p.data;
-        // Identity fields are all optional. Fall back through the ids the
-        // gateway might send, then to a single flat card, so an older emitter
-        // degrades to one card rather than a new card per event.
-        const agentId = d.subagent_id || d.child_session_id || 'subagent';
-        const existing = s.messages.find(
-          (m) => m.kind === 'subagent' && m.agentId === agentId,
-        );
-
-        if (!existing) {
-          // A `tool`/`complete` with no preceding `start` still deserves a card.
-          vibrate('tool');
-          set({
-            messages: [
-              ...s.messages,
-              {
-                kind: 'subagent',
-                id: nextId(),
-                agentId,
-                goal: d.goal || d.text || 'Delegated task',
-                model: d.model,
-                depth: d.depth,
-                activity: type === 'subagent.complete' ? undefined : (d.tool_name ?? d.text),
-                summary: d.summary,
-                status: type === 'subagent.complete' ? 'done' : 'running',
-                durationS: d.duration_seconds,
-                tokens:
-                  d.input_tokens != null || d.output_tokens != null
-                    ? (d.input_tokens ?? 0) + (d.output_tokens ?? 0)
-                    : undefined,
-                filesWritten: d.files_written,
-                at: Date.now(),
-              },
-            ],
-          });
-          return;
-        }
-
-        set({
-          messages: replaceLast(
-            s.messages,
-            (m) => m.kind === 'subagent' && m.agentId === agentId,
-            (m) => {
-              if (m.kind !== 'subagent') return m;
-              if (type === 'subagent.complete') {
-                return {
-                  ...m,
-                  status: 'done' as const,
-                  activity: undefined,
-                  summary: d.summary || d.text || m.summary,
-                  durationS: d.duration_seconds ?? m.durationS,
-                  tokens:
-                    d.input_tokens != null || d.output_tokens != null
-                      ? (d.input_tokens ?? 0) + (d.output_tokens ?? 0)
-                      : m.tokens,
-                  filesWritten: d.files_written ?? m.filesWritten,
-                };
-              }
-              return {
-                ...m,
-                goal: d.goal || m.goal,
-                model: d.model ?? m.model,
-                activity: d.tool_name ?? d.text ?? m.activity,
-              };
-            },
-          ),
-        });
+        const folded = foldSubagent(s, type, payload, nextId);
+        if (!folded) return;
+        if (folded.created) vibrate('tool');
+        set(folded.patch);
         return;
       }
 
@@ -880,51 +831,19 @@ export const useSession = create<SessionState>((set, get) => ({
        * never came up just sat there, and the first sign was a prompt that
        * went nowhere. A failure *inside* a turn arrives on that turn's own
        * terminal frame instead, so this does not touch `running`.
-       *
-       * `provider_not_configured` is the one with a fix in this app: no model
-       * provider is set up, and the Models screen is where one is chosen.
        */
-      case 'error': {
-        const p = payload as { message?: unknown; code?: unknown } | undefined;
-        const text = typeof p?.message === 'string' && p.message ? p.message : 'Something went wrong.';
-        const action =
-          p?.code === 'provider_not_configured'
-            ? { label: 'Set up a model', to: s.profile ? `/models?profile=${encodeURIComponent(s.profile)}` : '/models' }
-            : undefined;
-        set({
-          messages: [
-            ...s.messages,
-            { kind: 'notice', id: nextId(), text, tone: 'error', label: 'Hermes', action, at: Date.now() },
-          ],
-        });
+      case 'error':
+        set(foldError(s, payload, nextId));
         return;
-      }
 
       /**
        * The answer to a side question (`prompt.btw`). It belongs to no turn —
        * it was answered off a snapshot — so it lands as a notice rather than
        * a message, and leaves `running` and the stream alone.
        */
-      case 'btw.complete': {
-        const p = payload as { question?: unknown; text?: unknown } | undefined;
-        const text = typeof p?.text === 'string' ? p.text : '';
-        const question = typeof p?.question === 'string' ? p.question : '';
-        const failed = text.startsWith('error: ');
-        set({
-          messages: [
-            ...s.messages,
-            {
-              kind: 'notice',
-              id: nextId(),
-              text: text || '(no answer)',
-              tone: failed ? 'error' : 'info',
-              label: question ? `Side question — ${question}` : 'Side question',
-              at: Date.now(),
-            },
-          ],
-        });
+      case 'btw.complete':
+        set(foldBtwComplete(s, payload, nextId));
         return;
-      }
 
       case 'session.info': {
         const p = SessionInfoSchema.safeParse(payload);
@@ -981,10 +900,12 @@ export const useSession = create<SessionState>((set, get) => ({
     // Held so the catch below can mark this exact bubble rather than guessing
     // at the last user message, which a queued send could have moved on from.
     const id = nextId();
+    const at = Date.now();
+    const token = sessionEpoch();
     set((st) => ({
       messages: [
         ...st.messages,
-        { kind: 'user', id, text, displayText: opts?.display, at: Date.now() },
+        { kind: 'user', id, text, displayText: opts?.display, at },
       ],
       running: true,
       error: null,
@@ -998,6 +919,14 @@ export const useSession = create<SessionState>((set, get) => ({
     try {
       await hermes.call('prompt.submit', { session_id: sessionId, text });
     } catch (err) {
+      // Another conversation by now; this bubble is not on screen to mark.
+      if (!stillOn(token)) return;
+      // The socket went with the frame possibly delivered: let the reconnect
+      // say whether the turn is running before calling the send a failure.
+      if (err instanceof ConnectionLost) {
+        set({ lostSubmit: { id, text, display: opts?.display, at } });
+        return;
+      }
       set((st) => ({
         running: false,
         error: err instanceof Error ? err.message : 'submit failed',
@@ -1077,7 +1006,12 @@ export const useSession = create<SessionState>((set, get) => ({
     // recorded there, and adopting a shorter history would wipe it off the
     // screen — losing what someone typed to fix a display glitch.
     if (messages.length < current.length) {
-      set({ error: null });
+      const { lostSubmit, running } = get();
+      set(
+        lostSubmit && !running
+          ? { error: null, lostSubmit: null, messages: settleLostSubmit(current, messages, lostSubmit) }
+          : { error: null },
+      );
       return;
     }
 
@@ -1140,11 +1074,12 @@ export const useSession = create<SessionState>((set, get) => ({
   respondApproval: async (choice, all = false) => {
     const { sessionId, approval } = get();
     if (!sessionId || !approval) return;
+    const token = sessionEpoch();
     set({ approval: null });
     try {
       if (approval.srqId) {
         const live = await answerServerRequest(approval.srqId, { choice, all });
-        if (!live) get().addNotice('That approval had already ended — the agent moved on without it.', 'info');
+        if (!live && stillOn(token)) get().addNotice('That approval had already ended — the agent moved on without it.', 'info');
         return;
       }
       const requestId = (approval as { request_id?: unknown }).request_id;
@@ -1155,6 +1090,8 @@ export const useSession = create<SessionState>((set, get) => ({
         ...(typeof requestId === 'string' ? { request_id: requestId } : {}),
       });
     } catch (err) {
+      // A sheet for a conversation no longer on screen must not reappear here.
+      if (!stillOn(token)) return;
       set({
         error: err instanceof Error ? err.message : 'approval failed',
         // Only if nothing newer has arrived in the meantime.
@@ -1180,6 +1117,7 @@ export const useSession = create<SessionState>((set, get) => ({
   respondClarify: async (answers) => {
     const { sessionId, clarify } = get();
     if (!sessionId || !clarify) return;
+    const token = sessionEpoch();
     set({ clarify: null });
 
     const batch = clarify.questions.some((q) => q.qid);
@@ -1199,7 +1137,7 @@ export const useSession = create<SessionState>((set, get) => ({
        * the person just made a choice and would otherwise watch it change
        * nothing.
        */
-      if (!live) get().addNotice('That question timed out — the agent moved on without an answer.', 'info');
+      if (!live && stillOn(token)) get().addNotice('That question timed out — the agent moved on without an answer.', 'info');
     } catch (err) {
       /**
        * Put the question back. Same reasoning as `respondApproval`: the agent
@@ -1207,6 +1145,7 @@ export const useSession = create<SessionState>((set, get) => ({
        * to finish answering and nothing on screen saying anything went wrong
        * beyond a banner.
        */
+      if (!stillOn(token)) return;
       set({
         error: err instanceof Error ? err.message : 'Could not send that answer',
         clarify: get().clarify ?? clarify,
@@ -1236,11 +1175,14 @@ export const useSession = create<SessionState>((set, get) => ({
   refreshUsage: async () => {
     const { sessionId } = get();
     if (!sessionId) return;
+    const token = sessionEpoch();
     try {
       const [usage, breakdown] = await Promise.all([
         hermes.call('session.usage', { session_id: sessionId }),
         hermes.call('session.context_breakdown', { session_id: sessionId }).catch(() => null),
       ]);
+      // Another session's meter must not land on this one.
+      if (!stillOn(token)) return;
       const u = UsageSchema.safeParse(usage);
       const b = breakdown ? ContextBreakdownSchema.safeParse(breakdown) : null;
       set({

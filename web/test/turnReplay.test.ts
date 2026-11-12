@@ -29,6 +29,8 @@ beforeEach(() => {
   buzz.mockClear();
   store().reset();
   store().adoptSession({ sessionId: 's1' });
+  // A replay only ever runs for a turn the resume said is running.
+  useSession.setState({ running: true });
 });
 
 describe('applyReplay', () => {
@@ -110,5 +112,40 @@ describe('applyReplay', () => {
 
     expect(buzz).toHaveBeenCalled();
     expect(tools()).toEqual(['later']);
+  });
+});
+
+describe('applyReplay on a turn that is over', () => {
+  it('does nothing when the session is no longer running', () => {
+    useSession.setState({ running: false });
+    store().beginReplayWindow();
+    expect(store().applyReplay([ev('message.start'), ev('tool.start', { tool_id: 't1', name: 'terminal' })])).toBe(false);
+    expect(tools()).toEqual([]);
+  });
+
+  /**
+   * Running again already — a queued prompt released by the live completion —
+   * but the ring's last start is still the finished turn's.
+   */
+  it('does nothing when the ring holds the turn completing', () => {
+    store().beginReplayWindow();
+    const applied = store().applyReplay([
+      ev('message.start'),
+      ev('tool.start', { tool_id: 't1', name: 'terminal' }),
+      ev('message.complete', { text: 'Done.' }),
+    ]);
+
+    expect(applied).toBe(false);
+    expect(tools()).toEqual([]);
+    expect(store().messages.filter((m) => m.kind === 'assistant')).toEqual([]);
+  });
+
+  /** A resync that kept the local transcript keeps the turn's cards too. */
+  it('does not start a card that is already on screen again', () => {
+    store().applyEvent({ type: 'tool.start', session_id: 's1', payload: { tool_id: 't1', name: 'terminal' } });
+    store().beginReplayWindow();
+    store().applyReplay([ev('message.start'), ev('tool.start', { tool_id: 't1', name: 'terminal' })]);
+
+    expect(tools()).toEqual(['t1']);
   });
 });
