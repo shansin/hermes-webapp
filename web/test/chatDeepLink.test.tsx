@@ -85,6 +85,9 @@ beforeEach(() => {
 
   useSession.getState().reset();
   useUi.setState({ connection: 'open' });
+  // A resume records the conversation for the next cold start; each test
+  // here is its own cold start.
+  localStorage.clear();
 });
 
 afterEach(cleanup);
@@ -299,6 +302,37 @@ describe('no intent in the URL', () => {
   });
 
   it('does not resume anything', async () => {
+    openAt('/chat');
+    await waitFor(() => expect(createSession).toHaveBeenCalled());
+    expect(resumeSession).not.toHaveBeenCalled();
+  });});
+
+describe('a cold start after recent activity', () => {
+  const recent = () =>
+    localStorage.setItem(
+      'hermes.lastSession',
+      JSON.stringify({ id: 'stored-last', profile: 'research', at: Date.now() - 60_000 }),
+    );
+
+  it('reopens the last conversation, in its profile, instead of a new chat', async () => {
+    recent();
+    openAt('/chat');
+    await waitFor(() => expect(resumeSession).toHaveBeenCalledWith('stored-last', 'research'));
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it('still lets ?new=1 start a fresh one', async () => {
+    recent();
+    openAt('/chat?new=1');
+    await waitFor(() => expect(createSession).toHaveBeenCalled());
+    expect(resumeSession).not.toHaveBeenCalled();
+  });
+
+  it('starts fresh once the conversation has gone quiet', async () => {
+    localStorage.setItem(
+      'hermes.lastSession',
+      JSON.stringify({ id: 'stored-last', profile: null, at: Date.now() - 31 * 60_000 }),
+    );
     openAt('/chat');
     await waitFor(() => expect(createSession).toHaveBeenCalled());
     expect(resumeSession).not.toHaveBeenCalled();

@@ -142,6 +142,11 @@ interface UiState {
    * interaction are in different subtrees.
    */
   navOpen: boolean;
+  /**
+   * The checkpoints sheet, when open — see `openCheckpoints`. `since` is the
+   * moment of a turn whose pre-edit checkpoint should be singled out.
+   */
+  checkpoints: { since: number | null } | null;
 
   setTheme: (t: Theme) => void;
   setAccent: (a: Accent) => void;
@@ -188,6 +193,7 @@ export const useUi = create<UiState>((set, get) => ({
   connection: 'closed',
   toasts: [],
   navOpen: false,
+  checkpoints: null,
 
   setNavOpen: (navOpen) => set({ navOpen }),
 
@@ -332,4 +338,20 @@ if (typeof matchMedia !== 'undefined') {
   // Safari only grew `addEventListener` on MediaQueryList in 14.
   if (mq.addEventListener) mq.addEventListener('change', onChange);
   else mq.addListener(onChange);
+}
+
+/**
+ * Open the checkpoints sheet (`components/chat/CheckpointsSheet.tsx`, lazy,
+ * mounted by `ChatScreen`). A flag here rather than a prop so anything inside
+ * the chat screen can open it — the header's actions, a message's "Restore
+ * files", the composer's `/rollback` — without threading a callback through.
+ * `since` (epoch ms) highlights the checkpoint holding the files as they were
+ * at that moment.
+ */
+export function openCheckpoints(since: number | null = null): void {
+  useUi.setState({ checkpoints: { since } });
+}
+
+export function closeCheckpoints(): void {
+  useUi.setState({ checkpoints: null });
 }

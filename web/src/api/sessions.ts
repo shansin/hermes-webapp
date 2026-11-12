@@ -675,6 +675,67 @@ export async function fetchStoredMessages(
   return visibleMessages(res.messages);
 }
 
+/** `/messages` pages at most 500 rows (`hermes_cli/web_routers/sessions.py`). */
+const TRANSCRIPT_PAGE = 500;
+
+/**
+ * The whole stored transcript, oldest first, compacted turns included.
+ *
+ * `fetchStoredMessages` is not this: with no `limit` the endpoint answers its
+ * *latest* page of 500 and nothing says more exists, and without
+ * `include_compacted` the turns a compaction summarised are absent — which are
+ * exactly the turns a fork count and a whole-session search need. Paged as the
+ * desktop app's `getAllSessionMessages` does, up to `maxPages`; `complete` is
+ * false when that ceiling stopped it.
+ */
+export async function fetchWholeTranscript(
+  id: string,
+  profile?: string | null,
+  { maxPages = 8, get = (path: string) => api.get<{ messages?: StoredMessage[] }>(path) } = {},
+): Promise<{ messages: StoredMessage[]; complete: boolean }> {
+  const messages: StoredMessage[] = [];
+  for (let page = 0; page < maxPages; page++) {
+    const res = await get(
+      sessionUrl(
+        `/api/sessions/${encodeURIComponent(id)}/messages?order=oldest&include_compacted=true` +
+          `&inline_images=false&limit=${TRANSCRIPT_PAGE}&offset=${page * TRANSCRIPT_PAGE}`,
+        profile,
+      ),
+    );
+    const batch = res.messages ?? [];
+    messages.push(...batch);
+    if (batch.length < TRANSCRIPT_PAGE) return { messages: visibleMessages(messages), complete: true };
+  }
+  return { messages: visibleMessages(messages), complete: false };
+}
+
+export interface AroundPage {
+  messages: StoredMessage[];
+  pagination?: { offset?: number; total?: number; has_older?: boolean; has_newer?: boolean };
+}
+
+/**
+ * Up to `limit` (≤120) display rows starting at one *prompt*.
+ *
+ * `row_id` must be a user row the timeline would list — a background-task
+ * notice or other synthetic prompt answers 404 "Prompt not found", as does a
+ * row outside the session's current compression segment.
+ */
+export async function fetchMessagesAround(
+  id: string,
+  rowId: number,
+  profile?: string | null,
+  limit = 120,
+): Promise<AroundPage> {
+  const res = await api.get<AroundPage>(
+    sessionUrl(
+      `/api/sessions/${encodeURIComponent(id)}/messages/around?row_id=${rowId}&limit=${limit}`,
+      profile,
+    ),
+  );
+  return { ...res, messages: visibleMessages(res.messages) };
+}
+
 /**
  * Drop the rows the backend marks `display_kind: "hidden"`.
  *

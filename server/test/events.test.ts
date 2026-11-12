@@ -25,6 +25,7 @@ vi.mock('../src/push/send.js', () => ({
 }));
 vi.mock('../src/push/cron.js', () => ({ scheduleCronReconcile: vi.fn() }));
 vi.mock('../src/push/sessions.js', () => ({ scheduleSessionSweep: vi.fn() }));
+vi.mock('../src/push/pairing.js', () => ({ schedulePairingSweep: vi.fn() }));
 vi.mock('../src/push/store.js', () => ({ listSubscriptions: () => [] }));
 
 const { toMessage } = await import('../src/push/events.js');
@@ -40,6 +41,7 @@ describe('events that produce nothing', () => {
     'session.usage',
     'gateway.ready',
     'sessions.changed',
+    'pairing.changed',
   ])('%s stays off the lock screen', (type) => {
     expect(toMessage(type, { text: 'noise' }, 's1')).toBeNull();
   });

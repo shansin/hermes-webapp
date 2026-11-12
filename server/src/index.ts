@@ -38,6 +38,7 @@ import { startPushListener, stopPushListener } from './push/events.js';
 import { startCronSweep, stopCronSweep } from './push/cron.js';
 import { startKanbanSweep, stopKanbanSweep } from './push/kanban.js';
 import { startSessionSweep, stopSessionSweep } from './push/sessions.js';
+import { startPairingSweep, stopPairingSweep } from './push/pairing.js';
 import { flushFeed } from './push/feed.js';
 import { pushPublicKey } from './push/send.js';
 import { attachWsProxy } from './routers/wsProxy.js';
@@ -288,6 +289,9 @@ startKanbanSweep();
 // to the transport that owns that session, so none of them have ever reached
 // the listener above — see the header of `push/sessions.ts`.
 startSessionSweep();
+// A sender waiting to pair with a messaging bot, which expires in an hour if
+// nobody notices — see `push/pairing.ts`.
+startPairingSweep();
 
 /**
  * Last-resort logging, so a crash leaves a line in our log rather than only a
@@ -311,6 +315,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     stopCronSweep();
     stopKanbanSweep();
     stopSessionSweep();
+    stopPairingSweep();
     // The feed's writes are debounced, so the last one may still be pending.
     flushFeed();
     server.close(() => process.exit(0));

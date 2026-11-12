@@ -5,6 +5,10 @@
  * three ways — what can this agent reach? — and the drawer is the scarce
  * surface, not this screen.
  *
+ * The section is `?section=`, not `?tab=` as it was: this is a tab of the
+ * Agent screen now, which owns `?tab=`. `/tools?tab=mcp` still lands here —
+ * `legacyTarget` in `screens/HubPage.tsx` renames the parameter on the way.
+ *
  * Sections are plain imports, not `lazy()`. The boundary on Models exists
  * because recharts weighs 356 KB; nothing here pulls in anything of the sort,
  * and splitting three small components would buy three round trips for a
@@ -27,7 +31,7 @@ type SectionId = (typeof SECTIONS)[number]['id'];
 
 export function CapabilitiesTab() {
   const [params, setParams] = useSearchParams();
-  const raw = params.get('tab');
+  const raw = params.get('section');
   // Anything unrecognised lands on the first section rather than on nothing.
   const tab: SectionId = SECTIONS.some((s) => s.id === raw) ? (raw as SectionId) : 'toolsets';
 
@@ -52,7 +56,16 @@ export function CapabilitiesTab() {
               buzz('tap');
               // `replace`: moving between sections of one screen is not
               // something you should have to press back through to leave.
-              setParams(s.id === 'toolsets' ? {} : { tab: s.id }, { replace: true });
+              // Updated in place, so the Agent screen's `?tab=` survives.
+              setParams(
+                (prev) => {
+                  const next = new URLSearchParams(prev);
+                  if (s.id === 'toolsets') next.delete('section');
+                  else next.set('section', s.id);
+                  return next;
+                },
+                { replace: true },
+              );
             }}
           >
             {s.label}

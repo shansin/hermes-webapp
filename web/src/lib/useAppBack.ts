@@ -14,7 +14,7 @@
  * home screen. Chat is home, so chat is the fallback.
  *
  * `location.key === 'default'` is not the right test for "anywhere to go back
- * to". A redirect — `/` → `/chat`, `/hub?tab=x` → `/x`, `/usage` → `/models` —
+ * to". A redirect — `/` → `/chat`, `/hub?tab=x` → `/agent?tab=x`, `/memory` → `/agent?tab=memory` —
  * replaces the entry, which mints a fresh key while leaving the stack exactly
  * as short as it was; the check then says there is history behind us and
  * `navigate(-1)` walks straight out of the app. React Router's own `idx`,

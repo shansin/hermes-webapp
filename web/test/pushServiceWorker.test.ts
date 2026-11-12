@@ -245,6 +245,86 @@ describe('notificationclick', () => {
   });
 });
 
+/**
+ * Approve once / Deny on an approval's banner. The worker answers the press
+ * itself through the proxy, without opening the app — so a press that did
+ * nothing has to say so, or the agent sits blocked with nobody aware of it.
+ */
+describe('approval actions', () => {
+  const approval = { sessionId: 's_1', requestId: 'r1' };
+  const press = (action: string, data: unknown = { url: '/chat?session=s_1', approval }) => ({
+    action,
+    notification: { close: vi.fn(), data },
+  });
+
+  it('puts the buttons and the approval on the banner', async () => {
+    await worker.dispatch('push', {
+      data: {
+        json: () => ({
+          body: 'Needs approval.',
+          url: '/chat?session=s_1',
+          actions: [
+            { action: 'approve', title: 'Approve once' },
+            { action: 'deny', title: 'Deny' },
+          ],
+          approval,
+        }),
+      },
+    });
+    expect(worker.showNotification.mock.calls[0]![1]).toMatchObject({
+      actions: [{ action: 'approve' }, { action: 'deny' }],
+      data: { url: '/chat?session=s_1', approval },
+    });
+  });
+
+  it('posts Approve once to the proxy without opening a window', async () => {
+    worker.fetch.mockResolvedValueOnce({ ok: true, status: 200 });
+    await worker.dispatch('notificationclick', press('approve'));
+
+    const [url, init] = worker.fetch.mock.calls[0]!;
+    expect(url).toBe('/push/approval/s_1');
+    expect(init).toMatchObject({ method: 'POST', redirect: 'manual', credentials: 'same-origin' });
+    expect(JSON.parse(init.body)).toEqual({ choice: 'once', requestId: 'r1' });
+    expect(worker.openWindow).not.toHaveBeenCalled();
+    expect(worker.showNotification).not.toHaveBeenCalled();
+  });
+
+  it('posts Deny as deny', async () => {
+    worker.fetch.mockResolvedValueOnce({ ok: true, status: 200 });
+    await worker.dispatch('notificationclick', press('deny'));
+    expect(JSON.parse(worker.fetch.mock.calls[0]![1].body)).toMatchObject({ choice: 'deny' });
+  });
+
+  it('says so when the approval was already answered', async () => {
+    worker.fetch.mockResolvedValueOnce({ ok: false, status: 409 });
+    await worker.dispatch('notificationclick', press('approve'));
+    expect(worker.showNotification).toHaveBeenCalledWith(
+      'Approval not sent',
+      expect.objectContaining({ body: expect.stringContaining('already answered') }),
+    );
+  });
+
+  /* An expired Access session: the redirect is not followed, so it lands as
+     an opaque response rather than a cheerful login page. */
+  it('says so when the request bounced off a login', async () => {
+    worker.fetch.mockResolvedValueOnce({ ok: false, status: 0, type: 'opaqueredirect' });
+    await worker.dispatch('notificationclick', press('approve'));
+    expect(worker.showNotification).toHaveBeenCalledWith('Approval not sent', expect.anything());
+  });
+
+  it('says so when the proxy cannot be reached', async () => {
+    worker.fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await worker.dispatch('notificationclick', press('approve'));
+    expect(worker.showNotification).toHaveBeenCalledWith('Approval not sent', expect.anything());
+  });
+
+  it('treats a tap on the banner itself as opening the app', async () => {
+    await worker.dispatch('notificationclick', press(''));
+    expect(worker.fetch).not.toHaveBeenCalled();
+    expect(worker.openWindow).toHaveBeenCalledWith('/chat?session=s_1');
+  });
+});
+
 describe('pushsubscriptionchange', () => {
   const okJson = (body: unknown) => ({ ok: true, json: async () => body });
 

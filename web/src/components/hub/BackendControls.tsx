@@ -17,8 +17,15 @@
  * Applying an update is absent too. It rewrites the checkout under a running
  * backend and wants a restart of both halves afterwards; that is a decision
  * for the machine, so the check says what to run rather than running it.
+ *
+ * These live on the Machine screen now, not in Settings: Settings is this
+ * app's own preferences, and these act on Hermes. The restart is its own
+ * export so it can sit under the platform list it is the remedy for — the
+ * point of showing each platform's health is knowing whether to restart
+ * before doing it.
  */
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import { Sheet } from '../shared/Sheet';
@@ -108,9 +115,7 @@ function LogsSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
 }
 
 export function BackendControls() {
-  const toast = useUi((s) => s.toast);
   const [logsOpen, setLogsOpen] = useState(false);
-  const [confirmRestart, setConfirmRestart] = useState(false);
   const [update, setUpdate] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
 
@@ -126,16 +131,6 @@ export function BackendControls() {
     }
   };
 
-  const restart = async () => {
-    setConfirmRestart(false);
-    try {
-      await api.post('/api/gateway/restart', {});
-      toast('Messaging gateway restarting', 'success');
-    } catch (err) {
-      toast(err instanceof Error ? err.message : 'Restart failed', 'error');
-    }
-  };
-
   return (
     <div className="card" style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -145,9 +140,6 @@ export function BackendControls() {
         <button className="btn" style={smallBtn} disabled={checking} onClick={() => void check()}>
           {checking ? 'Checking…' : 'Check for update'}
         </button>
-        <button className="btn" style={smallBtn} onClick={() => setConfirmRestart(true)}>
-          Restart messaging gateway
-        </button>
       </div>
       {update && (
         <div style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-dim)', marginTop: 10, overflowWrap: 'anywhere' }}>
@@ -156,8 +148,46 @@ export function BackendControls() {
       )}
 
       <LogsSheet open={logsOpen} onClose={() => setLogsOpen(false)} />
+    </div>
+  );
+}
 
+/**
+ * Restart the messaging gateway, behind a confirmation.
+ *
+ * `health` is a one-line reading of the platforms (e.g. "2 of 3 platforms
+ * connected"), repeated in the confirmation so the decision is made looking
+ * at the reason for it.
+ */
+export function GatewayRestart({ health }: { health?: string | null }) {
+  const toast = useUi((s) => s.toast);
+  const qc = useQueryClient();
+  const [confirmRestart, setConfirmRestart] = useState(false);
+
+  const restart = async () => {
+    setConfirmRestart(false);
+    try {
+      await api.post('/api/gateway/restart', {});
+      toast('Messaging gateway restarting', 'success');
+      // Platforms reconnect over the next several seconds; look again then
+      // rather than waiting out the poll.
+      for (const ms of [4_000, 12_000, 25_000]) {
+        setTimeout(() => void qc.invalidateQueries({ queryKey: ['machine', 'status'] }), ms);
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Restart failed', 'error');
+    }
+  };
+
+  return (
+    <>
+      <button className="btn" style={smallBtn} onClick={() => setConfirmRestart(true)}>
+        Restart messaging gateway
+      </button>
       <Sheet open={confirmRestart} onClose={() => setConfirmRestart(false)} title="Restart messaging gateway?">
+        {health && (
+          <p style={{ marginTop: 0, fontSize: 'var(--type-body-md)', fontWeight: 550 }}>{health}</p>
+        )}
         <p style={{ marginTop: 0, color: 'var(--text-dim)', fontSize: 'var(--type-body-md)', lineHeight: 1.5 }}>
           Restarts the process that serves Discord, Telegram and the other chat platforms and runs
           scheduled jobs. A turn it is running there is interrupted. This app's own conversations are
@@ -172,6 +202,6 @@ export function BackendControls() {
           </button>
         </div>
       </Sheet>
-    </div>
+    </>
   );
 }

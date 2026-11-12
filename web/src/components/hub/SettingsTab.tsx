@@ -2,6 +2,10 @@
  * App settings: theme, haptics, onboarding QR, backend status, and the hidden
  * dev panel (triple-tap the heading) that shows raw JSON-RPC frames.
  *
+ * The backend's controls — logs, the update check, the gateway restart — and
+ * the rest of the machine's operations moved to the Machine screen; BACKEND
+ * here keeps the connection reading and a link there.
+ *
  * Everything here is this app's own preference — nothing on this screen writes
  * Hermes' config. The default model used to live here and now sits on the
  * Models screen, which is what the name is meant to signal.
@@ -11,7 +15,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { useHealth } from '../../api/hub';
 import { ACCENTS, useUi, type Accent, type Theme } from '../../store/ui';
 import { Skeleton, Switch, relTime } from '../shared/misc';
-import { BackendControls } from './BackendControls';
+import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { hermes } from '../../ws/client';
 import { buzz } from '../../lib/haptics';
@@ -575,28 +579,30 @@ export function SettingsTab() {
       <div className="group-head">
         BACKEND
       </div>
+      {/* What this device can see of the backend, and no more: the controls,
+          the platform health, pairing and maintenance act on the machine
+          rather than on this app, and live on the Machine screen. */}
       <div className="card" style={{ marginBottom: 16 }}>
         <Row label="Connection" value={connection} tone={connection === 'open' ? 'ok' : 'warn'} />
         <Row
           label="Hermes"
           value={health.data ? `${health.data.backend} ${health.data.version ?? ''}` : '…'}
-          tone={health.data?.backend === 'up' ? 'ok' : 'error'}
+          tone={health.data?.backend === 'up' && !health.data.restartNeeded ? 'ok' : health.data?.backend === 'up' ? 'warn' : 'error'}
         />
-        <Row label="Upstream" value={health.data?.upstream ?? '…'} />
-        {/* `hermes update` swaps the code under a running backend, which keeps
-            serving the old commit until restarted — and newer Hermes refuses
-            some writes with "Restart required" until it is. */}
-        {health.data?.restartNeeded && (
-          <Row label="Restart needed" value="updated on disk — restart hermes-webapp" tone="warn" />
-        )}
         <Row
           label="Secure context"
           value={typeof window !== 'undefined' && window.isSecureContext ? 'yes' : 'no (HTTP)'}
           tone={typeof window !== 'undefined' && window.isSecureContext ? 'ok' : 'warn'}
         />
+        <Link
+          to="/machine"
+          className="btn btn--sm"
+          style={{ marginTop: 10, width: '100%', justifyContent: 'space-between' }}
+        >
+          <span>Logs, restart, pairing, maintenance</span>
+          <span aria-hidden>Machine →</span>
+        </Link>
       </div>
-
-      <BackendControls />
 
       {!(typeof window !== 'undefined' && window.isSecureContext) && (
         <div

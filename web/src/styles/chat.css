@@ -2,6 +2,10 @@
    Chat screen: message list, tool cards, thinking blocks, composer.
    -------------------------------------------------------------------------- */
 
+:root {
+  --chat-measure: 760px;
+}
+
 .chat__list {
   flex: 1;
   min-height: 0;
@@ -19,6 +23,20 @@
   flex-direction: column;
   max-width: 100%;
   animation: msg-in 0.2s ease;
+}
+
+/* A measure for the transcript on a wide screen. At 1600px a reply ran to
+   ~1300px lines, which nobody reads comfortably; the hub screens already stop
+   at 860 (`.scroll > *` in global.css), and prose wants less than a settings
+   row. The cap is on the children, not the list, so the scrollbar and the
+   scroll surface still span the window. `width: 100%` matters: an auto margin
+   in a column flexbox overrides `stretch`, and without it every reply would
+   shrink to fit its own text. Below 760px this changes nothing. After `.msg`,
+   which sets its own `max-width: 100%` at the same specificity. */
+.chat__list > * {
+  width: 100%;
+  max-width: var(--chat-measure);
+  margin-inline: auto;
 }
 
 @keyframes msg-in {
@@ -813,6 +831,13 @@
   flex-shrink: 0;
 }
 
+/* The composer's background and rule span the window; its contents line up
+   with the transcript's measure above them. */
+.composer > * {
+  max-width: var(--chat-measure);
+  margin-inline: auto;
+}
+
 .composer__quick {
   display: flex;
   gap: 7px;
@@ -833,6 +858,54 @@
   gap: 7px;
   padding-bottom: 8px;
   font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* Queue / Steer / Redirect, shown only while a turn runs and there is
+   something to send. A segmented control rather than a menu behind the send
+   button: the choice has to be visible at the moment it applies. */
+.composer__mode {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+
+.composer__mode-seg {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+}
+
+.composer__mode-opt {
+  padding: 5px 11px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  /* Painted small, still a finger's width tall with the padding of the track. */
+  min-height: 30px;
+  transition: background-color var(--motion-effects);
+}
+
+.composer__mode-opt--on {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.composer__mode-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   color: var(--text-faint);
 }

@@ -6,7 +6,7 @@ import { Suspense, lazy, useEffect, useState } from 'react';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { ChatScreen } from './screens/ChatScreen';
-import { HubPage, HubRedirect } from './screens/HubPage';
+import { HubPage, LegacyRedirect } from './screens/HubPage';
 import {
   onAccessExpired,
   isAccessExpired,
@@ -45,21 +45,19 @@ const FilesScreen = lazy(() =>
 const NotificationsScreen = lazy(() =>
   import('./screens/NotificationsScreen').then((m) => ({ default: m.NotificationsScreen })),
 );
-const MemoryTab = lazy(() =>
-  import('./components/hub/MemoryTab').then((m) => ({ default: m.MemoryTab })),
+/* The agent's own configuration — Memory, Skills, Capabilities, Profiles,
+   Models — is one screen of tabs, each its own chunk inside it. */
+const AgentScreen = lazy(() =>
+  import('./screens/AgentScreen').then((m) => ({ default: m.AgentScreen })),
 );
-const SkillsTab = lazy(() =>
-  import('./components/hub/SkillsTab').then((m) => ({ default: m.SkillsTab })),
-);
+/* The box Hermes runs on: health, messaging and pairing, backups, logs.
+   A default export, unlike the rest. */
+const MachineScreen = lazy(() => import('./screens/MachineScreen'));
 const CronTab = lazy(() => import('./components/hub/CronTab').then((m) => ({ default: m.CronTab })));
-const ModelsTab = lazy(() =>
-  import('./components/hub/ModelsTab').then((m) => ({ default: m.ModelsTab })),
-);
-const ProfilesTab = lazy(() =>
-  import('./components/hub/ProfilesTab').then((m) => ({ default: m.ProfilesTab })),
-);
-const CapabilitiesTab = lazy(() =>
-  import('./components/tools/CapabilitiesTab').then((m) => ({ default: m.CapabilitiesTab })),
+/* recharts lives in this chunk (~356 KB built). It must stay behind its own
+   dynamic import — see `web/test/usage.test.ts`. */
+const UsageTab = lazy(() =>
+  import('./components/hub/UsageTab').then((m) => ({ default: m.UsageTab })),
 );
 const SettingsTab = lazy(() =>
   import('./components/hub/SettingsTab').then((m) => ({ default: m.SettingsTab })),
@@ -304,18 +302,23 @@ export function App() {
                 canonical path — see the note at the top of the screen. This is
                 the alias for anyone who types what they see. */}
             <Route path="/updates" element={<Navigate to="/notifications" replace />} />
-            <Route path="/memory" element={<HubPage title="Memory"><MemoryTab /></HubPage>} />
-            <Route path="/skills" element={<HubPage title="Skills"><SkillsTab /></HubPage>} />
-            <Route path="/cron" element={<HubPage title="Cron"><CronTab /></HubPage>} />
-            <Route path="/models" element={<HubPage title="Models"><ModelsTab /></HubPage>} />
-            {/* The usage report is a section of Models now. This stays a real
-                route because it is in the slash-command table, in `HubRedirect`,
-                and in anything anyone bookmarked. */}
-            <Route path="/usage" element={<Navigate to="/models?tab=usage" replace />} />
-            <Route path="/tools" element={<HubPage title="Capabilities"><CapabilitiesTab /></HubPage>} />
-            <Route path="/profiles" element={<HubPage title="Profiles"><ProfilesTab /></HubPage>} />
-            <Route path="/settings" element={<HubPage title="App settings"><SettingsTab /></HubPage>} />
-            <Route path="/hub" element={<HubRedirect />} />
+            <Route path="/agent" element={<AgentScreen />} />
+            <Route path="/machine" element={<MachineScreen />} />
+            {/* Cron left the drawer, not the app: push payloads and feed rows
+                carry `/cron?job=`, and Updates and Agent both link here. */}
+            <Route path="/cron" element={<HubPage title="Schedules"><CronTab /></HubPage>} />
+            <Route path="/usage" element={<HubPage title="Usage"><UsageTab /></HubPage>} />
+            <Route path="/settings" element={<HubPage title="Settings"><SettingsTab /></HubPage>} />
+            {/* Paths that moved into the Agent screen. They stay routes because
+                slash commands (`hub-<x>` → `/<x>`), the "Set up a model" notice
+                and bookmarks hold them; `legacyTarget` says where each lands.
+                `/models?tab=usage` goes to `/usage`. */}
+            <Route path="/memory" element={<LegacyRedirect />} />
+            <Route path="/skills" element={<LegacyRedirect />} />
+            <Route path="/tools" element={<LegacyRedirect />} />
+            <Route path="/profiles" element={<LegacyRedirect />} />
+            <Route path="/models" element={<LegacyRedirect />} />
+            <Route path="/hub" element={<LegacyRedirect />} />
             <Route path="*" element={<Navigate to="/chat" replace />} />
           </Routes>
         </Suspense>

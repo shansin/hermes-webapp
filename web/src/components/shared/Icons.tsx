@@ -282,3 +282,22 @@ export const IconPlug = (p: P) => (
     <path d="M12 17.1v3.4" />
   </Svg>
 );
+
+/** Agent — a four-point spark, the same mark the chat and the drawer's profile
+ *  chip already use (✻) for the thing you are talking to. Groups what it
+ *  remembers, can do and runs on: Memory, Skills, Capabilities, Profiles, Models. */
+export const IconAgent = (p: P) => (
+  <Svg {...p}>
+    <path d="M12 3.5c.6 4.4 2.1 5.9 6.5 6.5-4.4.6-5.9 2.1-6.5 6.5-.6-4.4-2.1-5.9-6.5-6.5 4.4-.6 5.9-2.1 6.5-6.5Z" />
+    <path d="M18 16.5v4M16 18.5h4" />
+  </Svg>
+);
+
+/** Machine — two stacked server units: the box Hermes runs on, not the agent. */
+export const IconServer = (p: P) => (
+  <Svg {...p}>
+    <rect x="4" y="4.5" width="16" height="6.5" rx="1.6" />
+    <rect x="4" y="13" width="16" height="6.5" rx="1.6" />
+    <path d="M7.5 7.75h.01M7.5 16.25h.01M11 7.75h5.5M11 16.25h5.5" />
+  </Svg>
+);

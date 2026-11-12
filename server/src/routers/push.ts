@@ -13,6 +13,8 @@ import { z } from 'zod';
 import { log } from '../log.js';
 import { pushPublicKey, sendPush } from '../push/send.js';
 import { listSubscriptions, removeSubscription, saveSubscription } from '../push/store.js';
+import { answerApproval } from '../push/approval.js';
+import { forgetWaiting, scheduleSessionSweep } from '../push/sessions.js';
 
 export const pushRouter = new Hono();
 
@@ -171,4 +173,46 @@ pushRouter.post('/push/test', async (c) => {
     kind: 'push.test',
   });
   return c.json({ ok: true, delivered });
+});
+
+const ApprovalBody = z.object({
+  /** Only the two answers a banner offers — see `push/approval.ts` for why. */
+  choice: z.enum(['once', 'deny']),
+  requestId: z.string().max(200).nullable().optional(),
+});
+
+/**
+ * Answer a pending approval from a notification's Approve once / Deny button.
+ *
+ * Posted by the service worker (`public/push-sw.js`), never by the page. It
+ * comes through the same doors as everything else — the Access gate on the
+ * cookie the worker's same-origin fetch carries, and the same-origin check on
+ * its `Origin` — and is answered over the push listener's own gateway socket,
+ * because the phone that owns the session may have no socket at all.
+ *
+ * The status says which way it went so the worker can tell the user when the
+ * button did nothing: 409 when there was nothing left to answer, 503 when the
+ * backend could not be asked.
+ */
+pushRouter.post('/push/approval/:sessionId', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  const parsed = ApprovalBody.safeParse(body);
+  if (!parsed.success || !sessionId) return c.json({ error: 'invalid_choice' }, 400);
+
+  const answer = await answerApproval(sessionId, parsed.data.choice, parsed.data.requestId ?? null);
+  if (answer.status === 'unreachable') return c.json({ error: 'gateway_unreachable' }, 503);
+  if (answer.status === 'expired') return c.json({ error: 'not_pending' }, 409);
+
+  /* The banner this came from is already closed; stop the sweep from putting
+     up a "No longer waiting" one to report what was just decided, and let it
+     look now rather than on its next tick. */
+  forgetWaiting(sessionId);
+  scheduleSessionSweep();
+  return c.json({ ok: true, resolved: answer.resolved });
 });

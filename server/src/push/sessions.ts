@@ -67,8 +67,12 @@
  *
  * `status` collapses approval, clarify and plain input into one value,
  * `waiting` (`_session_pending_kind` strips the suffix before
- * `_session_live_status` looks at it). So the banner says the agent is waiting
- * and does not guess which of the three — the sheet that answers it is mounted
+ * `_session_live_status` looks at it). One of the three can be told apart
+ * after the fact: `approval.pending` over the same socket lists the approvals
+ * a session is blocked on, and only reads the approval tool's queue — it binds
+ * nothing. So an approval's banner names what is being asked and carries
+ * Approve once / Deny buttons (`push/approval.ts`); anything else says the
+ * agent is waiting and does not guess — the sheet that answers it is mounted
  * on every screen anyway.
  *
  * `notification.show` is not recoverable this way and stays broken. It is a
@@ -93,6 +97,7 @@ import { clearToken, getToken, resolveToken, upstreamHttp, upstreamHost } from '
 import { log } from '../log.js';
 import { getWatermark, pruneWatermarks, setWatermark } from './feed.js';
 import { flatten } from './preview.js';
+import { pendingApproval } from './approval.js';
 import { callGateway } from './rpc.js';
 import { sendPush } from './send.js';
 import { listSubscriptions } from './store.js';
@@ -400,10 +405,31 @@ export function stopSessionSweep(): void {
   announcedWaiting.clear();
 }
 
-/** A session waiting on a human. */
-async function reportWaiting(key: string, title: string | null): Promise<void> {
+/**
+ * Forget that a waiting banner is up, without retracting it.
+ *
+ * For a session answered from the banner itself (`routers/push.ts`): the
+ * worker has already closed that notification, and the retraction the next
+ * pass would otherwise send — "No longer waiting" — would put a fresh banner
+ * on the lock screen to report the decision its owner just made.
+ */
+export function forgetWaiting(key: string): void {
+  announcedWaiting.delete(key);
+}
+
+/**
+ * A session waiting on a human.
+ *
+ * `liveId` is the gateway handle off the same listing row; it is what
+ * `approval.pending` is addressed by, and that call is what tells an approval
+ * apart from a clarify — `waiting` covers both. An approval's banner carries
+ * Approve once / Deny buttons the worker answers itself (`push/approval.ts`);
+ * anything else keeps the plain banner, because a question needs the app.
+ */
+async function reportWaiting(key: string, title: string | null, liveId: string | null): Promise<void> {
   if (!listSubscriptions().length) return;
 
+  const approval = liveId ? await pendingApproval(liveId) : null;
   const detail = await resolveDetail(key);
   const url = detail
     ? withProfile(`/chat?session=${encodeURIComponent(key)}`, detail.profile)
@@ -416,7 +442,11 @@ async function reportWaiting(key: string, title: string | null): Promise<void> {
 
   await sendPush({
     title: 'Hem is waiting for you',
-    body: title ? `${title} — the agent is waiting for an answer.` : 'The agent is waiting for an answer.',
+    body: approval
+      ? `${title ? `${title} — needs` : 'Needs'} approval${approval.description ? `: ${approval.description}` : ''}.`
+      : title
+        ? `${title} — the agent is waiting for an answer.`
+        : 'The agent is waiting for an answer.',
     /**
      * Straight to the conversation, not the feed: nothing was written to the
      * feed (see the header), and the sheet that releases the turn is mounted
@@ -430,6 +460,15 @@ async function reportWaiting(key: string, title: string | null): Promise<void> {
      */
     tag: `attention:${key}`,
     kind: 'session.waiting',
+    ...(approval
+      ? {
+          actions: [
+            { action: 'approve', title: 'Approve once' },
+            { action: 'deny', title: 'Deny' },
+          ],
+          approval: { sessionId: key, requestId: approval.requestId },
+        }
+      : {}),
   }).catch((err) => log.warn({ err }, 'Session waiting push failed'));
 }
 
@@ -556,7 +595,7 @@ export async function reconcileSessions(): Promise<void> {
       const previousCount = Number(previousCountRaw) || 0;
 
       if (status === 'waiting' && previousStatus !== 'waiting') {
-        await reportWaiting(key, str(row.title));
+        await reportWaiting(key, str(row.title), str(row.id));
         continue;
       }
       if (previousStatus === 'waiting' && status !== 'waiting' && announcedWaiting.has(key)) {

@@ -11,7 +11,22 @@
 :root {
   --text: #e9e9f0;
   --text-dim: #a0a0b0;
-  --text-faint: #6c6c7e;
+  /* --text-faint carries hints, meta lines, timestamps and placeholders —
+     sixty-odd rules, much of it text someone actually has to read — so it is
+     held to WCAG AA body contrast (4.5:1), not the 3:1 that only covers large
+     text. WCAG 2.x relative-luminance ratios:
+
+       dark   #8a8a9c: 5.80 on --surface #0b0b0f, 5.41 on #14141b (bg-elev),
+                       4.98 on #1c1c26 (bg-elev-2 / drawer), 4.59 on #23232e
+       amoled (inherits): 6.20 on #000000, 5.46 on #131318 (bg-elev-2)
+       light  #686878: 5.11 on --surface #f7f7fa, 5.47 on #ffffff,
+                       4.81 on #f0f0f5 (bg-elev-2)
+
+     It was #6c6c7e (3.82 on #0b0b0f, 3.28 on the drawer) and #8b8b9c in light
+     (3.13 on #f7f7fa). Both stay visibly below --text-dim (7.62 / 6.32), so
+     the three-step hierarchy survives. AMOLED has no override of its own: on
+     pure black the dark value clears the bar with room to spare. */
+  --text-faint: #8a8a9c;
 
   --accent: #ffbf00;
   --accent-soft: #4a3a00;
@@ -146,7 +161,8 @@
 
   --text: #17171f;
   --text-dim: #5a5a6b;
-  --text-faint: #8b8b9c;
+  /* 5.11:1 on #f7f7fa — see the note on the dark value in :root. */
+  --text-faint: #686878;
 
   --accent: #b8860b;
   --accent-soft: #fdf3d6;
@@ -659,6 +675,35 @@ button.header__sub::after {
 
 .activity__meta { font-size: 11.5px; color: var(--text-faint); }
 
+/* The pane's sections. Each is a heading, so a screen reader can jump to
+   "Needs you" and hear where it ends; painted as the same hairline divider the
+   transcript uses. The section keeps the list's 12px rhythm between rows. */
+.activity__group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.activity__section {
+  margin: 2px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* The accent rather than --warn: the light palette re-tunes every accent to
+   clear 4.5:1 and leaves --warn at a dark-mode orange that does not. */
+.activity__section--needs { color: var(--accent); }
+
+/* A row that is asking for something. A tinted leading edge rather than a
+   filled card: the list should still read as one list, with the asks first. */
+.activity--attention {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.activity--attention .activity__icon { color: var(--accent); }
+.activity--failed .activity__icon { color: var(--error); }
+
 /* The chat header's running pill. */
 .chip--live {
   display: inline-flex;
@@ -779,6 +824,43 @@ button.header__sub::after {
   font-weight: 700;
   line-height: 17px;
   text-align: center;
+}
+
+/* The needs-you count on the hamburger. Small enough to sit in the corner
+   of a 48px target without covering the glyph; ringed in the header colour
+   so it reads as a badge over the icon rather than a smudge on it. */
+.menu-btn__count {
+  position: absolute;
+  top: 5px;
+  right: 3px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: var(--shape-full);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: var(--type-micro);
+  font-weight: 750;
+  line-height: 17px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px var(--bg-elev);
+}
+
+/* Text for assistive technology only — the badges' nouns, a source icon's
+   name. Clipped rather than `display: none`, which would hide it from screen
+   readers too. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* --- generic surfaces ----------------------------------------------------- */
@@ -1745,18 +1827,26 @@ button.header__sub::after {
    column stops being the whole screen and starts being a stripe down the
    middle of it.
 
-   `--breakpoint-wide` is duplicated in `lib/useMediaQuery.ts` — the drawer's
-   docked mode is a render-time decision, not a paint one, and the two have to
-   agree or the rail appears without the space reserved for it. There is no
-   way to read a custom property from `matchMedia`, so the value is written
-   twice on purpose; change both. */
+   Two breakpoints, each written twice on purpose. The rail docks at
+   `RAIL_QUERY` (portrait tablets up), the pointer layouts start at
+   `--breakpoint-wide`; both are duplicated in `lib/useMediaQuery.ts` — the
+   drawer's docked mode is a render-time decision, not a paint one, and the
+   two have to agree or the rail appears without the space reserved for it.
+   There is no way to read a custom property from `matchMedia`; change both. */
 
 :root {
   --breakpoint-wide: 1000px;
   --rail-w: 300px;
 }
 
-@media (min-width: 1000px) {
+/* RAIL_QUERY. Below 1000px the rail is slimmer — on a 768px portrait tablet a
+   300px rail would take two fifths of the screen; at 256px the content keeps
+   512px, wider than any phone layout it was designed at. Hints ellipsize. */
+@media (min-width: 1000px), (min-width: 768px) and (min-height: 600px) {
+  :root {
+    --rail-w: 256px;
+  }
+
   /* The rail is `position: fixed`, so the shell reserves its width rather than
      laying it out. Padding on `.app` rather than a margin on `.app__body`
      keeps the connection banner clear of it too. */
@@ -1773,6 +1863,20 @@ button.header__sub::after {
     /* No entrance animation for something that was never absent, and no
        shadow: it is a panel of the layout, not a sheet floating over it. */
     animation: none;
+  }
+
+  /* Toasts follow the content, not the viewport — under the rail they were
+     half-covered by it. */
+  .toasts {
+    left: calc(var(--rail-w) + 16px);
+    right: 16px;
+    align-items: flex-end;
+  }
+}
+
+@media (min-width: 1000px) {
+  :root {
+    --rail-w: 300px;
   }
 
   /* A bottom sheet spanning a 1600px window is a band of chrome with a
@@ -1792,14 +1896,6 @@ button.header__sub::after {
     border-radius: var(--radius-lg);
     border: 1px solid var(--border);
     max-height: min(760px, 82dvh);
-  }
-
-  /* Toasts follow the content, not the viewport — under the rail they were
-     half-covered by it. */
-  .toasts {
-    left: calc(var(--rail-w) + 16px);
-    right: 16px;
-    align-items: flex-end;
   }
 
   /* Long-form configuration screens: a measure, not a stretch. 60-ish

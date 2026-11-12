@@ -2,6 +2,11 @@
  * Message composer: growing textarea, hold-to-talk voice, attachments,
  * quick-action chips, slash-command completion, and the send/stop button.
  *
+ * The text is a per-conversation draft (`lib/drafts.ts`), so leaving the chat
+ * or losing the page to the OS does not lose it. While a turn runs, a send
+ * goes out the way the Queue / Steer / Redirect switch says
+ * (`store/turnControl.ts`).
+ *
  * The mic is hidden entirely when neither server STT nor the Web Speech API is
  * usable — a dead button is worse than no button. On plain HTTP (our default)
  * `MediaRecorder` is unavailable, so the Web Speech fallback is what runs.
@@ -25,6 +30,21 @@ import {
 } from '../../lib/audio';
 import { hermes } from '../../ws/client';
 import { formatImageRef } from '../../lib/localImages';
+import { useComposerDraft } from '../../lib/drafts';
+import { SEND_MODES, sendWhileRunning, useSendMode } from '../../store/turnControl';
+
+/**
+ * Chips for an empty chat. The follow-ups below all point at "what we just
+ * did", which on a blank conversation is nothing — so a fresh chat offers
+ * openers instead. Static on purpose: the recent conversations are already
+ * listed right above, one tap each, and that is the "continue" path.
+ */
+const STARTERS = [
+  { label: '📋 My day', text: "What's on my plate today?" },
+  { label: '📧 Email', text: 'Check my email. Anything that needs a reply from me?' },
+  { label: '🗓 Plan my week', text: 'Help me plan my week.' },
+  { label: '✍️ Draft', text: 'Help me write ' },
+];
 
 const QUICK_ACTIONS = [
   { label: '📋 Summarize', text: 'Summarize what we just did in a few bullets.' },
@@ -148,7 +168,11 @@ export function Composer({
   const interrupt = useSession((s) => s.interrupt);
   const queued = useSession((s) => s.queued);
   const clearQueued = useSession((s) => s.clearQueued);
+  const fresh = useSession((s) => s.messages.length === 0);
+  const sendMode = useSendMode((s) => s.mode);
+  const setSendMode = useSendMode((s) => s.setMode);
   const toast = useUi((s) => s.toast);
+  const discardDraft = useComposerDraft(text, setText);
   /**
    * Whether a send would reach anything. `hermes.call` rejects immediately
    * with "not connected" on a socket that is not OPEN, so a press while the
@@ -267,6 +291,7 @@ export function Composer({
     const value = text.trim() || imagePlaceholders();
     if (!value || !sessionId) return;
     const refs = imageRefs();
+    discardDraft();
     setText('');
     setAttachments([]);
     setCompletions([]);
@@ -278,8 +303,16 @@ export function Composer({
       return;
     }
     buzz('tap');
-    void submit(value, refs ? { display: `${value}\n${refs}` } : undefined);
+    const opts = refs ? { display: `${value}\n${refs}` } : undefined;
+    if (running) void sendWhileRunning(sendMode, value, opts);
+    else void submit(value, opts);
   };
+
+  /** Pictures ride only with the queue (see `sendWhileRunning`), so the switch says so. */
+  const picturesAttached = attachments.some((a) => a.attached && a.path);
+  const modeHint = picturesAttached
+    ? 'With a picture attached, this queues'
+    : SEND_MODES.find((m) => m.id === sendMode)?.hint;
 
   /** Splice the chosen completion in at the index the gateway gave us. */
   const accept = (item: CompletionItem) => {
@@ -582,7 +615,7 @@ export function Composer({
           >
             / Commands
           </button>
-          {QUICK_ACTIONS.map((q) => (
+          {(fresh ? STARTERS : QUICK_ACTIONS).map((q) => (
             <button
               key={q.label}
               className="chip"
@@ -595,6 +628,32 @@ export function Composer({
               {q.label}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* Only while it matters: a turn running and something to send. The
+          choice outlives the turn (and the page), so a person who always
+          steers sets it once. */}
+      {running && sendable && (
+        <div className="composer__mode">
+          <div className="composer__mode-seg" role="radiogroup" aria-label="Send while the agent works">
+            {SEND_MODES.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                role="radio"
+                aria-checked={sendMode === m.id}
+                className={`composer__mode-opt${sendMode === m.id ? ' composer__mode-opt--on' : ''}`}
+                onClick={() => {
+                  buzz('tap');
+                  setSendMode(m.id);
+                }}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <span className="composer__mode-hint">{modeHint}</span>
         </div>
       )}
 
@@ -700,9 +759,10 @@ export function Composer({
         )}
 
         {/* While a turn runs, stop stays available *and* send still works —
-            sending mid-turn queues the message rather than dropping it, so
-            hiding the button would hide the feature. The mic yields the space,
-            since it's already hidden whenever there's text to send. */}
+            sending mid-turn queues, steers or redirects rather than dropping
+            the message, so hiding the button would hide the feature. The mic
+            yields the space, since it's already hidden whenever there's text
+            to send. */}
         {running && (
           <button
             className="composer__btn composer__btn--stop"
@@ -718,15 +778,21 @@ export function Composer({
             onClick={send}
             /*
              * Gated on the socket only where the press would actually use it.
-             * A send *during* a turn never touches the gateway — the gateway
-             * runs one turn per session, so `submitPrompt` holds the message
-             * locally and fires it when the turn ends — and that is worth
-             * having offline, since a drop mid-turn is exactly when queueing
-             * the next thing is useful.
+             * A queued send *during* a turn never touches the gateway — the
+             * gateway runs one turn per session, so `submitPrompt` holds the
+             * message locally and fires it when the turn ends — and that is
+             * worth having offline, since a drop mid-turn is exactly when
+             * queueing the next thing is useful. Steer and redirect do need
+             * the socket, and fall back to that same queue when it is not
+             * there.
              */
             disabled={!sendable || !sessionId || (!live && !running)}
             aria-label={
-              running ? 'Queue this message' : live ? 'Send' : 'Waiting for the connection'
+              running
+                ? `${SEND_MODES.find((m) => m.id === (picturesAttached ? 'queue' : sendMode))?.label} this message`
+                : live
+                  ? 'Send'
+                  : 'Waiting for the connection'
             }
           >
             <IconSend size={18} />

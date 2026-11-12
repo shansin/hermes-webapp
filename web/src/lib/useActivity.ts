@@ -26,6 +26,16 @@
  * per-profile session queries twice — the second cancelling and re-sending the
  * first's requests. Only the board and cron lanes, which just the full screen
  * reads, keep a per-hook subscription.
+ *
+ * ## Needs you
+ *
+ * The screen leads with what is waiting on a person — sessions parked on an
+ * approval or a question, Blocked and Review cards, messaging users asking to
+ * pair — and ends with what failed in the last day. The reads behind the first
+ * are in `api/needsYou.ts`, the rows are built in `lib/needsYou.ts` by the
+ * screen itself (kept out of this module, which is in the boot graph).
+ * `useNeedsYouCount` is the badge's half: the same lanes reduced to a number,
+ * from reads cheap enough for every screen.
  */
 import { useEffect, useMemo } from 'react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
@@ -34,11 +44,20 @@ import { useActiveSessionsAcrossProfiles } from '../api/sessions';
 import { DELEGATION_KEY, useDelegations } from '../api/delegation';
 import { useProfiles } from '../api/profiles';
 import { useUi } from '../store/ui';
-import { boardKeyPrefix, useBoard } from '../api/kanban';
+import { boardKeyPrefix, useBoard, type Task } from '../api/kanban';
 import { useCronJobs } from '../api/hub';
+import {
+  LIVE_SESSIONS_KEY,
+  useBoardStatusCounts,
+  useLiveSessions,
+  usePendingPairing,
+} from '../api/needsYou';
+import type { SessionRow } from '../api/sessions';
 import { hermes } from '../ws/client';
 import {
+  countAttentionCards,
   countRunning,
+  countWaiting,
   fromCron,
   fromDelegations,
   fromKanban,
@@ -83,6 +102,9 @@ export function invalidateActivity(
        emits, and it means every child in the batch has just stopped —
        exactly when leaving stale rows up would be most misleading. */
     void qc.invalidateQueries({ queryKey: DELEGATION_KEY });
+    /* A turn starting or ending is also a session entering or leaving
+       `waiting` — an approval is asked mid-turn and answered before it ends. */
+    void qc.invalidateQueries({ queryKey: LIVE_SESSIONS_KEY });
     return;
   }
   // `null`: the pane reads whichever board the server points at (see below).
@@ -106,6 +128,13 @@ export function useActivityInvalidation(): void {
  */
 export function useActivity(full = true): {
   items: ActivityItem[];
+  /**
+   * The raw session rows across profiles. The screen's needs-you lane borrows
+   * their profile for live sessions, whose own rows carry none.
+   */
+  sessions: SessionRow[];
+  /** The current board's columns, when `full`. Needs-you reads Blocked/Review. */
+  columns: { name: string; tasks: Task[] }[] | undefined;
   running: number;
   isLoading: boolean;
   error: unknown;
@@ -165,6 +194,8 @@ export function useActivity(full = true): {
 
   return {
     items,
+    sessions: sessions.sessions,
+    columns: full ? board.data?.columns : undefined,
     running: countRunning(items),
     // Only the sessions query gates the first paint: the pane is useful the
     // moment it can say what the agent is doing, and waiting on the board and
@@ -173,4 +204,35 @@ export function useActivity(full = true): {
     error: sessions.error,
     truncated: sessions.truncated,
   };
+}
+
+/**
+ * The "Needs you" count, for the hamburger and the drawer's Activity row.
+ *
+ * Mounted on every screen, so every read here is the cheap one: the live
+ * session list (one socket call, also the screen's), the plugin's `/stats`
+ * counts instead of the board, and the pairing fan-out at two minutes. When a
+ * screen already holds the current board — Activity polls it — the count is
+ * taken from that instead, so the badge and the list it summarises agree the
+ * moment the list changes rather than up to a minute later. Reading the board
+ * that way fetches nothing: a disabled observer only sees the cache.
+ */
+export function useNeedsYouCount(): number {
+  const profileList = useProfiles().data?.profiles;
+  const names = useMemo(() => (profileList ?? []).map((p) => p.name), [profileList]);
+  const live = useLiveSessions();
+  const stats = useBoardStatusCounts();
+  const cachedBoard = useBoard({ enabled: false });
+  const pairing = usePendingPairing(names);
+
+  const boardIsNewer =
+    cachedBoard.data != null && cachedBoard.dataUpdatedAt >= stats.dataUpdatedAt;
+  return (
+    countWaiting(live.data) +
+    countAttentionCards(
+      boardIsNewer ? cachedBoard.data?.columns : undefined,
+      stats.data?.by_status,
+    ) +
+    pairing.length
+  );
 }

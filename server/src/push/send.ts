@@ -31,6 +31,18 @@ export interface PushMessage {
    * for correcting one that has gone stale, not for news.
    */
   quiet?: boolean;
+  /**
+   * Buttons on the banner. The worker renders them as notification actions and
+   * answers a press itself — see `approval` below. Ignored by platforms with no
+   * notification actions (iOS), where the banner still opens the app.
+   */
+  actions?: { action: string; title: string }[];
+  /**
+   * The approval a banner's Approve / Deny buttons answer. Present only on a
+   * "waiting for you" push whose session is blocked on an approval; the worker
+   * posts the choice to `/push/approval/<sessionId>` (`routers/push.ts`).
+   */
+  approval?: { sessionId: string; requestId: string | null };
 }
 
 /** Per-request socket timeout for a send; see the call site. */

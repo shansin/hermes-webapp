@@ -28,7 +28,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { MenuButton } from '../components/shared/MenuButton';
-import { IconRefresh, IconTrash } from '../components/shared/Icons';
+import { IconCron, IconRefresh, IconTrash } from '../components/shared/Icons';
 import { PullToRefresh } from '../components/shared/PullToRefresh';
 import { BackButton } from '../components/shared/BackButton';
 import { Empty, ErrorNote, SkeletonList, dayGroup, relTime } from '../components/shared/misc';
@@ -121,6 +121,21 @@ export function NotificationsScreen() {
             you on a screen you had not come from. */}
         <BackButton />
         <div className="header__title">Updates</div>
+        {/* The cron job list left the drawer and lives one tap from here:
+            what the schedules reported and the schedules themselves are read
+            together, and a failed run's row already links into it. */}
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => {
+            buzz('tap');
+            navigate('/cron');
+          }}
+          aria-label="Schedules"
+          title="Schedules"
+        >
+          <IconCron size={18} />
+        </button>
         {/* The feed polls once a minute and is invalidated over the socket, so
             this is not how you normally see a new row — it is for the case
             where you doubt that, and for the pointer that cannot pull. */}
@@ -307,7 +322,15 @@ function Entry({ entry, onOpen }: { entry: NotificationEntry; onOpen: () => void
             color: 'var(--text-dim)',
           }}
         >
-          <span aria-label={chip.label} title={chip.label} style={{ fontSize: 'var(--type-body-sm)' }}>
+          {/* `role="img"`: an `aria-label` on a plain span names nothing —
+              most screen readers skip it and read the emoji's own name, which
+              says less than which writer the row came from. */}
+          <span
+            role="img"
+            aria-label={chip.label}
+            title={chip.label}
+            style={{ fontSize: 'var(--type-body-sm)' }}
+          >
             {chip.icon}
           </span>
           <span>{entry.title}</span>

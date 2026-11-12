@@ -32,10 +32,19 @@ import { isRunning } from '../api/delegation';
 import type { SessionRow } from '../api/sessions';
 import type { Task } from '../api/kanban';
 import type { CronJob } from '../api/hub';
+import type { LiveSession } from '../api/needsYou';
 import { humanCron } from './cronText';
 
-export type ActivityKind = 'session' | 'kanban' | 'cron' | 'subagent';
-export type ActivityState = 'running' | 'queued' | 'stalled';
+export type ActivityKind = 'session' | 'kanban' | 'cron' | 'subagent' | 'pairing' | 'update';
+/**
+ * `attention` and `failed` are the two lanes that are not work in flight:
+ * something blocked on a person, and something that went wrong recently. They
+ * are listed in their own sections and never pass through `mergeActivity`.
+ */
+export type ActivityState = 'running' | 'queued' | 'stalled' | 'attention' | 'failed';
+
+/** Why a row is in "Needs you". */
+export type Attention = 'waiting' | 'blocked' | 'review' | 'pairing';
 
 export interface ActivityItem {
   id: string;
@@ -71,6 +80,10 @@ export interface ActivityItem {
    * never marked quiet.
    */
   sinceIsStart?: boolean;
+  /** Set on an `attention` row: which kind of ask it is. */
+  attention?: Attention;
+  /** Set on a `failed` row: how many failures it stands for. */
+  count?: number;
 }
 
 /**
@@ -86,7 +99,7 @@ export interface ActivityItem {
  */
 export const QUIET_AFTER_S = 90;
 
-function seconds(value: unknown): number | null {
+export function seconds(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
     // Some Hermes timestamps are milliseconds; anything past the year ~2286 in
     // seconds is really milliseconds.
@@ -99,7 +112,7 @@ function seconds(value: unknown): number | null {
   return null;
 }
 
-function text(value: unknown): string | null {
+export function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
@@ -306,7 +319,13 @@ export function fromCron(jobs: readonly CronJob[] | undefined, queuedLimit = 3):
   return [...running, ...queued.slice(0, queuedLimit)];
 }
 
-const STATE_ORDER: Record<ActivityState, number> = { running: 0, stalled: 1, queued: 2 };
+const STATE_ORDER: Record<ActivityState, number> = {
+  attention: -1,
+  running: 0,
+  stalled: 1,
+  queued: 2,
+  failed: 3,
+};
 
 /**
  * One list: live work first, then anything doubtful, then what is coming.
@@ -326,4 +345,53 @@ export function mergeActivity(...groups: ActivityItem[][]): ActivityItem[] {
 
 export function countRunning(items: readonly ActivityItem[]): number {
   return items.reduce((n, i) => (i.state === 'running' ? n + 1 : n), 0);
+}
+
+/* -------------------------------------------------------- needs-you counts
+
+   The two counts the hamburger badge needs, which is mounted on every screen
+   and so lives in the boot graph with this module. The rows the Activity
+   screen lists are built in `lib/needsYou.ts`, which only that (lazy) screen
+   imports — a module is placed in one chunk whole, so putting them here would
+   ship them before first paint for nothing. */
+
+export function isWaiting(s: LiveSession): boolean {
+  return (s.status ?? '').toLowerCase() === 'waiting';
+}
+
+/** Sessions blocked on a person, each counted once by its stored id. */
+export function countWaiting(live: readonly LiveSession[] | undefined): number {
+  const keys = new Set<string>();
+  for (const s of live ?? []) {
+    if (!isWaiting(s)) continue;
+    keys.add(text(s.session_key) ?? s.id);
+  }
+  return keys.size;
+}
+
+/** The two kanban columns that are a person's move. */
+export const ATTENTION_COLUMNS = ['blocked', 'review'] as const;
+
+/**
+ * How many cards are a person's move, from whichever source is in hand.
+ *
+ * The board, when a screen has it — it is what the pane lists, so the badge
+ * and the list agree. Otherwise the plugin's `/stats` counts, which is what
+ * the drawer can afford to poll from every screen.
+ */
+export function countAttentionCards(
+  columns: readonly { name: string; tasks: unknown[] }[] | undefined,
+  byStatus: Record<string, number> | null | undefined,
+): number {
+  if (columns) {
+    return columns.reduce(
+      (n, c) =>
+        (ATTENTION_COLUMNS as readonly string[]).includes(c.name) ? n + (c.tasks?.length ?? 0) : n,
+      0,
+    );
+  }
+  return ATTENTION_COLUMNS.reduce((n, s) => {
+    const v = byStatus?.[s];
+    return n + (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  }, 0);
 }

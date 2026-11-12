@@ -385,97 +385,34 @@ describe('where the screen lives', () => {
   const read = (rel: string) => readFileSync(resolve(__dirname, rel), 'utf8');
 
   /**
-   * The screen is a section of Models now, not a destination of its own. The
-   * route has to survive that: it is in the slash-command table, in
-   * `HubRedirect`, and in whatever anyone bookmarked before the merge.
+   * Usage is its own destination again: Models became a tab of the Agent
+   * screen, whose `?tab=` is the parameter Models used to pick its Usage half
+   * with. The old link has to keep landing here — it is in bookmarks and in
+   * the merged era's history.
    */
-  it('keeps /usage reachable, as a redirect rather than a drawer row', () => {
+  it('is a drawer row with a route of its own, and the old link follows it', () => {
     expect(read('../src/App.tsx')).toContain('path="/usage"');
-    expect(read('../src/App.tsx')).toContain('/models?tab=usage');
-    expect(read('../src/components/shared/NavDrawer.tsx')).not.toContain("to: '/usage'");
-    expect(read('../src/components/shared/NavDrawer.tsx')).toContain("to: '/models'");
+    expect(read('../src/components/shared/NavDrawer.tsx')).toContain("to: '/usage'");
+    expect(read('../src/screens/HubPage.tsx')).toMatch(/tab === 'usage'\) return '\/usage'/);
   });
 
   /**
-   * The charts weigh ~356 KB built, and Models is the screen you open to change
-   * a model. A static import here would inline all of it into that navigation
-   * without anything on screen looking different — so this checks the source
-   * for the dynamic boundary, and for the two things that would mean the
-   * report had been copied back in rather than mounted.
+   * The charts weigh ~356 KB built. A static import anywhere in the boot graph
+   * would put all of it in front of first paint without anything on screen
+   * looking different — so this checks the source for the dynamic boundary,
+   * and that Models no longer mounts the report at all.
    */
   it('mounts the charts behind a dynamic import rather than inlining them', () => {
+    const app = read('../src/App.tsx');
+    expect(app).toContain("import('./components/hub/UsageTab')");
+    expect(app).not.toMatch(/from '\.\/components\/hub\/UsageTab'/);
     const models = read('../src/components/hub/ModelsTab.tsx');
-    expect(models).toContain("import('./UsageTab')");
-    // Matched as an import rather than as the bare word: the file header names
-    // recharts as the whole reason the boundary is there, and a check that
-    // forbids saying so would be traded for a vaguer comment.
     expect(models).not.toMatch(/from 'recharts'/);
+    expect(models).not.toMatch(/UsageTab'/);
     expect(models).not.toMatch(/from '\.\.\/\.\.\/api\/hub'/);
   });
 
   it('still answers the old /hub?tab= links, including the new tab', () => {
-    expect(read('../src/screens/HubPage.tsx')).toContain("'usage'");
-  });
-});
-
-/**
- * The window fetch. Paging is where this goes wrong invisibly: stop too early
- * and the day is short by however much sat on page two; never stop and a phone
- * walks the entire history one hundred rows at a time.
- */
-describe('fetching the window', () => {
-  const since = NOW - 24 * HOUR;
-
-  /** A page of `n` sessions, all inside the window unless `old` is set. */
-  const page = (n: number, old = false) => ({
-    sessions: Array.from({ length: n }, (_, i) =>
-      session({ id: `s${i}`, started_at: old ? since - HOUR : NOW - i * 60 }),
-    ),
-    total: n,
-    limit: 100,
-    offset: 0,
-  });
-
-  it('stops at the first short page', async () => {
-    const get = vi.fn().mockResolvedValue(page(3));
-    const out = await fetchSessionsSince(since, get);
-
-    expect(get).toHaveBeenCalledTimes(1);
-    expect(out.rows).toHaveLength(3);
-    expect(out.truncated).toBe(false);
-  });
-
-  it('asks for archived sessions, which still burned tokens', async () => {
-    const get = vi.fn().mockResolvedValue(page(1));
-    await fetchSessionsSince(since, get);
-    expect(get.mock.calls[0]![0]).toContain('archived=include');
-  });
-
-  it('pages until a row falls out of the window, and keeps only what is inside', async () => {
-    const get = vi
-      .fn()
-      .mockResolvedValueOnce(page(100))
-      .mockResolvedValueOnce({ ...page(100), sessions: [...page(2).sessions, ...page(98, true).sessions] });
-
-    const out = await fetchSessionsSince(since, get);
-
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(get.mock.calls[1]![0]).toContain('offset=100');
-    expect(out.rows).toHaveLength(102);
-    expect(out.truncated).toBe(false);
-  });
-
-  /**
-   * The ceiling matters more than the number: five round trips is already more
-   * than a chart is worth on a phone, and the screen says so rather than
-   * drawing a partial day as if it were whole.
-   */
-  it('gives up after the page ceiling and admits it', async () => {
-    const get = vi.fn().mockResolvedValue(page(100));
-    const out = await fetchSessionsSince(since, get);
-
-    expect(get).toHaveBeenCalledTimes(MAX_WINDOW_PAGES);
-    expect(out.truncated).toBe(true);
-    expect(out.rows).toHaveLength(100 * MAX_WINDOW_PAGES);
+    expect(read('../src/screens/HubPage.tsx')).toContain("usage: '/usage'");
   });
 });

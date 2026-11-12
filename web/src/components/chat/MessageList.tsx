@@ -20,7 +20,7 @@
  * beside this file (`useTranscriptSearch`, `useSelection`, `useReadAloud`);
  * what stays here is scrolling, turn navigation and the rows.
  */
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { splitAttachedImages } from '../../lib/localImages';
 import { Link } from 'react-router-dom';
 import { Markdown } from './MarkdownAsync';
@@ -45,7 +45,7 @@ import {
 } from '../shared/Icons';
 import { Empty, formatTokens } from '../shared/misc';
 import { useSession, type ChatMessage, type MessageTime } from '../../store/session';
-import { useUi } from '../../store/ui';
+import { openCheckpoints, useUi } from '../../store/ui';
 import { buzz } from '../../lib/haptics';
 import { useLongPress } from '../../lib/useLongPress';
 import { copyText, outcomeToast, shareText } from '../../lib/share';
@@ -53,6 +53,18 @@ import { useTranscriptSearch } from './useTranscriptSearch';
 import { useSelection } from './useSelection';
 import { useReadAloud, type VoicePhase } from './useReadAloud';
 import { WorkspaceCwd } from './workspaceCwd';
+import type { ForkOutcome } from '../../lib/forkFlow';
+import { forkCountFromLocal } from '../../lib/forkPoint';
+
+/**
+ * The fork flow (and `session.branch`'s schema) loads on the tap: it costs
+ * nothing until someone forks, and the round trip it starts dwarfs the import.
+ */
+const forkAt = (...args: Parameters<typeof import('../../lib/forkFlow').forkAt>) =>
+  import('../../lib/forkFlow').then((m) => m.forkAt(...args));
+
+/** Only ever opened from a find-in-chat miss, so it stays out of the entry chunk. */
+const SessionSearchSheet = lazy(() => import('./SessionSearchSheet'));
 
 const NEAR_BOTTOM_PX = 120;
 
@@ -72,6 +84,13 @@ export function unreadSince(messages: { id: string }[], anchorId: string | null)
   if (!anchorId) return 0;
   const idx = messages.findIndex((m) => m.id === anchorId);
   return idx < 0 ? 0 : messages.length - 1 - idx;
+}
+
+/** Say where a fork left you; `landed` false means the cut may be off by a message. */
+function reportFork(out: ForkOutcome, toast: ReturnType<typeof useUi.getState>['toast']): void {
+  if (!out.ok) return;
+  if (out.landed) toast(`Forked — you are now in “${out.title}”`, 'success');
+  else toast('Forked, but the copy may not end exactly at that message — check before continuing.', 'warn');
 }
 
 /**
@@ -101,6 +120,12 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
   const rewinding = useSession((s) => s.rewinding);
   const retryLast = useSession((s) => s.retryLast);
   const resendFailed = useSession((s) => s.resendFailed);
+  const forking = useSession((s) => s.forking);
+  const forkedFrom = useSession((s) => s.forkedFrom);
+  const storedSessionId = useSession((s) => s.storedSessionId);
+  const sessionProfile = useSession((s) => s.profile);
+  /** The query handed to the whole-session search sheet while it is open. */
+  const [wholeSearch, setWholeSearch] = useState<string | null>(null);
   /** Subscribed once here and provided to every `Markdown`; see `workspaceCwd.ts`. */
   const cwd = useSession((s) => s.info?.cwd);
   const toast = useUi((s) => s.toast);
@@ -210,6 +235,14 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
     buzz('tap');
     void retryLast();
   }, [retryLast]);
+
+  const onFork = useCallback(
+    (id: string) => {
+      buzz('tap');
+      void forkAt(id).then((out) => reportFork(out, toast));
+    },
+    [toast],
+  );
 
   const { voice, onSpeak } = useReadAloud(toast);
 
@@ -375,7 +408,25 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
         )}
 
         {filtering && matches.length === 0 && (
-          <div className="chat-search__none">No messages match “{settledQuery.trim()}”.</div>
+          <div className="chat-search__none">
+            No messages match “{settledQuery.trim()}”.
+            {/* The screen holds the gateway's projection — compacted turns
+                and tool output are not in it — so a miss here is worth a
+                look at the stored conversation. */}
+            {storedSessionId && settledQuery.trim().length >= 2 && (
+              <div style={{ marginTop: 10 }}>
+                <button className="btn btn--sm" onClick={() => setWholeSearch(settledQuery.trim())}>
+                  Search whole session
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {forkedFrom && !filtering && messages.length > 0 && (
+          <div className="msg-divider">
+            <span>Forked from “{forkedFrom}”</span>
+          </div>
         )}
 
         {visible.map((m) => {
@@ -404,6 +455,7 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
               onToggleActions={onToggleActions}
               onEdit={onEdit}
               onResend={onResend}
+              onFork={onFork}
               isLastAssistant={m.id === lastAssistantId}
               running={live && running}
               rewinding={live && rewinding}
@@ -476,7 +528,29 @@ export function MessageList({ searchOpen, onCloseSearch }: MessageListProps) {
           setEditing(null);
           if (id) void useSession.getState().editTurn(id, text);
         }}
+        // Not on the first prompt: a fork before it would be a fork of
+        // nothing, which `session.branch` cannot express (see forkPoint.ts).
+        onSubmitInFork={
+          editing && !forking && forkCountFromLocal(messages, editing.id, 'before') != null
+            ? (text) => {
+                const id = editing.id;
+                setEditing(null);
+                void forkAt(id, { replacement: text }).then((out) => reportFork(out, toast));
+              }
+            : undefined
+        }
       />
+
+      {wholeSearch && storedSessionId && (
+        <Suspense fallback={null}>
+          <SessionSearchSheet
+            query={wholeSearch}
+            storedId={storedSessionId}
+            profile={sessionProfile}
+            onClose={() => setWholeSearch(null)}
+          />
+        </Suspense>
+      )}
     </WorkspaceCwd>
   );
 }
@@ -495,6 +569,7 @@ interface RowProps {
   onToggleActions: (id: string) => void;
   onEdit: (id: string, text: string) => void;
   onResend: (id: string) => void;
+  onFork: (id: string) => void;
   isLastAssistant: boolean;
   /**
    * The session's, but only on a row with a control they disable — false on
@@ -622,6 +697,14 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
               >
                 Edit &amp; resend
               </button>
+              {/* The files as they were when this was sent — the checkpoint
+                  taken before the agent's first edit after it. Needs a time
+                  to map by: this session's own, or the stored row's. */}
+              {(m.at ?? m.storedAt) != null && (
+                <button className="code__copy" onClick={() => openCheckpoints(m.at ?? m.storedAt ?? null)}>
+                  Restore files…
+                </button>
+              )}
               {/* Copy what the bubble shows: the refs are plumbing. */}
               <MessageActions getText={() => caption} title="Hem" />
             </div>
@@ -695,6 +778,15 @@ const MessageRow = memo(function MessageRow(p: RowProps) {
                 )}
               </button>
               <MessageActions getText={() => m.text} title="Hem" />
+              {/* Branch here into a new conversation; this one stays whole. */}
+              <button
+                className="code__copy msg__action"
+                disabled={p.running || p.rewinding}
+                onClick={() => p.onFork(m.id)}
+                aria-label="Fork the conversation from this reply"
+              >
+                Fork
+              </button>
             </>
           )}
           {p.isLastAssistant && (

@@ -12,9 +12,22 @@ import { QueryClient, type QueryKey } from '@tanstack/react-query';
 import { invalidateActivity } from '../src/lib/useActivity';
 import { kanbanKeys } from '../src/api/kanban';
 import { DELEGATION_KEY } from '../src/api/delegation';
+import { LIVE_SESSIONS_KEY, parseLiveSessions, parsePendingPairing } from '../src/api/needsYou';
+import type { LiveSession, PendingPairing } from '../src/api/needsYou';
+import type { NotificationEntry } from '../src/api/notifications';
+import {
+  FAILED_WINDOW_MS,
+  fromKanbanAttention,
+  fromPairing,
+  fromWaiting,
+  mergeNeedsYou,
+  recentFailures,
+} from '../src/lib/needsYou';
 import {
   QUIET_AFTER_S,
+  countAttentionCards,
   countRunning,
+  countWaiting,
   fromCron,
   fromDelegations,
   fromKanban,
@@ -417,9 +430,20 @@ describe('invalidateActivity', () => {
 
   function seeded(): QueryClient {
     const qc = new QueryClient();
-    for (const key of [BOARD, SESSIONS, DELEGATION_KEY, CRON]) qc.setQueryData(key, {});
+    for (const key of [BOARD, SESSIONS, DELEGATION_KEY, CRON, LIVE_SESSIONS_KEY]) qc.setQueryData(key, {});
     return qc;
   }
+
+  /* An approval is asked mid-turn, so the turn boundaries are also when a
+     session enters or leaves `waiting`. Shared, because the badge reads it. */
+  it('refreshes the live session list with the shared lanes', () => {
+    const qc = seeded();
+    invalidateActivity(qc, 'message.start', 'shared');
+    expect(stale(qc, LIVE_SESSIONS_KEY)).toBe(true);
+    const full = seeded();
+    invalidateActivity(full, 'message.start', 'full');
+    expect(stale(full, LIVE_SESSIONS_KEY)).toBe(false);
+  });
   const stale = (qc: QueryClient, key: QueryKey) => qc.getQueryState(key)?.isInvalidated;
 
   it('refreshes the board the Activity screen reads', () => {
@@ -453,5 +477,233 @@ describe('invalidateActivity', () => {
     invalidateActivity(qc, 'message.delta', 'shared');
     invalidateActivity(qc, 'message.delta', 'full');
     for (const key of [BOARD, SESSIONS, DELEGATION_KEY, CRON]) expect(stale(qc, key)).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------- needs you */
+
+const liveRow = (over: Partial<LiveSession> = {}): LiveSession => ({
+  id: 'a1b2c3d4',
+  session_key: '20261112_101500_abc',
+  status: 'waiting',
+  title: 'Deploy the blog',
+  last_active: NOW - 90,
+  started_at: NOW - 600,
+  message_count: 12,
+  ...over,
+});
+
+/**
+ * Sessions parked on a person. The registry is process-wide and its rows carry
+ * no profile, so the profile has to come from somewhere else — or a row for
+ * another agent's session opens an empty chat.
+ */
+describe('waiting sessions', () => {
+  it('lists only `waiting`, by stored id rather than live handle', () => {
+    const items = fromWaiting([
+      liveRow(),
+      liveRow({ id: 'ffff0000', session_key: 'other', status: 'working' }),
+      liveRow({ id: 'eeee0000', session_key: 'idle-one', status: 'idle' }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.id).toBe('session:20261112_101500_abc');
+    expect(items[0]!.url).toBe('/chat?session=20261112_101500_abc');
+    expect(items[0]!.attention).toBe('waiting');
+    expect(items[0]!.state).toBe('attention');
+    expect(items[0]!.since).toBe(NOW - 90);
+  });
+
+  it('borrows the profile from the session rows, so the link opens the right store', () => {
+    const [item] = fromWaiting([liveRow()], [session({ id: '20261112_101500_abc', profile: 'research' })]);
+    expect(item!.owner).toBe('research');
+    expect(item!.url).toBe('/chat?session=20261112_101500_abc&profile=research');
+  });
+
+  it('falls back to the live handle only when there is no stored id', () => {
+    const [item] = fromWaiting([liveRow({ session_key: null })]);
+    expect(item!.url).toBe('/chat?session=a1b2c3d4');
+  });
+
+  it('borrows the title from the stored row when the live one has none', () => {
+    const [item] = fromWaiting([liveRow({ title: '' })], [session({ id: '20261112_101500_abc', title: 'Stored title' })]);
+    expect(item!.title).toBe('Stored title');
+  });
+
+  it('counts each session once, and counts nothing on an empty or absent list', () => {
+    expect(countWaiting([liveRow(), liveRow({ id: 'dup' }), liveRow({ status: 'working', session_key: 'x' })])).toBe(1);
+    expect(countWaiting(undefined)).toBe(0);
+    expect(fromWaiting(undefined)).toEqual([]);
+  });
+
+  /* One odd row must cost that row, not the lane — a throw would read as
+     "nobody is waiting". */
+  it('parses row by row', () => {
+    const rows = parseLiveSessions({ sessions: [liveRow(), { status: 'waiting' }, null, 'x'] });
+    expect(rows).toHaveLength(1);
+    expect(parseLiveSessions(null)).toEqual([]);
+    expect(parseLiveSessions({ sessions: 'nope' })).toEqual([]);
+  });
+});
+
+describe('kanban cards that are your move', () => {
+  const columns = (blocked: Task[], review: Task[] = []) => [
+    { name: 'running', tasks: [task({ id: 'r' })] },
+    { name: 'blocked', tasks: blocked },
+    { name: 'review', tasks: review },
+    { name: 'done', tasks: [task({ id: 'd' })] },
+  ];
+
+  it('takes Blocked and Review and nothing else', () => {
+    const items = fromKanbanAttention(columns([task({ id: 'b' })], [task({ id: 'v' })]));
+    expect(items.map((i) => [i.id, i.attention])).toEqual([
+      ['kanban:b', 'blocked'],
+      ['kanban:v', 'review'],
+    ]);
+    expect(items[0]!.url).toBe('/kanban?task=b');
+  });
+
+  /* The same split the push sweep makes: a card that ran out of retries is
+     not a question, and the error is the useful line. */
+  it('says which kind of blocked it is', () => {
+    const [asking, gaveUp, other] = fromKanbanAttention(
+      columns([
+        task({ id: 'q', block_kind: 'needs_input', latest_summary: null }),
+        task({ id: 'f', consecutive_failures: 3, last_failure_error: 'Timeout after 600s' }),
+        task({ id: 'o', block_kind: 'waiting_on_parent', latest_summary: null }),
+      ]),
+    );
+    expect(asking!.detail).toBe('Asking you a question');
+    expect(gaveUp!.detail).toBe('Timeout after 600s');
+    expect(gaveUp!.note).toBe('Gave up');
+    expect(other!.detail).toBe('Blocked (waiting on parent)');
+  });
+
+  it('counts from the board when it is in hand, from /stats otherwise', () => {
+    const board = columns([task({ id: 'b1' }), task({ id: 'b2' })], [task({ id: 'v' })]);
+    expect(countAttentionCards(board, { blocked: 9, review: 9 })).toBe(3);
+    expect(countAttentionCards(undefined, { blocked: 2, review: 1, running: 4 })).toBe(3);
+    expect(countAttentionCards(undefined, undefined)).toBe(0);
+    expect(countAttentionCards(undefined, { blocked: Number.NaN })).toBe(0);
+  });
+});
+
+describe('pairing requests', () => {
+  it('reads the pending list the backend returns, never a code', () => {
+    const rows = parsePendingPairing(
+      {
+        pending: [
+          { platform: 'telegram', request_id: 'r1', user_id: '42', user_name: 'Ana', age_minutes: 5 },
+          { platform: 'discord', request_id: '', user_id: 7, user_name: '', age_minutes: 0 },
+          'junk',
+        ],
+        approved: [{ user_id: '1' }],
+      },
+      'default',
+    );
+    expect(rows).toEqual([
+      { platform: 'telegram', requestId: 'r1', user: 'Ana', ageMinutes: 5, profile: 'default' },
+      { platform: 'discord', requestId: '', user: '7', ageMinutes: 0, profile: 'default' },
+    ]);
+    expect(parsePendingPairing({}, null)).toEqual([]);
+  });
+
+  it('leads to the Machine screen’s pairing section', () => {
+    const pending: PendingPairing[] = [
+      { platform: 'telegram', requestId: 'r1', user: 'Ana', ageMinutes: 5, profile: 'research' },
+      { platform: 'telegram', requestId: 'r1', user: 'Ana', ageMinutes: 5, profile: 'research' },
+    ];
+    const items = fromPairing(pending, NOW);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.title).toBe('Ana on Telegram');
+    expect(items[0]!.url).toBe('/machine#pairing');
+    expect(items[0]!.owner).toBe('research');
+    expect(items[0]!.since).toBe(NOW - 300);
+  });
+});
+
+describe('the needs-you list', () => {
+  it('leads with a session parked mid-turn, review last', () => {
+    const merged = mergeNeedsYou(
+      fromKanbanAttention([{ name: 'review', tasks: [task({ id: 'v', started_at: NOW })] }]),
+      fromPairing([{ platform: 'slack', requestId: 'p', user: 'Bo', ageMinutes: 1, profile: null }], NOW),
+      fromKanbanAttention([{ name: 'blocked', tasks: [task({ id: 'b' })] }]),
+      fromWaiting([liveRow()]),
+    );
+    expect(merged.map((i) => i.attention)).toEqual(['waiting', 'blocked', 'pairing', 'review']);
+  });
+});
+
+describe('failed in the last 24h', () => {
+  const NOW_MS = NOW * 1000;
+  const entry = (over: Partial<NotificationEntry> = {}): NotificationEntry => ({
+    id: Math.random().toString(36),
+    at: NOW_MS - 60_000,
+    kind: 'cron.failed',
+    source: 'cron',
+    severity: 'error',
+    title: 'nightly-backup',
+    body: '**RuntimeError**: disk full\nmore detail',
+    url: '/cron?job=j1',
+    jobId: 'j1',
+    jobName: 'nightly-backup',
+    runId: null,
+    status: 'error',
+    failed: true,
+    sessionId: null,
+    ...over,
+  });
+
+  it('keeps failures inside the window and drops everything else', () => {
+    const items = recentFailures(
+      [
+        entry(),
+        entry({ jobId: 'old', url: '/cron?job=old', at: NOW_MS - FAILED_WINDOW_MS - 1 }),
+        entry({ jobId: 'ok', url: '/chat?session=s', failed: false, severity: 'ok' }),
+        entry({ jobId: null, kind: 'backend.down', severity: 'warn', failed: false, url: '/settings' }),
+      ],
+      NOW_MS,
+    );
+    expect(items.map((i) => i.url)).toEqual(['/cron?job=j1']);
+    expect(items[0]!.state).toBe('failed');
+    expect(items[0]!.detail).toBe('RuntimeError: disk full');
+  });
+
+  /* A job failing every five minutes is one problem, not 288 rows. */
+  it('groups a job’s failures, newest speaking for the group', () => {
+    const items = recentFailures(
+      [
+        entry({ at: NOW_MS - 1_000, url: '/chat?session=newest', body: 'newest' }),
+        entry({ at: NOW_MS - 5_000, url: '/chat?session=older', body: 'older' }),
+        entry({ at: NOW_MS - 9_000, url: '/chat?session=oldest', body: 'oldest' }),
+      ],
+      NOW_MS,
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]!.count).toBe(3);
+    expect(items[0]!.url).toBe('/chat?session=newest');
+    expect(items[0]!.detail).toBe('newest');
+  });
+
+  it('counts severity `error` as a failure even where `failed` is not set', () => {
+    const items = recentFailures(
+      [entry({ jobId: null, kind: 'kanban.triage', source: 'system', failed: false, url: '/kanban?task=t9' })],
+      NOW_MS,
+    );
+    expect(items).toHaveLength(1);
+  });
+
+  /* A card that gave up is both a feed failure and a Blocked card; it is
+     listed once, where the action is. */
+  it('leaves out what "Needs you" already lists', () => {
+    const items = recentFailures(
+      [entry({ jobId: null, url: '/kanban?task=t1' }), entry()],
+      NOW_MS,
+      new Set(['/kanban?task=t1']),
+    );
+    expect(items.map((i) => i.url)).toEqual(['/cron?job=j1']);
+  });
+
+  it('survives an absent feed', () => {
+    expect(recentFailures(undefined, NOW_MS)).toEqual([]);
   });
 });

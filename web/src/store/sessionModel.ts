@@ -26,13 +26,27 @@ import { clarifyQuestionsOf, indexClarifyResults } from '../lib/clarifyExchange'
  */
 export type MessageTime = number | null;
 
+/**
+ * What newer Hermes' `session.history` also carries per user/assistant row:
+ * the durable row id and the authoring time (Unix seconds). Kept apart from
+ * `at` on purpose — `at` is what this session saw happen and drives the
+ * "restored from history" divider — and used only where a stored address is
+ * the point: the fork cut (`lib/forkPoint.ts`) and mapping a turn to the
+ * checkpoint taken during it.
+ */
+export interface StoredRef {
+  rowId?: number;
+  /** Epoch ms, from the stored row. */
+  storedAt?: number;
+}
+
 export type ChatMessage =
   /**
    * `displayText` exists for skill/bundle commands: `command.dispatch` hands
    * back an expanded, model-facing prompt, but the transcript must keep
    * showing the short invocation the user actually typed.
    */
-  | {
+  | (StoredRef & {
       kind: 'user';
       id: string;
       text: string;
@@ -45,7 +59,7 @@ export type ChatMessage =
        * it again.
        */
       failed?: boolean;
-    }
+    })
   /** Local output — slash-command results, and why one wouldn't run. */
   | {
       kind: 'notice';
@@ -57,7 +71,7 @@ export type ChatMessage =
       action?: { label: string; to: string };
       at: MessageTime;
     }
-  | {
+  | (StoredRef & {
       kind: 'assistant';
       id: string;
       text: string;
@@ -65,7 +79,7 @@ export type ChatMessage =
       at: MessageTime;
       usage?: Usage;
       interrupted?: boolean;
-    }
+    })
   /**
    * A delegated child agent. One card per spawn, updated in place as its
    * `subagent.*` events arrive — the child's own reply body never reaches the

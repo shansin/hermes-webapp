@@ -132,13 +132,29 @@ export function useSlashRunner(handlers: SlashHandlers) {
         addNotice(result.output?.trim() || '(no output)', 'info', name);
       };
 
+      if (spec?.surface.kind === 'rpc' && spec.surface.usage && !arg) {
+        addNotice(spec.surface.usage, 'error', name);
+        buzz('warn');
+        return;
+      }
+
       buzz('tap');
       setBusy(name);
       try {
         if (spec?.surface.kind === 'rpc') {
-          const { rpc, buildParams, render } = spec.surface;
-          const result = await hermes.call(rpc, buildParams({ sessionId, arg, name }));
-          addNotice(render ? render(result, { sessionId, arg, name }) : 'Done.', 'info', name);
+          const { rpc, buildParams, render, confirm, after } = spec.surface;
+          const ctx = { sessionId, arg, name };
+          const result = await hermes.call(rpc, buildParams(ctx));
+          addNotice(render ? render(result, ctx) : 'Done.', 'info', name);
+          // The backend asked first and did nothing. The notice says why; the
+          // toast is the one-tap yes, re-running with the confirming argument.
+          if (confirm?.needed(result)) {
+            toast(confirm.prompt, 'warn', {
+              action: { label: confirm.action, onAction: () => void run(`${name} ${confirm.arg}`, depth) },
+            });
+            return;
+          }
+          after?.(result, ctx);
           return;
         }
 

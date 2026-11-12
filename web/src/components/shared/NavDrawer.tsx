@@ -12,7 +12,7 @@
  *
  * ## Two modes
  *
- * Past `WIDE_QUERY` the same list is *docked*: a permanent rail, no backdrop,
+ * Past `RAIL_QUERY` (portrait tablets up) the same list is *docked*: a permanent rail, no backdrop,
  * nothing to open or close. A modal drawer is the right answer when the panel
  * would cover most of the screen; on a 1400px window it covers a fifth of it,
  * and every navigation costs a tap to summon a menu there was always room to
@@ -28,93 +28,103 @@
 import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
+  IconAgent,
   IconBell,
   IconChat,
   IconClose,
-  IconCron,
   IconFolder,
   IconKanban,
   IconPlay,
-  IconMemory,
-  IconModels,
-  IconPlug,
-  IconProfiles,
+  IconServer,
   IconSessions,
   IconSettings,
-  IconSkills,
+  IconUsage,
 } from './Icons';
 import { useUi } from '../../store/ui';
 import { useUnreadCount } from '../../api/notifications';
 import { useActiveProfile, useProfiles, useSwitchProfile } from '../../api/profiles';
-import { useActivity } from '../../lib/useActivity';
+import { useActivity, useNeedsYouCount } from '../../lib/useActivity';
 import { SelectSheet } from './SelectSheet';
 import { buzz } from '../../lib/haptics';
 import { useHistoryDismiss } from '../../lib/useHistoryDismiss';
-import { useWideLayout } from '../../lib/useMediaQuery';
+import { useRailLayout } from '../../lib/useMediaQuery';
 
 /**
- * The Hub's six tabs used to hide behind a single "Hub" entry, which cost two
- * taps and a segmented control to reach any of them. They are top-level
- * destinations now — the drawer is the one surface with room for twelve.
+ * Ten destinations, down from thirteen.
  *
- * Split into two groups so the configuration destinations read as a set rather
- * than as more peers of Chat. Both groups carry a hint — twelve of them run
- * past the fold on a short phone, which the list scrolls for.
+ * The Hub's tabs were promoted to top-level rows once, which cost nothing at
+ * six and became the problem at thirteen: seven configuration rows under
+ * SYSTEM, more than the working group above them, and the list ran past the
+ * fold on every phone. They are grouped by *what they configure* now:
  *
- * Updates sits in the working group rather than under SYSTEM, next to Files:
- * what Hermes reported — a scheduled run, an announcement mid-turn, the
- * backend going away — is something you read, like a transcript, not something
- * you configure. The cron job list stays under SYSTEM, which is where the
- * schedules are actually managed.
+ * - **Agent** is the agent itself — what it remembers, what it can do and
+ *   reach, which named setup it runs as, which model. One screen, five tabs,
+ *   the tab in `?tab=` (`screens/AgentScreen.tsx`).
+ * - **Machine** is the box it runs on — health, messaging platforms and
+ *   pairing, backups, logs.
+ * - **Usage** and **Settings** stay their own rows: one is read rather than
+ *   configured, the other is this app, not Hermes.
+ *
+ * Every old path still resolves — `/memory`, `/skills`, `/tools`, `/profiles`
+ * and `/models` redirect into Agent, because slash commands, push payloads and
+ * bookmarks hold them. Cron keeps its route and is reached from Updates
+ * ("Schedules"): what Hermes reported and what it is going to do next are
+ * read in the same place.
+ *
+ * Activity carries the needs-you count, not the running one: a running turn
+ * needs nothing from you, and the badge is the one place an approval parked on
+ * another profile can make itself seen.
  */
-const WORK = [
+type Entry = {
+  to: string;
+  label: string;
+  hint: string;
+  Icon: ComponentType<{ size?: number }>;
+  badge?: 'unread' | 'needs';
+};
+
+const WORK: Entry[] = [
   { to: '/chat', label: 'Chat', hint: 'Talk to the agent', Icon: IconChat },
   { to: '/sessions', label: 'Sessions', hint: 'History and search', Icon: IconSessions },
-  { to: '/kanban', label: 'Kanban', hint: 'The task board', Icon: IconKanban },
   {
     to: '/activity',
     label: 'Activity',
-    hint: 'What is running now',
+    hint: 'What needs you, and what is running',
     Icon: IconPlay,
-    live: true,
+    badge: 'needs',
   },
+  { to: '/kanban', label: 'Kanban', hint: 'The task board', Icon: IconKanban },
   { to: '/files', label: 'Files', hint: 'Browse the workspace', Icon: IconFolder },
   {
     to: '/notifications',
     label: 'Updates',
-    hint: 'What happened while you were away',
+    hint: 'What happened, and the schedules',
     Icon: IconBell,
-    badge: true,
+    badge: 'unread',
   },
 ];
 
-const SYSTEM = [
-  { to: '/memory', label: 'Memory', hint: 'What the agent remembers', Icon: IconMemory },
-  { to: '/skills', label: 'Skills', hint: 'Toggle, search, install', Icon: IconSkills },
-  { to: '/cron', label: 'Cron', hint: 'Scheduled jobs', Icon: IconCron },
-  { to: '/models', label: 'Models', hint: 'Defaults, and where the tokens went', Icon: IconModels },
-  {
-    to: '/tools',
-    label: 'Capabilities',
-    hint: 'Toolsets, MCP servers and config',
-    Icon: IconPlug,
-  },
-  { to: '/profiles', label: 'Profiles', hint: 'Named configurations', Icon: IconProfiles },
-  { to: '/settings', label: 'App settings', hint: 'Theme, notifications, status', Icon: IconSettings },
+const SYSTEM: Entry[] = [
+  { to: '/agent', label: 'Agent', hint: 'Memory, skills, tools, profiles, models', Icon: IconAgent },
+  { to: '/machine', label: 'Machine', hint: 'Health, messaging, backups, logs', Icon: IconServer },
+  { to: '/usage', label: 'Usage', hint: 'Where the tokens went', Icon: IconUsage },
+  { to: '/settings', label: 'Settings', hint: 'Theme, notifications, status', Icon: IconSettings },
 ];
 
 /** How far the panel must be dragged left before it closes. */
 const DISMISS_PX = 60;
 
 export function NavDrawer() {
-  const docked = useWideLayout();
+  const docked = useRailLayout();
   const open = useUi((s) => s.navOpen);
   const setOpen = useUi((s) => s.setNavOpen);
   const connection = useUi((s) => s.connection);
   const unread = useUnreadCount();
   // Sessions only — the drawer must not make every screen poll the kanban
-  // board and the cron list just to show a number.
+  // board and the cron list just to show a number. The needs-you count reads
+  // the board's `/stats` instead, for the same reason.
   const { running } = useActivity(false);
+  const needsYou = useNeedsYouCount();
   /**
    * Which profile is live.
    *
@@ -235,14 +245,17 @@ export function NavDrawer() {
         </div>
 
         <div className="drawer__list">
-          {WORK.map(({ to, label, hint, Icon, badge, live }) => (
+          {WORK.map(({ to, label, hint, Icon, badge }) => (
             <Item
               key={to}
               to={to}
               label={label}
-              hint={hint}
+              /* The running count moves into the hint, where it stays true
+                 without competing with the badge for "look at me". */
+              hint={badge === 'needs' && running > 0 ? `${running} running` : hint}
               Icon={Icon}
-              count={badge ? unread : live ? running : 0}
+              count={badge === 'unread' ? unread : badge === 'needs' ? needsYou : 0}
+              countLabel={badge === 'needs' ? 'need you' : 'unread'}
               onNavigate={onNavigate}
               replaceEntry={!docked}
             />
@@ -286,6 +299,7 @@ function Item({
   Icon,
   compact = false,
   count = 0,
+  countLabel = 'unread',
   onNavigate,
   replaceEntry,
 }: {
@@ -296,6 +310,8 @@ function Item({
   compact?: boolean;
   /** Unread badge. Zero renders nothing rather than a "0" pill. */
   count?: number;
+  /** What the count is of, for the screen reader: "3 unread", "2 need you". */
+  countLabel?: string;
   onNavigate: () => void;
   /** See the note on `replace` below. False for the docked rail. */
   replaceEntry: boolean;
@@ -333,8 +349,13 @@ function Item({
           the hamburger only says that there is one. Capped so a feed left
           unread for a month does not widen the row. */}
       {count > 0 && (
-        <span className="drawer__badge" aria-label={`${count} unread`}>
-          {count > 99 ? '99+' : count}
+        <span className="drawer__badge">
+          {/* Spoken in words: an `aria-label` on a plain span is ignored by
+              most screen readers, which then read "3" with no noun. */}
+          <span aria-hidden="true">{count > 99 ? '99+' : count}</span>
+          <span className="visually-hidden">
+            {count} {countLabel}
+          </span>
         </span>
       )}
     </NavLink>

@@ -59,16 +59,25 @@ import {
   withClarifyAnswers,
   type ChatMessage,
   type LostSubmit,
+  type StoredRef,
 } from './sessionModel';
 import { answerServerRequest, liveRequests } from './serverRequests';
+import { rememberSession } from '../lib/lastSession';
 
-export type { ChatMessage, MessageTime } from './sessionModel';
+export type { ChatMessage, MessageTime, StoredRef } from './sessionModel';
 
 interface SessionState {
   /** Gateway session handle (8-hex), distinct from the stored session id. */
   sessionId: string | null;
   /** Persistent id used by the REST session endpoints. */
   storedSessionId: string | null;
+  /**
+   * A chat made by `session.create` that has not sent anything yet. Hermes
+   * mints it a stored id at once but keeps the row lazy, and a cold start
+   * never resumes it — so its draft is filed under the shared new-chat key
+   * rather than an id nothing will reopen (`lib/drafts.ts`).
+   */
+  pristine: boolean;
   /**
    * Which profile's store holds this conversation, or null for the active one.
    *
@@ -127,6 +136,16 @@ interface SessionState {
   queued: { text: string; display?: string } | null;
   /** True while a rewind (retry / edit) is in flight. */
   rewinding: boolean;
+  /** True while a fork (`lib/forkFlow.ts`) is being made. */
+  forking: boolean;
+  /**
+   * The title of the conversation this one was forked from, when it was
+   * forked on this screen. Only from `session.branch`'s own answer: a stored
+   * row's `parent_session_id` is also how a *compression* continuation points
+   * at its predecessor, so reading lineage off a resumed row would label
+   * every long conversation a fork.
+   */
+  forkedFrom: string | null;
 
   /**
    * The user half of a turn that is running right now, when history does not
@@ -160,6 +179,8 @@ interface SessionState {
     profile?: string | null;
     info?: SessionInfo;
     pendingClarify?: ClarifyRequest;
+    /** True only for a chat `session.create` just made. */
+    pristine?: boolean;
   }) => void;
   /**
    * Adopt the live-turn state a `session.create` / `session.resume` answered
@@ -270,6 +291,25 @@ function showServerRequest(get: Get, set: Set, req: ServerRequest, quiet: boolea
 }
 
 /**
+ * The row id and authoring time newer Hermes puts on a history row — see
+ * `StoredRef`. Read off the loose object rather than the schema, and only
+ * when they are the types they claim to be.
+ */
+function storedRef(m: HistoryMessage): StoredRef {
+  const { row_id: rowId, timestamp } = m as { row_id?: unknown; timestamp?: unknown };
+  return {
+    ...(typeof rowId === 'number' ? { rowId } : {}),
+    ...(typeof timestamp === 'number' && timestamp > 0 ? { storedAt: timestamp * 1000 } : {}),
+  };
+}
+
+/** This conversation was just active; see `lib/lastSession.ts`. */
+function noteActivity(get: Get): void {
+  const { storedSessionId, profile } = get();
+  rememberSession(storedSessionId, profile);
+}
+
+/**
  * Rewind the conversation to the user message at `idx` and run it again.
  *
  * Retry and edit-and-regenerate are the same operation: both drop everything
@@ -312,6 +352,7 @@ async function rewind(get: Get, set: Set, idx: number, replacement?: string): Pr
 export const useSession = create<SessionState>((set, get) => ({
   sessionId: null,
   storedSessionId: null,
+  pristine: false,
   profile: null,
   title: '',
   info: null,
@@ -329,6 +370,8 @@ export const useSession = create<SessionState>((set, get) => ({
   error: null,
   queued: null,
   rewinding: false,
+  forking: false,
+  forkedFrom: null,
   inflightPrompt: null,
   lostSubmit: null,
 
@@ -337,6 +380,7 @@ export const useSession = create<SessionState>((set, get) => ({
     set({
       sessionId: null,
       storedSessionId: null,
+      pristine: false,
       profile: null,
       title: '',
       info: null,
@@ -354,16 +398,19 @@ export const useSession = create<SessionState>((set, get) => ({
       error: null,
       queued: null,
       rewinding: false,
+      forking: false,
+      forkedFrom: null,
       inflightPrompt: null,
       lostSubmit: null,
     });
   },
 
-  adoptSession: ({ sessionId, storedSessionId, profile, info, pendingClarify }) => {
+  adoptSession: ({ sessionId, storedSessionId, profile, info, pendingClarify, pristine }) => {
     if (sessionId !== get().sessionId) epoch++;
     set({
       sessionId,
       storedSessionId: storedSessionId ?? null,
+      pristine: pristine ?? false,
       profile: profile ?? null,
       info: info ?? null,
       error: null,
@@ -512,7 +559,7 @@ export const useSession = create<SessionState>((set, get) => ({
       if (m.role === 'user') {
         const text = m.text ?? '';
         const old = priorMatch(i, 'user', text);
-        out.push({ kind: 'user', id: old?.id ?? nextId(), text, at: old?.at ?? null });
+        out.push({ kind: 'user', id: old?.id ?? nextId(), text, at: old?.at ?? null, ...storedRef(m) });
       } else if (m.role === 'assistant') {
         const text = m.text ?? '';
         const old = priorMatch(i, 'assistant', text);
@@ -522,6 +569,7 @@ export const useSession = create<SessionState>((set, get) => ({
           text,
           reasoning: m.reasoning,
           at: old?.at ?? null,
+          ...storedRef(m),
         });
       } else if (m.role === 'tool') {
         // Replayed history has no tool_id and no result — only what was
@@ -784,6 +832,7 @@ export const useSession = create<SessionState>((set, get) => ({
         const { patch, interrupted } = foldMessageComplete(s, payload, nextId);
         vibrate('done');
         set(patch);
+        noteActivity(get);
 
         // Release a message typed during the turn. An interrupted turn is the
         // one case we hold it back: the user stopped the agent, so firing the
@@ -888,6 +937,7 @@ export const useSession = create<SessionState>((set, get) => ({
   submitPrompt: async (text, opts) => {
     const { sessionId, running } = get();
     if (!sessionId || !text.trim()) return;
+    if (get().pristine) set({ pristine: false });
 
     // The gateway runs one turn per session, so a message sent mid-turn would
     // be rejected. Hold it instead and send it when the turn completes.
@@ -918,6 +968,7 @@ export const useSession = create<SessionState>((set, get) => ({
 
     try {
       await hermes.call('prompt.submit', { session_id: sessionId, text });
+      if (stillOn(token)) noteActivity(get);
     } catch (err) {
       // Another conversation by now; this bubble is not on screen to mark.
       if (!stillOn(token)) return;

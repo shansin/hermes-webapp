@@ -444,6 +444,23 @@ schedule rendered wrong gets believed; `cronError` must stay silent unless it is
 certain, because a false complaint blocks a schedule Hermes would have accepted.
 The cases it must catch are the ones that used to save happily and never run.
 
+**`web/test/turnControl.test.ts`** — a send while a turn runs: queue, steer,
+redirect, and `/bg`'s background run. `session.steer` and `session.redirect`
+decline with a *successful* `{status: "rejected"}`, and `session.steer` reports
+an accepted steer as `"queued"`, so each status is pinned to its outcome: what
+the gateway was sent, whether the message survived (a decline falls back to the
+local queue, out loud), and that nothing lands in a conversation switched to
+while the call was out.
+
+**`web/test/drafts.test.ts`** — per-conversation composer drafts. The LRU cap,
+storage that throws, and the hook's hand-offs: the gap between conversations
+must not carry one chat's text into the next, and a new chat learning its
+stored id must not wipe what is being typed.
+
+**`web/test/reloads.test.ts`** — `/reload-mcp` and `/reload-skills` over RPC.
+`reload.mcp` answers `confirm_required` and does nothing until asked again with
+`confirm: true`; reading that as success says "reloaded" when nothing was.
+
 **`web/test/push.test.ts` / `apiClient.test.ts` / `uiStore.test.ts` /
 `sessionTags.test.ts`** — browser-side push state, REST error shaping, theme
 resolution and persistence, tag parsing.
@@ -455,3 +472,16 @@ both of which are tested directly, so a render test of one would mostly assert
 that JSX exists. The components that *are* rendered here earn it by owning
 behaviour of their own — a focus trap, a live region, a modal that must not be
 escapable.
+
+## Added in the 2026-11 improvements pass
+
+Same rule as above — logic whose failure is invisible until it bites:
+
+- `routes.test.ts` — every deep link the proxy writes into a push still resolves after the Agent/Machine regrouping.
+- `reconnectFlow.test.ts` — the reconnect sequence (resume → adopt → history → replay), including a rebuilt runtime, which used to skip the transcript reload.
+- `turnControl.test.ts`, `drafts.test.ts`, `reloads.test.ts` — send modes and their fallbacks, per-session drafts and their LRU cap, the MCP reload confirm gate.
+- `fork.test.ts`, `checkpoints.test.ts`, `coldStart.test.ts`, `storedSearch.test.ts` — fork-point counting, checkpoint/turn mapping, the 30-minute resume rule, whole-session search.
+- `machine.test.ts`, `cronBlueprint.test.ts` — Machine-screen derivations and blueprint form filling.
+- `wireSchemas.test.ts` — the zod/mini schemas stay permissive, and nothing imports classic `zod` (it would drag ~18 KB back into first paint).
+- `remoteImages.test.tsx`, `mermaidImage.test.tsx`, `streamingMermaid.test.tsx` — remote images wait for a tap; diagrams render as `<img>`; an unclosed fence streams as code.
+- Server: `origin.test.ts`, `send.test.ts`, `pairingSweep.test.ts`, `approvalPush.test.ts` — the same-origin rule, push timeouts, the pairing sweep's silent first read, and approval answers from a notification.

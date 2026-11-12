@@ -5,19 +5,20 @@
  *  - `?resume=<storedId>` reopens a stored conversation and replays history
  *  - `?session=<id>` is the same intent under the name every *notification*
  *    uses — see the note on `resumeId` below
- *  - `?new=1` (or no session yet) creates a fresh one
+ *  - `?new=1` creates a fresh one; so does no session yet, unless the last
+ *    conversation was active within half an hour — a cold start resumes that
+ *    instead (`lib/lastSession.ts`)
  *  - `?share=<id>` claims a payload the share-target service worker filed for
  *    us — see `lib/sharedIntake.ts`
  *  - the gateway session handle is kept in the store; it is *not* the same as
  *    the stored session id used by the REST endpoints
  */
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { MessageList } from '../components/chat/MessageList';
 import { Composer } from '../components/composer/Composer';
 import { CommandPalette } from '../components/composer/CommandPalette';
 import { ModelSheet } from '../components/chat/ModelSheet';
-import { ContextSheet } from '../components/chat/ContextSheet';
 import { SessionActionsSheet } from '../components/sessions/SessionActionsSheet';
 import { IconPlus, IconChevron, IconSearch, IconClose } from '../components/shared/Icons';
 import { Empty, Loader } from '../components/shared/misc';
@@ -32,6 +33,15 @@ import { takeShared } from '../lib/sharedIntake';
 import { useActivity } from '../lib/useActivity';
 import { buzz } from '../lib/haptics';
 import { reconnectSession } from '../lib/reconnectFlow';
+import { coldStartResume, forgetLastSession, readLastSession, rememberSession } from '../lib/lastSession';
+import { openCheckpoints } from '../store/ui';
+
+/** Opened from a message, the session actions or `/rollback`; never needed for first paint. */
+const CheckpointsSheet = lazy(() => import('../components/chat/CheckpointsSheet'));
+/** Opened from the cost ring or `/context`; its turn and tool controls are not first-paint work either. */
+const ContextSheet = lazy(() =>
+  import('../components/chat/ContextSheet').then((m) => ({ default: m.ContextSheet })),
+);
 
 export function ChatScreen() {
   const [params, setParams] = useSearchParams();
@@ -106,6 +116,7 @@ export function ChatScreen() {
 
   const connection = useUi((s) => s.connection);
   const toast = useUi((s) => s.toast);
+  const checkpointsOpen = useUi((s) => s.checkpoints != null);
 
   /** A socket that is actually usable, as opposed to one that merely says so. */
   const live = online && connection === 'open';
@@ -179,6 +190,7 @@ export function ChatScreen() {
         // reached by omitting the parameter — which is what null means.
         profile: null,
         info: res.info,
+        pristine: true,
       });
       void refreshUsage();
     } catch (err) {
@@ -189,8 +201,16 @@ export function ChatScreen() {
     }
   };
 
-  /** Resolves true when a live session was adopted. */
-  const doResume = async (storedId: string, profile = resumeProfile): Promise<boolean> => {
+  /**
+   * Resolves true when a live session was adopted. `remember: false` is the
+   * cold-start resume: reopening a conversation automatically is not activity
+   * in it, or the half-hour window would renew itself for ever.
+   */
+  const doResume = async (
+    storedId: string,
+    profile = resumeProfile,
+    { remember = true }: { remember?: boolean } = {},
+  ): Promise<boolean> => {
     if (bootingRef.current) return false;
     // The socket can still read OPEN for a while after the radio drops, so
     // asking it first would buy a full timeout before learning what the
@@ -237,6 +257,7 @@ export function ChatScreen() {
       // Past this point the conversation is open and must stay open. Each of
       // these degrades on its own rather than costing the session.
       const storedIdForRest = res.stored_session_id ?? storedId;
+      if (remember) rememberSession(storedIdForRest, profile);
 
       try {
         loadHistory(await fetchHistory(res.session_id));
@@ -345,6 +366,28 @@ export function ChatScreen() {
         // but only on success, or a resume that failed for want of a network
         // would lose the very id the reconnect needs.
         if (ok) setParams({}, { replace: true });
+      });
+      return;
+    }
+
+    /**
+     * A cold start (nothing in memory, no link) goes back to the conversation
+     * this device was just in, if it was recent — the OS discarding a
+     * backgrounded PWA should not cost the chat. Any intent in the URL wins;
+     * see `coldStartResume`. A resume that fails online falls back to a new
+     * chat inside `doResume`, and the dead id is forgotten so the next cold
+     * start does not try it again.
+     */
+    const last = sessionId
+      ? null
+      : coldStartResume(readLastSession(), {
+          resumeId,
+          wantNew,
+          sharing: Boolean(shareId || shared),
+        });
+    if (last) {
+      void doResume(last.id, last.profile, { remember: false }).then((ok) => {
+        if (!ok && navigator.onLine && connection === 'open') forgetLastSession();
       });
       return;
     }
@@ -680,11 +723,37 @@ export function ChatScreen() {
       />
 
       {actionsOpen && actionsRow.data && (
-        <SessionActionsSheet session={actionsRow.data} onClose={() => setActionsOpen(false)} />
+        <SessionActionsSheet
+          session={actionsRow.data}
+          onClose={() => setActionsOpen(false)}
+          extraActions={
+            sessionId ? (
+              <button
+                className="btn"
+                onClick={() => {
+                  setActionsOpen(false);
+                  openCheckpoints();
+                }}
+              >
+                Checkpoints — restore files
+              </button>
+            ) : undefined
+          }
+        />
+      )}
+
+      {checkpointsOpen && (
+        <Suspense fallback={null}>
+          <CheckpointsSheet />
+        </Suspense>
       )}
 
       <ModelSheet open={modelSheet} onClose={() => setModelSheet(false)} />
-      <ContextSheet open={contextSheet} onClose={() => setContextSheet(false)} />
+      {contextSheet && (
+        <Suspense fallback={null}>
+          <ContextSheet open onClose={() => setContextSheet(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }

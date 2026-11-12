@@ -1,5 +1,16 @@
 /**
- * Activity — what Hermes is doing right now, and what is queued behind it.
+ * Activity — what is waiting on you, what Hermes is doing right now, what is
+ * queued behind it, and what failed today.
+ *
+ * It reads as an inbox first. "Needs you" leads: sessions parked on an
+ * approval or a question (across every profile — the registry is
+ * process-wide), kanban cards in Blocked or Review, and messaging users asking
+ * to pair. Each row is the way in: a session opens its chat, where the
+ * always-mounted approval/clarify sheet is already up; a card opens on the
+ * board; a pairing request opens Machine at its pairing section. Then the
+ * running lanes as before, and last "Failed in the last 24h" off the updates
+ * feed, grouped so a job failing every five minutes is one row. See
+ * `api/needsYou.ts` for what each read costs and why.
  *
  * The screen you open when a session kicked off a `delegate_task` and you have
  * no idea how it is going. Four lanes land here: sessions with a turn in
@@ -13,19 +24,30 @@
  * thing it describes, not a control for it. Stopping a run belongs in the
  * conversation or on the board, where the context to decide is.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useProfiles } from '../api/profiles';
 import { ACTIVITY_PROFILE_CAP } from '../api/sessions';
 import { DELEGATION_KEY } from '../api/delegation';
 import { boardKeyPrefix } from '../api/kanban';
+import { LIVE_SESSIONS_KEY, useLiveSessions, usePendingPairing } from '../api/needsYou';
+import { notificationKeys, useNotifications } from '../api/notifications';
+import type { SessionRow } from '../api/sessions';
+import type { Task } from '../api/kanban';
 
 import { MenuButton } from '../components/shared/MenuButton';
 import { BackButton } from '../components/shared/BackButton';
 import { PullToRefresh } from '../components/shared/PullToRefresh';
 import { Empty, ErrorNote, SkeletonList, relTime } from '../components/shared/misc';
 import { useActivity } from '../lib/useActivity';
-import { isQuiet, quietFor, type ActivityItem } from '../lib/activity';
+import { countRunning, isQuiet, quietFor, type ActivityItem } from '../lib/activity';
+import {
+  fromKanbanAttention,
+  fromPairing,
+  fromWaiting,
+  mergeNeedsYou,
+  recentFailures,
+} from '../lib/needsYou';
 import { buzz } from '../lib/haptics';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -34,6 +56,16 @@ const KIND_ICON: Record<ActivityItem['kind'], string> = {
   subagent: '⑃',
   kanban: '▤',
   cron: '⏰',
+  pairing: '⇄',
+  update: '⚠',
+};
+
+/** What a "Needs you" row is asking for, said in its meta line. */
+const ATTENTION_LABEL: Record<NonNullable<ActivityItem['attention']>, string> = {
+  waiting: 'Waiting on you',
+  blocked: 'Blocked',
+  review: 'Ready for review',
+  pairing: 'Pairing request',
 };
 
 /**
@@ -70,17 +102,65 @@ function useNowSeconds(active: boolean): number {
   return now;
 }
 
+/**
+ * The inbox half of the screen: what is waiting on a person, and what failed.
+ *
+ * Here rather than in `useActivity` so the row builders stay out of the boot
+ * graph (see `lib/needsYou.ts`). Every read is shared: the live session list
+ * is the hamburger badge's query, pairing likewise, the board is the one
+ * `useActivity(true)` already polls, and the feed is the unread badge's.
+ */
+function useInbox(
+  sessions: readonly SessionRow[],
+  columns: readonly { name: string; tasks: Task[] }[] | undefined,
+): { needsYou: ActivityItem[]; failures: ActivityItem[] } {
+  const profileList = useProfiles().data?.profiles;
+  const names = useMemo(() => (profileList ?? []).map((p) => p.name), [profileList]);
+  const live = useLiveSessions();
+  const pairing = usePendingPairing(names);
+  const feed = useNotifications();
+
+  return useMemo(() => {
+    const nowMs = Date.now();
+    const needsYou = mergeNeedsYou(
+      fromWaiting(live.data, sessions),
+      fromKanbanAttention(columns),
+      fromPairing(pairing, nowMs / 1000),
+    );
+    /* A card that gave up is both a feed failure and a Blocked card; it is
+       listed once, where the action is. */
+    const failures = recentFailures(feed.data, nowMs, new Set(needsYou.map((i) => i.url)));
+    return { needsYou, failures };
+  }, [live.data, sessions, columns, pairing, feed.data]);
+}
+
 export function ActivityScreen() {
   const navigate = useNavigate();
   /* One profile means every row has the same owner, and a pill repeating it on
      each line is furniture. */
   const showOwner = (useProfiles().data?.profiles?.length ?? 1) > 1;
   const qc = useQueryClient();
-  const { items, running, isLoading, error, truncated } = useActivity(true);
-  const nowS = useNowSeconds(items.length > 0);
+  const activity = useActivity(true);
+  const { isLoading, error, truncated } = activity;
+  const { needsYou, failures } = useInbox(activity.sessions, activity.columns);
+  /* A session waiting on you is also a session with a turn open, so it would
+     be listed twice — once where the action is, once as "running". It stays
+     in the first; `fromWaiting` gives it the same id `fromSessions` does. */
+  const items = useMemo(() => {
+    const asked = new Set(needsYou.map((i) => i.id));
+    return activity.items.filter((i) => !asked.has(i.id));
+  }, [activity.items, needsYou]);
+  const running = countRunning(items);
+  const nowS = useNowSeconds(items.length + needsYou.length > 0);
 
   const live = items.filter((i) => i.state !== 'queued');
   const queued = items.filter((i) => i.state === 'queued');
+  const nothing = items.length === 0 && needsYou.length === 0 && failures.length === 0;
+
+  const open = (item: ActivityItem) => {
+    buzz('tap');
+    navigate(item.url);
+  };
 
   return (
     <div className="screen">
@@ -89,6 +169,7 @@ export function ActivityScreen() {
         <BackButton />
         <div className="header__title">
           Activity
+          {needsYou.length > 0 && <span className="header__sub"> · {needsYou.length} need you</span>}
           {running > 0 && <span className="header__sub"> · {running} running</span>}
         </div>
       </div>
@@ -111,7 +192,7 @@ export function ActivityScreen() {
         </div>
       )}
 
-      {isLoading && items.length === 0 ? (
+      {isLoading && items.length === 0 && needsYou.length === 0 ? (
         <SkeletonList n={4} h={58} />
       ) : error ? (
         <ErrorNote error={error} />
@@ -124,44 +205,66 @@ export function ActivityScreen() {
               // The pane reads the server's current board, keyed `null`.
               qc.invalidateQueries({ queryKey: boardKeyPrefix(null) }),
               qc.invalidateQueries({ queryKey: ['cron'] }),
+              qc.invalidateQueries({ queryKey: LIVE_SESSIONS_KEY }),
+              qc.invalidateQueries({ queryKey: ['machine', 'pairing'] }),
+              qc.invalidateQueries({ queryKey: notificationKeys.all }),
             ]);
           }}
         >
-          {items.length === 0 ? (
+          {nothing ? (
             <Empty
               icon="😴"
-              title="Nothing running"
-              hint="Delegated tasks, kanban workers and cron jobs show up here while they work — including ones that started while the app was closed."
+              title="Nothing needs you, nothing running"
+              hint="Approvals the agent is waiting on, blocked cards, delegated tasks, kanban workers and cron jobs show up here — including ones that started while the app was closed."
             />
           ) : (
             <div className="chat__list">
-              {live.length > 0 && <div className="msg-divider">Now</div>}
-              {live.map((item) => (
-                <Row
-                  key={item.id}
-                  item={item}
-                  nowS={nowS}
-                  showOwner={showOwner}
-                  onOpen={() => {
-                    buzz('tap');
-                    navigate(item.url);
-                  }}
-                />
-              ))}
+              {/* Sections are headed in words, not just dividers: "Needs you"
+                  is the reason to open this screen, and a screen reader has to
+                  be able to find where it ends. */}
+              {needsYou.length > 0 && (
+                <section className="activity__group" aria-labelledby="activity-needs">
+                  <h2 id="activity-needs" className="msg-divider activity__section activity__section--needs">
+                    Needs you
+                  </h2>
+                  {needsYou.map((item) => (
+                    <Row key={item.id} item={item} nowS={nowS} showOwner={showOwner} onOpen={() => open(item)} />
+                  ))}
+                </section>
+              )}
 
-              {queued.length > 0 && <div className="msg-divider">Next</div>}
-              {queued.map((item) => (
-                <Row
-                  key={item.id}
-                  item={item}
-                  nowS={nowS}
-                  showOwner={showOwner}
-                  onOpen={() => {
-                    buzz('tap');
-                    navigate(item.url);
-                  }}
-                />
-              ))}
+              {live.length > 0 && (
+                <section className="activity__group" aria-labelledby="activity-now">
+                  <h2 id="activity-now" className="msg-divider activity__section">
+                    Now
+                  </h2>
+                  {live.map((item) => (
+                    <Row key={item.id} item={item} nowS={nowS} showOwner={showOwner} onOpen={() => open(item)} />
+                  ))}
+                </section>
+              )}
+
+              {queued.length > 0 && (
+                <section className="activity__group" aria-labelledby="activity-next">
+                  <h2 id="activity-next" className="msg-divider activity__section">
+                    Next
+                  </h2>
+                  {queued.map((item) => (
+                    <Row key={item.id} item={item} nowS={nowS} showOwner={showOwner} onOpen={() => open(item)} />
+                  ))}
+                </section>
+              )}
+
+              {failures.length > 0 && (
+                <section className="activity__group" aria-labelledby="activity-failed">
+                  <h2 id="activity-failed" className="msg-divider activity__section">
+                    Failed in the last 24h
+                  </h2>
+                  {failures.map((item) => (
+                    <Row key={item.id} item={item} nowS={nowS} showOwner={false} onOpen={() => open(item)} />
+                  ))}
+                </section>
+              )}
             </div>
           )}
         </PullToRefresh>
@@ -186,7 +289,12 @@ function Row({
   const seconds = quietFor(item, nowS);
 
   return (
-    <button className="activity" onClick={onOpen}>
+    <button
+      className={`activity${item.state === 'attention' ? ' activity--attention' : ''}${
+        item.state === 'failed' ? ' activity--failed' : ''
+      }`}
+      onClick={onOpen}
+    >
       <span className="activity__icon" aria-hidden>
         {item.state === 'running' && !quiet ? (
           <span className="tool__pulse" />
@@ -211,7 +319,19 @@ function Row({
               {item.owner}
             </span>
           )}
-          {item.state === 'queued'
+          {item.state === 'attention'
+            ? /* What is being asked, then for how long. A kanban card has no
+                 "blocked since" clock, so it says only what it is waiting
+                 for rather than dressing up its start time as one. */
+              [
+                item.note ?? ATTENTION_LABEL[item.attention ?? 'waiting'],
+                item.since != null && item.kind !== 'kanban' ? relTime(item.since) : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')
+            : item.state === 'failed'
+              ? `${relTime(item.since)}${(item.count ?? 1) > 1 ? ` · failed ${item.count}×` : ''}`
+              : item.state === 'queued'
             ? untilTime(item.since)
             : /* Running rows say when they last moved rather than how long
                  they have run: "started 40m ago" is reassuring about a job

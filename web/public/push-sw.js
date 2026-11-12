@@ -80,11 +80,57 @@ self.addEventListener('push', (event) => {
         silent: Boolean(data.quiet),
         icon: '/icon-192.png',
         badge: '/icon-192.png',
-        data: { url },
+        // Approve once / Deny on an approval's banner; nothing on any other.
+        // A platform without notification actions (iOS) ignores them and the
+        // banner still opens the app.
+        ...(Array.isArray(data.actions) && data.actions.length ? { actions: data.actions } : {}),
+        data: data.approval ? { url, approval: data.approval } : { url },
       });
     })(),
   );
 });
+
+/**
+ * Answer an approval from its banner, without opening the app.
+ *
+ * The proxy does the answering (`/push/approval/<session>`, see
+ * `server/src/push/approval.ts`); this only posts the choice. Same-origin, so
+ * the fetch carries the Access cookie and an `Origin` the proxy accepts.
+ * `redirect: 'manual'` because an expired Access session answers with a
+ * redirect to a login page that sends no CORS headers — followed, that is a
+ * bare network error; not followed, it is an `opaqueredirect` we can read as
+ * "did not land".
+ *
+ * Silent on success: the decision is the user's own, made a second ago. Any
+ * failure puts a banner back, because a button that did nothing must not look
+ * like one that worked — the agent would sit blocked with nobody aware of it.
+ */
+async function answerApproval(approval, choice, url) {
+  let message = null;
+  try {
+    const res = await fetch(`/push/approval/${encodeURIComponent(approval.sessionId)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ choice, requestId: approval.requestId || null }),
+      credentials: 'same-origin',
+      redirect: 'manual',
+    });
+    if (res.ok) return;
+    message =
+      res.status === 409
+        ? 'That approval was already answered or has expired.'
+        : 'Could not answer from the notification — open Hem to answer it.';
+  } catch {
+    message = 'Could not reach Hem — open the app to answer the approval.';
+  }
+  await self.registration.showNotification('Approval not sent', {
+    body: message,
+    tag: `attention:${approval.sessionId}`,
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    data: { url },
+  });
+}
 
 /**
  * Focus an existing window rather than opening a second copy of the app —
@@ -92,7 +138,14 @@ self.addEventListener('push', (event) => {
  */
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const url = (event.notification.data && event.notification.data.url) || '/chat';
+  const data = event.notification.data || {};
+  const url = data.url || '/chat';
+
+  // A press on Approve once / Deny, as opposed to a tap on the banner itself.
+  if (data.approval && (event.action === 'approve' || event.action === 'deny')) {
+    event.waitUntil(answerApproval(data.approval, event.action === 'approve' ? 'once' : 'deny', url));
+    return;
+  }
 
   event.waitUntil(
     (async () => {

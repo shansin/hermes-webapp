@@ -20,6 +20,7 @@ import { scheduleCronReconcile } from './cron.js';
 import { flatten } from './preview.js';
 import { bindRpcSocket, resolveRpcFrame, rpcPending, unbindRpcSocket } from './rpc.js';
 import { scheduleSessionSweep } from './sessions.js';
+import { schedulePairingSweep } from './pairing.js';
 import {
   FEED_EVENT_TYPES,
   backendCameBack,
@@ -194,12 +195,12 @@ function scheduleReconnect(): void {
 /**
  * Frame types worth parsing even with no push devices registered.
  *
- * `cron.changed` and `sessions.changed` are here as triggers rather than as
- * news: both are session-less "go and look" signals, and both are the only
+ * `cron.changed`, `sessions.changed` and `pairing.changed` are here as triggers rather than as
+ * news: all three are session-less "go and look" signals, and the only
  * frames of their kind this socket ever sees — see the header of
  * `push/sessions.ts` for why a session's own events never arrive.
  */
-const FEED_TYPE_SCAN = ['cron.changed', 'sessions.changed', ...FEED_EVENT_TYPES];
+const FEED_TYPE_SCAN = ['cron.changed', 'sessions.changed', 'pairing.changed', ...FEED_EVENT_TYPES];
 
 function handleFrame(line: string): void {
   /**
@@ -275,6 +276,17 @@ function handleFrame(line: string): void {
    */
   if (params.type === 'approval.cancelled') {
     scheduleSessionSweep();
+  }
+
+  /**
+   * A pairing store moved — someone DM'd a paired platform, or a request was
+   * approved or expired. Empty like the two above, and handled ahead of the
+   * `subscribed` check for the same reason: the sweep seeds its watermarks
+   * and writes the feed whether or not a phone is registered. See
+   * `push/pairing.ts`.
+   */
+  if (params.type === 'pairing.changed') {
+    schedulePairingSweep();
   }
 
   if (!subscribed) return;

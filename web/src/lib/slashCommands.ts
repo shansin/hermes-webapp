@@ -29,6 +29,9 @@
  * which solves the same problem for the desktop client.
  */
 
+import { describeMcpReload, describeSkillsReload, mcpReloadParams, readMcpReload } from './reloads';
+import { watchBackground } from '../store/turnControl';
+
 /** A command this app fulfils itself. One id ↔ one handler in the runner. */
 export type LocalActionId =
   | 'new'
@@ -65,6 +68,16 @@ export type CommandSurface =
       buildParams: (ctx: CommandCtx) => Record<string, unknown>;
       /** Turn the RPC result into transcript text. */
       render?: (result: unknown, ctx: CommandCtx) => string;
+      /** Shown instead of calling when the command needs an argument and got none. */
+      usage?: string;
+      /**
+       * A backend that answers "are you sure?" rather than acting. When
+       * `needed` says so, the runner shows the rendered text and offers to
+       * re-run the command with `arg` appended.
+       */
+      confirm?: { needed: (result: unknown) => boolean; arg: string; action: string; prompt: string };
+      /** Work that outlives the call (e.g. waiting for a background task's answer). */
+      after?: (result: unknown, ctx: CommandCtx) => void;
     }
   | { kind: 'exec' }
   | { kind: 'unavailable'; reason: UnavailableReason };
@@ -91,7 +104,8 @@ const rpc = (
   name: string,
   buildParams: (ctx: CommandCtx) => Record<string, unknown>,
   render?: (result: unknown, ctx: CommandCtx) => string,
-): CommandSurface => ({ kind: 'rpc', rpc: name, buildParams, render });
+  extra: Pick<Extract<CommandSurface, { kind: 'rpc' }>, 'usage' | 'confirm' | 'after'> = {},
+): CommandSurface => ({ kind: 'rpc', rpc: name, buildParams, render, ...extra });
 
 /** Pull a number out of a loosely-typed RPC result. */
 const num = (result: unknown, key: string): number | undefined => {
@@ -218,16 +232,57 @@ const SPECS: readonly CommandSpec[] = [
   { name: '/approvals', description: 'Show or set approval mode', argumentMode: 'options', surface: exec() },
   { name: '/goal', description: 'Manage the standing goal for this session', argumentMode: 'mixed', surface: exec() },
   { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], argumentMode: 'text', surface: exec() },
-  { name: '/background', description: 'Run a prompt in the background', aliases: ['/bg'], argumentMode: 'text', surface: exec() },
-  { name: '/steer', description: 'Steer the run after the next tool call', argumentMode: 'text', surface: exec() },
+  { name: '/steer', description: 'Steer the run after the next tool call', aliases: ['/s'], argumentMode: 'text', surface: exec() },
   { name: '/rollback', description: 'List or restore filesystem checkpoints', argumentMode: 'mixed', surface: exec() },
   { name: '/personality', description: 'Switch personality for this session', argumentMode: 'options', surface: exec() },
   { name: '/retry', description: 'Retry the last message', surface: exec() },
   { name: '/version', description: 'Hermes Agent version', surface: exec() },
 
-  // Known commands with an underscore spelling variant but no phone surface.
-  { name: '/reload-mcp', aliases: ['/reload_mcp'], surface: unavailable('terminal') },
-  { name: '/reload-skills', aliases: ['/reload_skills'], surface: unavailable('terminal') },
+  {
+    // `/bg` is Hermes' canonical spelling now, and the one its catalog lists —
+    // keyed on `/background`, the palette hid the command as an alias.
+    // `prompt.background` rather than `slash.exec`: the slash worker's own
+    // background agent prints its answer to a terminal nobody is reading.
+    name: '/bg',
+    description: 'Run a prompt in the background; the answer lands here',
+    aliases: ['/background'],
+    argumentMode: 'text',
+    surface: rpc(
+      'prompt.background',
+      ({ sessionId, arg }) => ({ session_id: sessionId, text: arg }),
+      () => 'Running in the background. The answer lands here when it is done; keep chatting.',
+      {
+        usage: 'Usage: /bg <prompt>',
+        after: (result, { arg }) => watchBackground(result, arg),
+      },
+    ),
+  },
+  {
+    name: '/reload-mcp',
+    description: 'Reconnect MCP servers from config',
+    aliases: ['/reload_mcp'],
+    // No argument mode: from the palette it should run, and the backend's
+    // confirm gate (when on) is answered by the runner's toast, not by typing.
+    surface: rpc(
+      'reload.mcp',
+      ({ sessionId, arg }) => mcpReloadParams(sessionId, arg),
+      (result) => describeMcpReload(readMcpReload(result)),
+      {
+        confirm: {
+          needed: (result) => readMcpReload(result).status === 'confirm_required',
+          arg: 'now',
+          action: 'Reload',
+          prompt: 'Reload MCP? It resets the prompt cache.',
+        },
+      },
+    ),
+  },
+  {
+    name: '/reload-skills',
+    description: 'Pick up newly installed or removed skills',
+    aliases: ['/reload_skills'],
+    surface: rpc('skills.reload', ({ sessionId }) => ({ session_id: sessionId }), describeSkillsReload),
+  },
 ];
 
 /**

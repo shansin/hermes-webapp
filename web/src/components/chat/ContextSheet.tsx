@@ -4,15 +4,20 @@
  * Also the place to compact a conversation, since running out of context is
  * the problem this sheet is opened to diagnose — and the home for the turn
  * controls that previously lived only behind slash commands (`/save`,
- * `/title`, `/undo`, `/compress`, `/goal`, `/queue`, `/background`,
- * `/rollback`, `/retry`): each rendered structured output into the transcript
- * as text, with no button anywhere. Approvals are not here: the mode is global
- * and lives once, in `ModelSheet`.
+ * `/title`, `/undo`, `/compress`, `/goal`, `/bg`, `/rollback`, `/retry`,
+ * `/reload-mcp`, `/reload-skills`): each rendered structured output into the
+ * transcript as text, with no button anywhere. Approvals are not here: the
+ * mode is global and lives once, in `ModelSheet`.
+ *
+ * Queue is not here any more. As a button it ran `/queue` with no prompt and
+ * told you to type one next, and queueing is now the composer's own mid-turn
+ * send mode, next to Steer and Redirect. Background kept its place but takes
+ * its prompt inline, for the same reason.
  */
 import { useEffect, useState } from 'react';
 import { Sheet } from '../shared/Sheet';
 import { useSession } from '../../store/session';
-import { useUi } from '../../store/ui';
+import { useUi, openCheckpoints } from '../../store/ui';
 import {
   compressSession,
   saveSession,
@@ -23,6 +28,8 @@ import {
 import { execCommand } from '../../api/commands';
 import { formatTokens } from '../shared/misc';
 import { buzz } from '../../lib/haptics';
+import { describeMcpReload, MCP_CONFIRM_TEXT, reloadMcp, reloadSkills } from '../../lib/reloads';
+import { startBackground } from '../../store/turnControl';
 
 /** The gateway returns CSS variables the dashboard defines; map to our tokens. */
 const CATEGORY_COLOR: Record<string, string> = {
@@ -270,25 +277,28 @@ export function ContextSheet({ open, onClose }: { open: boolean; onClose: () => 
             <button className="btn btn--sm" disabled={action != null} onClick={() => void runExec('/goal')}>
               Goal
             </button>
-            <button className="btn btn--sm" disabled={action != null} onClick={() => void runExec('/queue')}>
-              Queue
-            </button>
-            <button className="btn btn--sm" disabled={action != null} onClick={() => void runExec('/background')}>
-              Background
-            </button>
             <button className="btn btn--sm" disabled={action != null} onClick={() => void runExec('/agents')}>
               Agents
             </button>
-            <button className="btn btn--sm" disabled={action != null} onClick={() => void runExec('/rollback')}>
+            <button className="btn btn--sm" disabled={action != null} onClick={() => {
+                // The browsable sheet, not `/rollback`'s text dump.
+                onClose();
+                openCheckpoints();
+              }}>
               Checkpoints
             </button>
           </div>
           <SideQuestion sessionId={sessionId} />
+          <Background sessionId={sessionId} />
           <p style={{ fontSize: 'var(--type-body-sm)', color: 'var(--text-faint)', margin: '10px 2px 0', lineHeight: 1.5 }}>
-            Answers land in the transcript. Queue and Background take their prompt
-            as the next message you send — type it after tapping, or run{' '}
-            <code>/queue your prompt</code> from the composer.
+            Answers land in the transcript. To queue, steer or redirect a
+            running turn, type in the composer while it works.
           </p>
+
+          <div className="group-head" style={{ marginTop: 18 }}>
+            TOOLS
+          </div>
+          <Reloads sessionId={sessionId} />
         </>
       )}
     </Sheet>
@@ -339,5 +349,123 @@ function SideQuestion({ sessionId }: { sessionId: string | null }) {
         {sending ? 'Asking…' : 'Ask'}
       </button>
     </div>
+  );
+}
+
+/**
+ * A prompt for a detached agent, run beside the conversation rather than in it
+ * (`prompt.background`). Its answer comes back into the transcript via
+ * `startBackground`'s own listener.
+ */
+function Background({ sessionId }: { sessionId: string }) {
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const addNotice = useSession((s) => s.addNotice);
+
+  const go = async () => {
+    const prompt = text.trim();
+    if (!prompt || sending) return;
+    setSending(true);
+    buzz('tap');
+    try {
+      await startBackground(sessionId, prompt);
+      setText('');
+      addNotice(prompt, 'info', 'Background — running; the answer lands here');
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : 'Could not start that', 'error', 'Background');
+      buzz('warn');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+      <input
+        className="field"
+        style={{ flex: 1, minWidth: 0 }}
+        placeholder="Run in the background — keep chatting"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void go();
+        }}
+        aria-label="Background prompt"
+      />
+      <button className="btn btn--sm" disabled={!text.trim() || sending} onClick={() => void go()}>
+        {sending ? 'Starting…' : 'Run'}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Pick up MCP servers and skills changed on disk, without a terminal.
+ *
+ * The MCP reload asks the backend first and confirms only if told to: an
+ * install with `approvals.mcp_reload_confirm` off reloads on the first tap,
+ * one with it on arms the button and explains what the second tap costs.
+ */
+function Reloads({ sessionId }: { sessionId: string }) {
+  const [busy, setBusy] = useState<'mcp' | 'skills' | null>(null);
+  const [armed, setArmed] = useState(false);
+  const addNotice = useSession((s) => s.addNotice);
+
+  const mcp = async () => {
+    if (busy) return;
+    setBusy('mcp');
+    buzz('tap');
+    try {
+      const res = await reloadMcp(sessionId, { confirm: armed });
+      if (res.status === 'confirm_required') {
+        setArmed(true);
+        return;
+      }
+      setArmed(false);
+      addNotice(describeMcpReload(res), 'info', '/reload-mcp');
+    } catch (err) {
+      setArmed(false);
+      addNotice(err instanceof Error ? err.message : 'MCP reload failed', 'error', '/reload-mcp');
+      buzz('warn');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const skills = async () => {
+    if (busy) return;
+    setBusy('skills');
+    buzz('tap');
+    try {
+      addNotice(await reloadSkills(sessionId), 'info', '/reload-skills');
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : 'Skills reload failed', 'error', '/reload-skills');
+      buzz('warn');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          className={`btn btn--sm${armed ? ' btn--danger' : ''}`}
+          style={{ flex: 1 }}
+          disabled={busy != null}
+          onClick={() => void mcp()}
+        >
+          {busy === 'mcp' ? 'Reloading…' : armed ? 'Reload anyway' : 'Reload MCP'}
+        </button>
+        <button className="btn btn--sm" style={{ flex: 1 }} disabled={busy != null} onClick={() => void skills()}>
+          {busy === 'skills' ? 'Rescanning…' : 'Reload skills'}
+        </button>
+      </div>
+      {armed && (
+        <p role="status" style={{ fontSize: 'var(--type-body-sm)', color: 'var(--warn)', margin: '8px 2px 0', lineHeight: 1.5 }}>
+          {MCP_CONFIRM_TEXT}
+        </p>
+      )}
+    </>
   );
 }

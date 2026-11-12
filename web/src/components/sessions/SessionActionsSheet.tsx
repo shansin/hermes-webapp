@@ -4,7 +4,7 @@
  * Swiping already covers the two common verbs (right resumes, left deletes),
  * so this is the overflow — reached from the row's `⋯` button.
  */
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Sheet } from '../shared/Sheet';
 import { isOn, useSetSessionFlags, type SessionRow } from '../../api/sessions';
 import { shareSessionJson, shareSessionMarkdown } from '../../lib/sessionExport';
@@ -14,9 +14,11 @@ import { buzz } from '../../lib/haptics';
 interface Props {
   session: SessionRow | null;
   onClose: () => void;
+  /** Verbs only the open conversation has (the chat header's checkpoints), listed first. */
+  extraActions?: ReactNode;
 }
 
-export function SessionActionsSheet({ session, onClose }: Props) {
+export function SessionActionsSheet({ session, onClose, extraActions }: Props) {
   const setFlags = useSetSessionFlags();
   const toast = useUi((s) => s.toast);
   const [busy, setBusy] = useState<string | null>(null);
@@ -60,6 +62,7 @@ export function SessionActionsSheet({ session, onClose }: Props) {
   return (
     <Sheet open title={session.title || 'Untitled session'} onClose={onClose}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {extraActions}
         <button className="btn" onClick={() => void flag({ pinned: !pinned }, pinned ? 'Unpinned' : 'Pinned')}>
           {pinned ? '★ Unpin' : '☆ Pin to top'}
         </button>

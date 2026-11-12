@@ -201,22 +201,25 @@ describe('manifest shortcuts', () => {
 /**
  * Screens that moved, and the links that did not.
  *
- * Usage became a section of Models and Capabilities arrived as a new route.
- * Both are the shape that breaks silently: a slash command, a `/hub?tab=` URL
- * or a bookmark keeps pointing at the old path, nothing throws, and you land
+ * Usage became a section of Models and then its own row again; Memory,
+ * Skills, Capabilities, Profiles and Models became tabs of Agent. Each move is
+ * the shape that breaks silently: a slash command, a `/hub?tab=` URL or a
+ * bookmark keeps pointing at the old path, nothing throws, and you land
  * somewhere plausible instead of somewhere right — which is exactly how
  * `/chat?session=` came to be emitted by every push payload and read by
- * nothing (see above).
+ * nothing (see above). `test/routes.test.ts` checks where each lands.
  */
 describe('screens that moved', () => {
-  it('keeps /usage as a route, pointing into the merged screen', () => {
+  it('keeps /usage as a route and a drawer row', () => {
     expect(app).toContain('path="/usage"');
-    expect(app).toContain('/models?tab=usage');
+    expect(navDrawer).toContain("to: '/usage'");
   });
 
-  it('no longer offers Usage as its own drawer destination', () => {
-    expect(navDrawer).not.toContain("to: '/usage'");
-    expect(navDrawer).toContain("to: '/models'");
+  it('offers the agent configuration as one drawer row', () => {
+    expect(navDrawer).toContain("to: '/agent'");
+    for (const gone of ['/memory', '/skills', '/tools', '/profiles', '/models', '/cron']) {
+      expect(navDrawer).not.toContain(`to: '${gone}'`);
+    }
   });
 
   /**
@@ -231,14 +234,14 @@ describe('screens that moved', () => {
     }
   });
 
-  it('routes the Capabilities screen the drawer and /tools both point at', () => {
+  it('still routes /tools, which the slash command points at', () => {
     expect(app).toContain('path="/tools"');
-    expect(navDrawer).toContain("to: '/tools'");
     expect(slashCommands).toContain("local('hub-tools')");
   });
 
   it('still answers the old /hub?tab= links', () => {
-    expect(hubPage).toContain("'usage'");
-    expect(hubPage).toContain("'models'");
+    expect(app).toContain('path="/hub"');
+    expect(hubPage).toContain("usage: '/usage'");
+    expect(hubPage).toContain("models: '/models'");
   });
 });

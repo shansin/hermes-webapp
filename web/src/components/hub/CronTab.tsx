@@ -71,6 +71,7 @@ import { buzz } from '../../lib/haptics';
 import { UNDO_WINDOW_MS, scheduleUndoable } from '../../lib/undo';
 import { cronError, humanCron } from '../../lib/cronText';
 import { ScriptRuns } from './ScriptRuns';
+import { CronTemplateSheet } from './CronTemplateSheet';
 import {
   BLANK_CRON_FORM,
   cronFormFromJob,
@@ -297,6 +298,8 @@ export function CronTab() {
   );
 
   const [creating, setCreating] = useState(false);
+  /** The template picker — a separate sheet, see `CronTemplateSheet`. */
+  const [fromTemplate, setFromTemplate] = useState(false);
   /**
    * The job being edited, or null when the sheet is filling in a new one.
    *
@@ -492,9 +495,20 @@ export function CronTab() {
 
   return (
     <div style={{ padding: 12 }}>
-      <button className="btn btn--sm" style={{ width: '100%', marginBottom: 12 }} onClick={() => setCreating(true)}>
-        <IconPlus size={16} /> New scheduled job
-      </button>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <button className="btn btn--sm" style={{ flex: 1 }} onClick={() => setCreating(true)}>
+          <IconPlus size={16} /> New scheduled job
+        </button>
+        <button className="btn btn--sm" style={{ flex: 1 }} onClick={() => setFromTemplate(true)}>
+          New from template
+        </button>
+      </div>
+      <CronTemplateSheet
+        open={fromTemplate}
+        onClose={() => setFromTemplate(false)}
+        profiles={profiles}
+        activeProfile={activeProfile}
+      />
 
       {isLoading ? (
         <SkeletonList n={3} h={70} />

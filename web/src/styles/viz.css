@@ -15,7 +15,7 @@
   --series-3: #1baf7a; /* aqua   */
 
   --viz-grid: #e2e2ea;
-  --viz-axis: #8b8b9c;
+  --viz-axis: #686878; /* = --text-faint, ≥4.5:1 */
   --viz-tooltip-bg: #ffffff;
   --viz-tooltip-border: #dcdce5;
 }
@@ -29,7 +29,7 @@
   --series-3: #199e70;
 
   --viz-grid: #23232e;
-  --viz-axis: #6c6c7e;
+  --viz-axis: #8a8a9c; /* = --text-faint, ≥4.5:1 */
   --viz-tooltip-bg: #1c1c26;
   --viz-tooltip-border: #2a2a36;
 }
