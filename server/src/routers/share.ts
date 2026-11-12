@@ -19,44 +19,50 @@
  * is forwarded verbatim to Hermes, which knows nothing about any of this.
  */
 import { Hono } from 'hono';
+import type { Context } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 
 export const shareRouter = new Hono();
 
 /**
- * Above this, the body is not read at all.
+ * Above this, the body is not read past the limit.
  *
  * A shared photo is megabytes, and parsing it here would buffer every one of
  * them on the event loop this process also relays the chat WebSocket on — only
  * to throw them away, since there is nowhere to put them. Text shares are
  * orders of magnitude below the limit.
+ *
+ * Enforced on the bytes, by `bodyLimit`, not on `content-length` alone: a
+ * chunked upload declares no length, and a check of the header let it through
+ * to `formData()` unbounded.
  */
 const SHARE_BODY_LIMIT = 256 * 1024;
 
 /** The fields the manifest declares, and the chat screen reads back. */
 const TEXT_FIELDS = ['title', 'text', 'url'] as const;
 
-shareRouter.post('/share', async (c) => {
+/** 303, not 302: the redirect has to turn the POST into a GET. */
+const toChat = (c: Context, query: URLSearchParams) => c.redirect(`/chat?${query}`, 303);
+
+/** An oversized share keeps nothing but the apology. */
+const tooLarge = (c: Context) => toChat(c, new URLSearchParams({ new: '1', share: '' }));
+
+shareRouter.post('/share', bodyLimit({ maxSize: SHARE_BODY_LIMIT, onError: tooLarge }), async (c) => {
   const query = new URLSearchParams({ new: '1' });
 
   try {
-    const declared = Number(c.req.header('content-length') ?? '0');
-    if (declared > SHARE_BODY_LIMIT) {
-      query.set('share', '');
-    } else {
-      const form = await c.req.formData();
-      for (const field of TEXT_FIELDS) {
-        const value = form.get(field);
-        if (typeof value === 'string' && value.trim()) query.set(field, value);
-      }
-      // A `File` entry rather than a string is the only signal that something
-      // was attached, and that it is about to be lost.
-      if (form.getAll('files').some((v) => typeof v !== 'string')) query.set('share', '');
+    const form = await c.req.formData();
+    for (const field of TEXT_FIELDS) {
+      const value = form.get(field);
+      if (typeof value === 'string' && value.trim()) query.set(field, value);
     }
+    // A `File` entry rather than a string is the only signal that something
+    // was attached, and that it is about to be lost.
+    if (form.getAll('files').some((v) => typeof v !== 'string')) query.set('share', '');
   } catch {
     // An unreadable body leaves nothing to carry across but the apology.
     query.set('share', '');
   }
 
-  // 303, not 302: the redirect has to turn the POST into a GET.
-  return c.redirect(`/chat?${query}`, 303);
+  return toChat(c, query);
 });

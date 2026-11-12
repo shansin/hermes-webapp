@@ -4,3 +4,12 @@ packages:
 allowBuilds:
   better-sqlite3: true
   esbuild: true
+# Transitive via mermaid 11, whose ranges (dompurify ^3.3.3, katex ^0.16.45)
+# admit versions with published advisories (DOMPurify SAFE_FOR_TEMPLATES and
+# IN_PLACE bypasses, KaTeX trust bypass). These are the ranges mermaid 12
+# itself declares, except that katex stops short of 0.18.11: that release was
+# deprecated upstream for shipping a breaking strict-mode change. Drop both
+# once mermaid is on 12.
+overrides:
+  dompurify: '^3.4.17'
+  katex: '>=0.18.2 <0.18.11'

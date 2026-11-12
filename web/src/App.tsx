@@ -74,6 +74,7 @@ import { useSession } from './store/session';
 import { preloadMarkdown } from './components/chat/MarkdownAsync';
 import { hermes, defaultWsUrl } from './ws/client';
 import { useCronFeedToasts, useEventToasts } from './lib/useEventToasts';
+import { useActivityInvalidation } from './lib/useActivity';
 import { flushUndoables } from './lib/undo';
 
 /**
@@ -222,6 +223,9 @@ export function App() {
 
   useEventToasts();
   useCronFeedToasts();
+  // Once, app-wide: the chat header and the drawer both call `useActivity`, and
+  // subscribing per caller invalidated every session query twice.
+  useActivityInvalidation();
 
   return (
     <div className="app">

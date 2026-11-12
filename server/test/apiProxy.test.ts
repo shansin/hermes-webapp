@@ -118,6 +118,21 @@ describe('the loopback disguise', () => {
     },
   );
 
+  /**
+   * The Access session and the signed assertion `auth.ts` already verified are
+   * credentials for the proxy's origin. Hermes authenticates by bearer token
+   * alone, so relaying them only spreads a replayable login further.
+   */
+  it.each(['cookie', 'cf-access-jwt-assertion', 'cf-access-client-id', 'cf-access-client-secret'])(
+    'does not hand the browser’s %s to Hermes',
+    async (name) => {
+      await send('/api/sessions', { headers: { [name]: 'secret-value' } });
+      const { headers } = upstreamCall();
+      expect(headers.has(name)).toBe(false);
+      expect([...headers.values()].join('\n')).not.toContain('secret-value');
+    },
+  );
+
   it('strips hop-by-hop headers from the response too', async () => {
     fetchMock.mockResolvedValue(
       new Response('ok', {

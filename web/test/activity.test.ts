@@ -8,6 +8,10 @@
  * `is_active` entirely has to produce an empty list rather than a crash.
  */
 import { describe, expect, it } from 'vitest';
+import { QueryClient, type QueryKey } from '@tanstack/react-query';
+import { invalidateActivity } from '../src/lib/useActivity';
+import { kanbanKeys } from '../src/api/kanban';
+import { DELEGATION_KEY } from '../src/api/delegation';
 import {
   QUIET_AFTER_S,
   countRunning,
@@ -397,5 +401,57 @@ describe('activity rows carry their owner', () => {
       { id: 'j1', name: 'digest', profile: 'fitness', next_run_at: 1_700_000_100 } as never,
     ]);
     expect(rows[0]?.owner).toBe('fitness');
+  });
+});
+
+/**
+ * The early invalidation, checked against the keys the real hooks build. The
+ * board half once invalidated `['kanban', 'board']`, a prefix no board query
+ * has (they start `['kanban', <board>, 'board', …]`), so it refreshed nothing
+ * and nothing said so.
+ */
+describe('invalidateActivity', () => {
+  const BOARD = kanbanKeys.board(null, null, false);
+  const SESSIONS = ['sessions', 'recent', 25, 'research'];
+  const CRON = ['cron'];
+
+  function seeded(): QueryClient {
+    const qc = new QueryClient();
+    for (const key of [BOARD, SESSIONS, DELEGATION_KEY, CRON]) qc.setQueryData(key, {});
+    return qc;
+  }
+  const stale = (qc: QueryClient, key: QueryKey) => qc.getQueryState(key)?.isInvalidated;
+
+  it('refreshes the board the Activity screen reads', () => {
+    const qc = seeded();
+    invalidateActivity(qc, 'message.complete', 'full');
+    expect(stale(qc, BOARD)).toBe(true);
+    expect(stale(qc, CRON)).toBe(false);
+  });
+
+  it('refreshes cron only on its own nudge', () => {
+    const qc = seeded();
+    invalidateActivity(qc, 'cron.changed', 'full');
+    expect(stale(qc, CRON)).toBe(true);
+  });
+
+  /* The shared half runs once, app-wide; the full half on the screen alone. A
+     lane in both would be invalidated twice per event. */
+  it('keeps the two halves disjoint', () => {
+    const shared = seeded();
+    invalidateActivity(shared, 'cron.changed', 'shared');
+    expect([SESSIONS, DELEGATION_KEY].map((k) => stale(shared, k))).toEqual([true, true]);
+    expect([BOARD, CRON].map((k) => stale(shared, k))).toEqual([false, false]);
+
+    const full = seeded();
+    invalidateActivity(full, 'cron.changed', 'full');
+    expect([SESSIONS, DELEGATION_KEY].map((k) => stale(full, k))).toEqual([false, false]);
+  });
+
+  it('ignores events that change nothing it shows', () => {
+    const qc = seeded();
+    invalidateActivity(qc, 'message.delta', 'shared');
+    invalidateActivity(qc, 'message.delta', 'full');
+    for (const key of [BOARD, SESSIONS, DELEGATION_KEY, CRON]) expect(stale(qc, key)).toBe(false);
   });
 });

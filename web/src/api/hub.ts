@@ -218,12 +218,15 @@ export const cronUrl = withProfile;
  * second profile's jobs simply appear in it, indistinguishable from the ones
  * you were looking at.
  */
-export function useCronJobs() {
+export function useCronJobs(enabled = true) {
   return useQuery({
     queryKey: ['cron'],
     queryFn: () => api.get<CronJob[] | { jobs: CronJob[] }>('/api/cron/jobs'),
     select: (d) => (Array.isArray(d) ? d : (d.jobs ?? [])),
     refetchInterval: 30_000,
+    // `useActivity(false)` — the header pill and the drawer — mounts this on
+    // every screen and must not poll it; see the note on that hook.
+    enabled,
   });
 }
 

@@ -33,6 +33,9 @@ export interface PushMessage {
   quiet?: boolean;
 }
 
+/** Per-request socket timeout for a send; see the call site. */
+export const PUSH_SEND_TIMEOUT_MS = 10_000;
+
 let publicKey = '';
 let ready = false;
 
@@ -111,6 +114,15 @@ export async function sendPush(message: PushMessage): Promise<number> {
            * waiting on: a reply, or an approval blocking the agent outright.
            */
           urgency: 'high',
+          /**
+           * Without one, a push service that accepts the connection and then
+           * says nothing holds this promise open for ever — and with it every
+           * sweep that awaits a send behind its `running` flag, so one stalled
+           * endpoint silenced all notifications until a restart. It is a
+           * socket-idle timeout: it rejects with a plain Error and no status,
+           * which lands below as a transient failure, never as a gone device.
+           */
+          timeout: PUSH_SEND_TIMEOUT_MS,
         });
         delivered.push(endpoint);
       } catch (err) {

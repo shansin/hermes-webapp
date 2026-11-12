@@ -193,6 +193,16 @@ function isExempt(path: string): boolean {
 }
 
 /**
+ * Stamped on every refusal that is about the person, so the app can tell this
+ * gate's 401/403 from Hermes's own. Status alone cannot: Hermes answers 403 for
+ * an ordinary file it will not read, and 401 for a session token the proxy is
+ * about to re-resolve — and the app treats a gate refusal as "signed out" and
+ * latches there until reload. Same-origin, so no CORS exposure is needed.
+ */
+export const GATE_HEADER = 'x-hem-gate';
+export const GATE_REFUSED = 'refused';
+
+/**
  * Global middleware. A pass-through when the gate is not configured.
  *
  * 401 and 403 are kept distinct on purpose: 401 means "no usable assertion"
@@ -208,14 +218,15 @@ export const requireAccess: MiddlewareHandler = async (c, next) => {
     // Refusals were silent, which made a gated origin reached directly look
     // identical in the log to one nothing was reaching at all.
     log.warn({ path: c.req.path, reason: result.reason }, 'request refused');
-    if (result.reason === 'forbidden') {
-      return c.json({ error: 'forbidden' }, 403);
-    }
-    // Not a 401: nothing is wrong with the session, and a 401 is what the app
-    // takes as one that expired.
+    // Not a refusal: nothing is wrong with the session, so no 401 and no
+    // gate marker — either is what the app takes as one that expired.
     if (result.reason === 'unavailable') {
       c.header('Retry-After', '2');
       return c.json({ error: 'access_unavailable' }, 503);
+    }
+    c.header(GATE_HEADER, GATE_REFUSED);
+    if (result.reason === 'forbidden') {
+      return c.json({ error: 'forbidden' }, 403);
     }
     return c.json({ error: 'unauthorized' }, 401);
   }

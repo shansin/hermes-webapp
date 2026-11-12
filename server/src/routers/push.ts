@@ -6,6 +6,7 @@
  * subscriptions and would answer 404.
  */
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import { Hono } from 'hono';
 import { z } from 'zod';
 
@@ -24,9 +25,39 @@ export const pushRouter = new Hono();
  */
 const deviceId = (endpoint: string) => createHash('sha256').update(endpoint).digest('hex').slice(0, 12);
 
+/**
+ * Whether an endpoint is somewhere this process may be told to POST.
+ *
+ * web-push sends to whatever URL the subscription names, from this machine, on
+ * every notification — so an unchecked endpoint lets anyone who can reach the
+ * subscribe route aim the proxy at `http://127.0.0.1:9119` or a router's admin
+ * page. Real push services (FCM, Apple, Mozilla autopush, WNS) are always
+ * `https:` on a public DNS name; their hosts vary too much to allowlist, so
+ * this refuses the shapes none of them ever has instead: any other scheme,
+ * credentials in the URL, any IP literal (WHATWG parsing has already folded
+ * `2130706433` and `0x7f.1` into dotted form), single-label names, and the
+ * names reserved for local networks.
+ *
+ * A public name that *resolves* to a private address is not caught here;
+ * that needs checking at connect time, not at subscribe time.
+ */
+export function isPushServiceUrl(endpoint: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' || url.username || url.password) return false;
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  if (host.startsWith('[') || isIP(host)) return false;
+  if (!host.includes('.')) return false;
+  return !/\.(localhost|local|localdomain|internal|lan|home\.arpa)$/.test(host);
+}
+
 const SubscribeBody = z.object({
   subscription: z.object({
-    endpoint: z.string().url(),
+    endpoint: z.string().max(2048).refine(isPushServiceUrl),
     expirationTime: z.number().nullable().optional(),
     keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }),
   }),

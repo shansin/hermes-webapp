@@ -130,8 +130,32 @@ export function saveSubscription(subscription: PushSubscription, label: string):
       lastFailedAt: null,
       failures: 0,
     });
+    evictBeyondCap(rows);
   }
   persist();
+}
+
+/**
+ * The most devices kept. A real install has one or two; the cap exists because
+ * subscribing is an unauthenticated POST on the LAN path, and every stored row
+ * is a request fanned out on every push, so an unbounded list is a way to make
+ * each notification cost arbitrarily many outbound calls.
+ */
+export const MAX_SUBSCRIPTIONS = 20;
+
+/**
+ * Drop the rows that have gone longest without a delivery (or, never having
+ * had one, were added longest ago) until the list fits. A device that is
+ * actually receiving banners is the last thing to go; the one just added has
+ * the newest `createdAt`, so it never evicts itself.
+ */
+function evictBeyondCap(rows: PushRecord[]): void {
+  const excess = rows.length - MAX_SUBSCRIPTIONS;
+  if (excess <= 0) return;
+  const lastAlive = (r: PushRecord) => r.lastSentAt ?? r.createdAt;
+  const doomed = new Set([...rows].sort((a, b) => lastAlive(a) - lastAlive(b)).slice(0, excess));
+  state.subscriptions = rows.filter((r) => !doomed.has(r));
+  log.info(`Evicted ${excess} stale push subscription(s) to stay within ${MAX_SUBSCRIPTIONS}.`);
 }
 
 /** Returns whether anything was actually removed. */

@@ -18,6 +18,7 @@ import { useNavigate } from 'react-router-dom';
 import { useProfiles } from '../api/profiles';
 import { ACTIVITY_PROFILE_CAP } from '../api/sessions';
 import { DELEGATION_KEY } from '../api/delegation';
+import { boardKeyPrefix } from '../api/kanban';
 
 import { MenuButton } from '../components/shared/MenuButton';
 import { BackButton } from '../components/shared/BackButton';
@@ -120,7 +121,8 @@ export function ActivityScreen() {
             await Promise.all([
               qc.invalidateQueries({ queryKey: ['sessions', 'recent'] }),
               qc.invalidateQueries({ queryKey: DELEGATION_KEY }),
-              qc.invalidateQueries({ queryKey: ['kanban', 'board'] }),
+              // The pane reads the server's current board, keyed `null`.
+              qc.invalidateQueries({ queryKey: boardKeyPrefix(null) }),
               qc.invalidateQueries({ queryKey: ['cron'] }),
             ]);
           }}

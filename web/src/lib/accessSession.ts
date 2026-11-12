@@ -167,7 +167,7 @@ function markExpired(): void {
  * queries all failing at once would otherwise probe once each.
  */
 /**
- * The proxy's own gate answered 401.
+ * The proxy's own gate refused us.
  *
  * This needs no probe and must not use one: `/healthz` is deliberately exempt
  * from the gate, so probing it returns a cheerful 200 while every real call is
@@ -177,6 +177,23 @@ function markExpired(): void {
  */
 export function markAccessRefused(): void {
   markExpired();
+}
+
+/** Mirrors `GATE_HEADER` / `GATE_REFUSED` in `server/src/auth.ts`. */
+const GATE_HEADER = 'x-hem-gate';
+const GATE_REFUSED = 'refused';
+
+/**
+ * Whether a response is the proxy's Access gate refusing the person — as
+ * opposed to Hermes answering 401 or 403 for its own reasons, which it does
+ * for an unreadable file and for a session token the proxy is about to
+ * re-resolve. Latching "signed out" on the status alone put a sign-in prompt
+ * over a working session, and the latch holds until reload.
+ */
+export function isGateRefusal(res: Response): boolean {
+  return (
+    (res.status === 401 || res.status === 403) && res.headers.get(GATE_HEADER) === GATE_REFUSED
+  );
 }
 
 /**

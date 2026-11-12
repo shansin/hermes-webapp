@@ -4,9 +4,10 @@
  * Also the place to compact a conversation, since running out of context is
  * the problem this sheet is opened to diagnose — and the home for the turn
  * controls that previously lived only behind slash commands (`/save`,
- * `/title`, `/undo`, `/compress`, `/approvals`, `/goal`, `/queue`,
- * `/background`, `/rollback`, `/retry`): each rendered structured output into
- * the transcript as text, with no button anywhere.
+ * `/title`, `/undo`, `/compress`, `/goal`, `/queue`, `/background`,
+ * `/rollback`, `/retry`): each rendered structured output into the transcript
+ * as text, with no button anywhere. Approvals are not here: the mode is global
+ * and lives once, in `ModelSheet`.
  */
 import { useEffect, useState } from 'react';
 import { Sheet } from '../shared/Sheet';
@@ -15,7 +16,6 @@ import { useUi } from '../../store/ui';
 import {
   compressSession,
   saveSession,
-  setApprovalMode,
   titleSession,
   undoTurns,
   askSideQuestion,
@@ -257,36 +257,6 @@ export function ContextSheet({ open, onClose }: { open: boolean; onClose: () => 
               }
             >
               {action === '/title' ? '…' : 'Set'}
-            </button>
-          </div>
-
-          <div className="group-head" style={{ marginTop: 18 }}>
-            APPROVALS
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {['suggest', 'auto', 'never'].map((mode) => (
-              <button
-                key={mode}
-                className={`chip${(info?.approval_mode ?? '') === mode ? ' chip--active' : ''}`}
-                disabled={action != null}
-                onClick={() =>
-                  void runTurn('/approvals', async () => {
-                    await setApprovalMode(sessionId, mode);
-                    return `Approval mode: ${mode}.`;
-                  })
-                }
-                aria-pressed={(info?.approval_mode ?? '') === mode}
-              >
-                {action === '/approvals' && (info?.approval_mode ?? '') !== mode ? '…' : mode}
-              </button>
-            ))}
-            <button
-              className="btn btn--sm"
-              style={{ marginLeft: 'auto' }}
-              disabled={action != null}
-              onClick={() => void runExec('/approvals')}
-            >
-              Show
             </button>
           </div>
 

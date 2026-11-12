@@ -175,6 +175,47 @@ describe('POST /push/subscribe', () => {
     expect(res.status).toBe(400);
   });
 
+  /**
+   * web-push POSTs to whatever the endpoint names, from this machine, on every
+   * notification. Each of these would point the proxy at something local.
+   */
+  it.each([
+    'http://fcm.googleapis.com/fcm/send/abc',
+    'ftp://push.example/x',
+    'https://127.0.0.1:9119/api/sessions',
+    'https://2130706433/x',
+    'https://0x7f.1/x',
+    'https://10.0.0.1/x',
+    'https://192.168.1.1/admin',
+    'https://169.254.169.254/latest/meta-data',
+    'https://[::1]/x',
+    'https://[::ffff:127.0.0.1]/x',
+    'https://[fd00::1]/x',
+    'https://localhost/x',
+    'https://LOCALHOST./x',
+    'https://app.localhost/x',
+    'https://printer.local/x',
+    'https://router/x',
+    'https://nas.home.arpa/x',
+    'https://user:pass@fcm.googleapis.com/x',
+    `https://fcm.googleapis.com/${'x'.repeat(3000)}`,
+  ])('refuses the endpoint %s', async (endpoint) => {
+    const res = await post('/push/subscribe', { subscription: { ...subscription, endpoint } });
+    expect(res.status).toBe(400);
+    const config = (await (await pushRouter.request('http://proxy.test/push/config')).json()) as { devices: number };
+    expect(config.devices).toBe(0);
+  });
+
+  it.each([
+    'https://fcm.googleapis.com/fcm/send/abc:def',
+    'https://web.push.apple.com/QGz8tdvR2kYB',
+    'https://updates.push.services.mozilla.com/wpush/v2/gAAAA',
+    'https://wns2-par02p.notify.windows.com/w/?token=BQYAAA',
+  ])('accepts the real push service endpoint %s', async (endpoint) => {
+    const res = await post('/push/subscribe', { subscription: { ...subscription, endpoint } });
+    expect(res.status).toBe(200);
+  });
+
   it('rejects a body that is not JSON', async () => {
     const res = await pushRouter.request(
       new Request('http://proxy.test/push/subscribe', {

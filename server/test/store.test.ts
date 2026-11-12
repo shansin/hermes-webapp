@@ -110,6 +110,52 @@ describe('subscriptions', () => {
   });
 });
 
+/**
+ * Subscribing is an unauthenticated POST on the LAN path, and every stored row
+ * is an outbound request on every push. Without a cap the list only grows.
+ */
+describe('the subscription cap', () => {
+  const fill = (n: number) => {
+    for (let i = 0; i < n; i++) store.saveSubscription(sub(`https://push.example/${i}`), '');
+  };
+
+  it('never holds more than the cap', () => {
+    fill(store.MAX_SUBSCRIPTIONS + 5);
+    expect(store.listSubscriptions()).toHaveLength(store.MAX_SUBSCRIPTIONS);
+    expect(onDisk().subscriptions).toHaveLength(store.MAX_SUBSCRIPTIONS);
+  });
+
+  it('keeps the device just added', () => {
+    fill(store.MAX_SUBSCRIPTIONS);
+    store.saveSubscription(sub('https://push.example/newest'), 'new phone');
+    expect(store.listSubscriptions().some((r) => r.subscription.endpoint.endsWith('/newest'))).toBe(true);
+  });
+
+  it('evicts the device longest without a delivery, not one that is receiving', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000);
+      fill(store.MAX_SUBSCRIPTIONS);
+      // The oldest row is the one still getting banners; the second-oldest is not.
+      vi.setSystemTime(5_000);
+      store.markSent(['https://push.example/0']);
+      vi.setSystemTime(6_000);
+      store.saveSubscription(sub('https://push.example/newest'), '');
+    } finally {
+      vi.useRealTimers();
+    }
+    const endpoints = store.listSubscriptions().map((r) => r.subscription.endpoint);
+    expect(endpoints).toContain('https://push.example/0');
+    expect(endpoints).not.toContain('https://push.example/1');
+  });
+
+  it('does not evict on a re-registration of a known endpoint', () => {
+    fill(store.MAX_SUBSCRIPTIONS);
+    store.saveSubscription(sub('https://push.example/0'), 'renamed');
+    expect(store.listSubscriptions()).toHaveLength(store.MAX_SUBSCRIPTIONS);
+  });
+});
+
 describe('persistence', () => {
   it('reloads what an earlier process wrote', async () => {
     store.saveSubscription(sub('https://push.example/a'), 'iPhone');

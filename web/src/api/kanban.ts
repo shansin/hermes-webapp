@@ -107,7 +107,7 @@ export function useTask(id: string | null, board?: string | null) {
  * would leave the "including archived" view stale next to the one it just
  * refreshed. Matching on the prefix costs nothing and cannot drift.
  */
-function boardKeyPrefix(board?: string | null) {
+export function boardKeyPrefix(board?: string | null) {
   return ['kanban', board ?? null, 'board'] as const;
 }
 

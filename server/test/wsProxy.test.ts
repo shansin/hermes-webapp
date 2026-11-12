@@ -57,6 +57,7 @@ interface Upgrade {
   url: string;
   host?: string;
   origin?: string;
+  headers: Record<string, string | string[] | undefined>;
 }
 let upgrades: Upgrade[];
 /** The fake Hermes' end of each bridge, so a teardown is observable there. */
@@ -83,6 +84,7 @@ beforeAll(async () => {
       url: req.url ?? '',
       host: req.headers.host,
       origin: req.headers.origin as string | undefined,
+      headers: req.headers,
     });
     socket.on('message', (data: RawData, isBinary: boolean) => {
       upstreamFrames.push(data.toString());
@@ -304,6 +306,25 @@ describe('the loopback disguise', () => {
     expect(up.host).toBe(upstreamHostValue);
     expect(up.origin).toBe(`http://${upstreamHostValue}`);
     expect(up.origin).not.toContain('192.168.1.50');
+  });
+
+  /* The upstream leg is built from scratch rather than copied from the
+     phone's handshake, so the Access session cookie and assertion stay on the
+     proxy's side — Hermes authenticates by the query-string token alone. */
+  it('does not hand the browser’s Access credentials to Hermes', async () => {
+    track(
+      await openClient('/api/ws', {
+        cookie: 'CF_Authorization=secret-value',
+        'cf-access-jwt-assertion': 'secret-value',
+        'cf-access-client-id': 'secret-value',
+        'cf-access-client-secret': 'secret-value',
+      }),
+    );
+    const up = await upgraded();
+    for (const name of ['cookie', 'cf-access-jwt-assertion', 'cf-access-client-id', 'cf-access-client-secret']) {
+      expect(up.headers[name]).toBeUndefined();
+    }
+    expect(JSON.stringify(up.headers)).not.toContain('secret-value');
   });
 
   /* Hermes answers a non-loopback upgrade on the dictation path with 4403

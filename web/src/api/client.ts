@@ -6,7 +6,7 @@
  * explicitly, which supports pointing the app at a Hermes instance directly.
  */
 import { useUi } from '../store/ui';
-import { probeAccess, markAccessRefused } from '../lib/accessSession';
+import { probeAccess, markAccessRefused, isGateRefusal } from '../lib/accessSession';
 
 export class ApiError extends Error {
   constructor(
@@ -82,10 +82,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw err;
   }
 
-  // The proxy's own gate answers 401 when it holds no valid Access assertion.
-  // Believe it directly rather than probing: `/healthz` is exempt from the
-  // gate, so a probe would answer 200 and we would go on reconnecting for ever.
-  if (res.status === 401 || res.status === 403) markAccessRefused();
+  // The proxy's own gate refuses with a marker header when it holds no valid
+  // Access assertion. Believe it directly rather than probing: `/healthz` is
+  // exempt from the gate, so a probe would answer 200 and we would go on
+  // reconnecting for ever. Only the marker counts — Hermes's own 401s and
+  // 403s are ordinary errors.
+  if (isGateRefusal(res)) markAccessRefused();
 
   if (!res.ok) {
     const body = await parse(res).catch(() => null);

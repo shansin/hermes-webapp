@@ -97,6 +97,55 @@ describe('POST /share', () => {
     expect(params.has('text')).toBe(false);
   });
 
+  /**
+   * A chunked upload declares no length, so a header check alone let it
+   * through to `formData()` unbounded. The limit has to hold on the bytes —
+   * and reading has to stop there, not after the whole body has arrived.
+   */
+  it('refuses a large body that declares no length, without reading all of it', async () => {
+    const chunk = new Uint8Array(64 * 1024);
+    const total = 128; // 8 MiB, if it were all read
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled++ >= total) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+    const req = new Request('http://proxy.test/share', {
+      method: 'POST',
+      headers: { 'content-type': 'multipart/form-data; boundary=x' },
+      body,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+    expect(req.headers.has('content-length')).toBe(false);
+
+    const res = await shareRouter.request(req);
+    const params = new URL(res.headers.get('location') ?? '', 'http://proxy.test').searchParams;
+
+    expect(res.status).toBe(303);
+    expect(params.get('share')).toBe('');
+    expect(pulled).toBeLessThan(10);
+  });
+
+  it('still reads a small share that declares no length', async () => {
+    const form = new FormData();
+    form.set('text', 'chunked words');
+    const encoded = new Response(form);
+    const req = new Request('http://proxy.test/share', {
+      method: 'POST',
+      headers: { 'content-type': encoded.headers.get('content-type')! },
+      body: encoded.body,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+
+    const res = await shareRouter.request(req);
+    const params = new URL(res.headers.get('location') ?? '', 'http://proxy.test').searchParams;
+
+    expect(params.get('text')).toBe('chunked words');
+    expect(params.has('share')).toBe(false);
+  });
+
   it('redirects rather than throwing when the body is unreadable', async () => {
     const res = await shareRouter.request(
       new Request('http://proxy.test/share', {

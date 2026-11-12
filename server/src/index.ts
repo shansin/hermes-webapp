@@ -268,6 +268,21 @@ startKanbanSweep();
 // the listener above — see the header of `push/sessions.ts`.
 startSessionSweep();
 
+/**
+ * Last-resort logging, so a crash leaves a line in our log rather than only a
+ * bare stack on stderr. A stray rejection — a sweep's fetch failing in a path
+ * nobody awaited — is logged and survived: the proxy's job is to stay up, and
+ * Node's default for it is to exit. An uncaught exception is not survivable
+ * (state is unknown past it), so it exits non-zero and systemd restarts us.
+ */
+process.on('unhandledRejection', (reason) => {
+  log.error({ err: reason }, 'Unhandled promise rejection');
+});
+process.on('uncaughtException', (err) => {
+  log.fatal({ err }, 'Uncaught exception — exiting');
+  process.exit(1);
+});
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
     log.info(`${signal} — shutting down`);

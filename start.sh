@@ -116,8 +116,14 @@ authed() {
 # the proxy binds loopback, so a dead tunnel means the app is unreachable from
 # everywhere except this machine — while `/healthz` stays perfectly green. The
 # symptom has no signal attached unless we go and look.
+#
+# Asks about the running tunnel, never about the binary: cloudflared lives in
+# ~/.local/bin, which a systemd unit's PATH does not include, so a `command -v`
+# gate reported a healthy tunnel as down on every service start. The setup
+# script installs it as a *user* unit, so that scope is asked first; system
+# scope covers a packaged install, and pgrep anything started by hand.
 tunnel_up() {
-  command -v cloudflared >/dev/null || return 1
+  systemctl --user is-active --quiet cloudflared 2>/dev/null && return 0
   systemctl is-active --quiet cloudflared 2>/dev/null && return 0
   pgrep -x cloudflared >/dev/null 2>&1
 }
@@ -319,15 +325,23 @@ else
   export HERMES_DASHBOARD_SESSION_TOKEN="${HERMES_TOKEN}"
 
   mkdir -p "${LOG_DIR}"
+  # Appended, not truncated: this start usually follows a backend that died,
+  # and its last lines are the only account of why. Rotated once past 5 MB so
+  # appending forever cannot fill the disk; one generation back is enough.
+  SERVE_LOG="${LOG_DIR}/hermes-serve.log"
+  if [ -f "${SERVE_LOG}" ] && [ "$(wc -c < "${SERVE_LOG}")" -gt $((5 * 1024 * 1024)) ]; then
+    mv -f "${SERVE_LOG}" "${SERVE_LOG}.1"
+  fi
+  printf '\n=== start.sh: hermes serve starting %s ===\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "${SERVE_LOG}"
   bold "→ Starting Hermes backend on ${HERMES_HOST}:${HERMES_PORT}…"
   nohup hermes serve --port "${HERMES_PORT}" --host "${HERMES_HOST}" --skip-build \
-    > "${LOG_DIR}/hermes-serve.log" 2>&1 &
+    >> "${SERVE_LOG}" 2>&1 &
 
   for _ in $(seq 1 60); do
     healthy && break
     sleep 1
   done
-  healthy || die "Hermes did not become healthy. See ${LOG_DIR}/hermes-serve.log"
+  healthy || die "Hermes did not become healthy. See ${SERVE_LOG}"
   bold "✓ Hermes backend ready"
 fi
 

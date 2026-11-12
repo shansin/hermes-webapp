@@ -18,15 +18,23 @@
  * and no events of its own — a background child emits nothing until the batch
  * finishes — so there it really is only the poll, and `api/delegation.ts` sets
  * its own rate accordingly.
+ *
+ * The subscription is split in two. The lanes every caller shares (sessions,
+ * delegations) are invalidated by `useActivityInvalidation`, mounted once in
+ * `App.tsx`: the chat header and the drawer both call `useActivity(false)`, and
+ * when each subscribed for itself every turn boundary invalidated the
+ * per-profile session queries twice — the second cancelling and re-sending the
+ * first's requests. Only the board and cron lanes, which just the full screen
+ * reads, keep a per-hook subscription.
  */
 import { useEffect, useMemo } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import { useActiveSessionsAcrossProfiles } from '../api/sessions';
 import { DELEGATION_KEY, useDelegations } from '../api/delegation';
 import { useProfiles } from '../api/profiles';
 import { useUi } from '../store/ui';
-import { useBoard } from '../api/kanban';
+import { boardKeyPrefix, useBoard } from '../api/kanban';
 import { useCronJobs } from '../api/hub';
 import { hermes } from '../ws/client';
 import {
@@ -54,6 +62,39 @@ const WATCHED = [
   'background.complete',
   'cron.changed',
 ];
+
+/**
+ * Invalidate what `type` changed, for one half of the subscription.
+ *
+ * `shared` is the sessions and delegation lanes every caller reads; `full` is
+ * the board and cron lanes only the Activity screen reads. Takes the client
+ * rather than closing over a hook so the keys can be checked against real
+ * queries — the board key here once matched nothing at all.
+ */
+export function invalidateActivity(
+  qc: QueryClient,
+  type: string,
+  lanes: 'shared' | 'full',
+): void {
+  if (!WATCHED.includes(type)) return;
+  if (lanes === 'shared') {
+    void qc.invalidateQueries({ queryKey: ['sessions', 'recent'] });
+    /* `background.complete` is the one event a background delegation ever
+       emits, and it means every child in the batch has just stopped —
+       exactly when leaving stale rows up would be most misleading. */
+    void qc.invalidateQueries({ queryKey: DELEGATION_KEY });
+    return;
+  }
+  // `null`: the pane reads whichever board the server points at (see below).
+  void qc.invalidateQueries({ queryKey: boardKeyPrefix(null) });
+  if (type === 'cron.changed') void qc.invalidateQueries({ queryKey: ['cron'] });
+}
+
+/** The shared half of the early invalidation. Mount once, app-wide. */
+export function useActivityInvalidation(): void {
+  const qc = useQueryClient();
+  useEffect(() => hermes.onEvent(({ type }) => invalidateActivity(qc, type, 'shared')), [qc]);
+}
 
 /**
  * Everything in flight, plus what is queued.
@@ -99,26 +140,15 @@ export function useActivity(full = true): {
      it is a summary of live work, not a board view, and pinning it to one
      slug would hide the cards on any other. */
   const board = useBoard({ enabled: full });
-  const cron = useCronJobs();
+  const cron = useCronJobs(full);
   /* Not gated on `full`: a delegated child is the case the header pill is
      most often asked about, and it is one small socket call rather than the
      two REST lanes the pill deliberately skips. */
   const delegations = useDelegations();
 
+  // The shared lanes are `useActivityInvalidation`'s, in `App.tsx`.
   useEffect(
-    () =>
-      hermes.onEvent(({ type }) => {
-        if (!WATCHED.includes(type)) return;
-        void qc.invalidateQueries({ queryKey: ['sessions', 'recent'] });
-        /* `background.complete` is the one event a background delegation ever
-           emits, and it means every child in the batch has just stopped —
-           exactly when leaving stale rows up would be most misleading. */
-        void qc.invalidateQueries({ queryKey: DELEGATION_KEY });
-        if (full) {
-          void qc.invalidateQueries({ queryKey: ['kanban', 'board'] });
-          if (type === 'cron.changed') void qc.invalidateQueries({ queryKey: ['cron'] });
-        }
-      }),
+    () => (full ? hermes.onEvent(({ type }) => invalidateActivity(qc, type, 'full')) : undefined),
     [qc, full],
   );
 

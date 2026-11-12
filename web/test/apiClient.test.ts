@@ -198,3 +198,43 @@ describe('errors', () => {
     await expect(api.get('/api/x')).rejects.toThrow('Failed to fetch');
   });
 });
+
+/**
+ * "Signed out" latches until reload, so only the proxy's own gate may trip it.
+ * Hermes answers 403 for a file it will not read and 401 for a session token
+ * the proxy is about to re-resolve; neither is a lapsed login.
+ */
+describe('access refusal', () => {
+  // The latch is module state: each case gets a fresh copy of both modules.
+  async function fresh() {
+    vi.resetModules();
+    const session = await import('../src/lib/accessSession');
+    const { api: freshApi } = await import('../src/api/client');
+    return { api: freshApi, isAccessExpired: session.isAccessExpired };
+  }
+
+  it.each([403, 401])('does not latch on a %s from Hermes', async (status) => {
+    const { api: a, isAccessExpired } = await fresh();
+    fetchMock.mockResolvedValue(json({ detail: 'Permission denied' }, { status }));
+    await expect(a.get('/api/files/read?path=/root/x')).rejects.toMatchObject({ status });
+    expect(isAccessExpired()).toBe(false);
+  });
+
+  it.each([401, 403])('latches on a gate-marked %s', async (status) => {
+    const { api: a, isAccessExpired } = await fresh();
+    fetchMock.mockResolvedValue(
+      json({ error: 'unauthorized' }, { status, headers: { 'x-hem-gate': 'refused' } }),
+    );
+    await expect(a.get('/api/sessions')).rejects.toMatchObject({ status });
+    expect(isAccessExpired()).toBe(true);
+  });
+
+  it('does not latch on a marker attached to anything but a refusal', async () => {
+    const { api: a, isAccessExpired } = await fresh();
+    fetchMock.mockResolvedValue(
+      json({ error: 'access_unavailable' }, { status: 503, headers: { 'x-hem-gate': 'refused' } }),
+    );
+    await expect(a.get('/api/sessions')).rejects.toMatchObject({ status: 503 });
+    expect(isAccessExpired()).toBe(false);
+  });
+});

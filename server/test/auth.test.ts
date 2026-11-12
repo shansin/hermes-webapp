@@ -153,6 +153,24 @@ describe('requireAccess', () => {
     await expect(res.json()).resolves.toEqual({ error: 'unauthorized' });
   });
 
+  /**
+   * The app latches "signed out" on this header and nothing else, because
+   * Hermes answers 401 and 403 too — for a stale token, an unreadable file —
+   * and neither means the person needs to log in again.
+   */
+  it('marks its own refusals so the app can tell them from Hermes', async () => {
+    expect((await send('/api/sessions')).headers.get('x-hem-gate')).toBe('refused');
+
+    const outsider = await mint({ email: 'someone-else@example.com' });
+    const res = await send('/api/sessions', { 'cf-access-jwt-assertion': outsider });
+    expect(res.status).toBe(403);
+    expect(res.headers.get('x-hem-gate')).toBe('refused');
+
+    const jwt = await mint({ email: 'owner@example.com' });
+    const ok = await send('/api/sessions', { 'cf-access-jwt-assertion': jwt });
+    expect(ok.headers.get('x-hem-gate')).toBeNull();
+  });
+
   it('401s on a token signed by someone else', async () => {
     const jwt = await mint({ email: 'owner@example.com' }, { key: strangerKey });
     expect((await send('/api/sessions', { 'cf-access-jwt-assertion': jwt })).status).toBe(401);
@@ -269,6 +287,7 @@ describe('requireAccess', () => {
 
         expect(res.status).toBe(503);
         expect(res.headers.get('retry-after')).toBe('2');
+        expect(res.headers.get('x-hem-gate')).toBeNull();
       });
     }
 

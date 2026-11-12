@@ -408,6 +408,9 @@ function bridge(client: WebSocket, pathname: string, search: string): void {
 
   function connectUpstream(target: string): WebSocket {
     const sock = new WebSocket(target, {
+      // Built from scratch, never copied from the phone's handshake: its
+      // `cookie` and `cf-access-jwt-assertion` are Access credentials for
+      // this origin, and Hermes authenticates by the query token alone.
       headers: {
         // Both of these must look like loopback or the upgrade is refused with
         // close code 4403. This is the whole reason the proxy exists.

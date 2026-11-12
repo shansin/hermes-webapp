@@ -21,9 +21,20 @@ export const apiProxy = new Hono();
 
 // Hop-by-hop headers must not be forwarded (RFC 9110 §7.6.1); `host` and
 // `authorization` are replaced wholesale below.
+//
+// The browser's credentials for *this* origin stop here too. Hermes needs
+// neither: the bearer token is its only credential. `cookie` carries the
+// `CF_Authorization` session, and `cf-access-jwt-assertion` the signed Access
+// token that `auth.ts` already checked — handing either to a backend that never
+// asked for them puts a replayable login in its logs and request objects for
+// nothing. The service-token pair is the same thing for a non-browser client.
 const STRIP_REQUEST_HEADERS = new Set([
   'host',
   'authorization',
+  'cookie',
+  'cf-access-jwt-assertion',
+  'cf-access-client-id',
+  'cf-access-client-secret',
   'connection',
   'keep-alive',
   'transfer-encoding',

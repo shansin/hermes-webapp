@@ -7,6 +7,7 @@
 import { hermes, CONTROL_TIMEOUT_MS, RpcError } from '../ws/client';
 import { api } from './client';
 import { dispatchCommand } from './commands';
+import type { ApprovalMode } from '../lib/approvalModes';
 import {
   ModelOptionsSchema,
   SessionCreateResultSchema,
@@ -219,10 +220,28 @@ export async function setReasoning(sessionId: string, level: string): Promise<vo
   );
 }
 
-export async function setApprovalMode(sessionId: string, mode: string): Promise<void> {
+/**
+ * Set the approval mode for **every** chat — Hermes writes it to `config.yaml`.
+ * The session id only picks the profile whose config is written; see
+ * `lib/approvalModes.ts`.
+ */
+export async function setApprovalMode(sessionId: string, mode: ApprovalMode): Promise<void> {
   await hermes.call(
     'config.set',
-    { session_id: sessionId, key: 'approval_mode', value: mode },
+    { session_id: sessionId, key: 'approvals.mode', value: mode },
+    { timeoutMs: CONTROL_TIMEOUT_MS },
+  );
+}
+
+/**
+ * Bypass approvals in this chat only (Hermes's per-session yolo flag, which
+ * it persists with the session). `session.info.yolo` reports the result, ORed
+ * with a global `off` — so it is on whenever nothing will ask.
+ */
+export async function setSessionYolo(sessionId: string, on: boolean): Promise<void> {
+  await hermes.call(
+    'config.set',
+    { session_id: sessionId, key: 'yolo', value: on ? 'on' : 'off' },
     { timeoutMs: CONTROL_TIMEOUT_MS },
   );
 }
